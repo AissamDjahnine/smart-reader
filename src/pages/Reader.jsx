@@ -50,6 +50,7 @@ export default function Reader() {
   const [dictionaryQuery, setDictionaryQuery] = useState("");
   const [dictionaryEntry, setDictionaryEntry] = useState(null);
   const [dictionaryError, setDictionaryError] = useState("");
+  const dictionaryTokenRef = useRef(0);
 
   useEffect(() => {
     if (showAIModal && rendition) {
@@ -183,10 +184,21 @@ export default function Reader() {
     return firstToken.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '');
   };
 
+  const cancelDictionaryLookup = () => {
+    dictionaryTokenRef.current += 1;
+    setIsDefining(false);
+  };
+
   const clearDictionary = () => {
+    cancelDictionaryLookup();
     setDictionaryQuery("");
     setDictionaryEntry(null);
     setDictionaryError("");
+  };
+
+  const closeDictionary = () => {
+    cancelDictionaryLookup();
+    setShowDictionary(false);
   };
 
   const lookupDictionary = async (term) => {
@@ -195,6 +207,8 @@ export default function Reader() {
       clearDictionary();
       return;
     }
+    const token = dictionaryTokenRef.current + 1;
+    dictionaryTokenRef.current = token;
     setDictionaryQuery(clean);
     setDictionaryError("");
     setDictionaryEntry(null);
@@ -206,13 +220,15 @@ export default function Reader() {
         throw new Error('No definition found');
       }
       const data = await response.json();
+      if (dictionaryTokenRef.current !== token) return;
       const first = Array.isArray(data) ? data[0] : null;
       setDictionaryEntry(first);
     } catch (err) {
+      if (dictionaryTokenRef.current !== token) return;
       console.error(err);
       setDictionaryError('No definition found for that word.');
     } finally {
-      setIsDefining(false);
+      if (dictionaryTokenRef.current === token) setIsDefining(false);
     }
   };
 
@@ -597,7 +613,7 @@ export default function Reader() {
         <div className="fixed inset-0 z-[55]">
           <div
             className="absolute inset-0 bg-black/40"
-            onClick={() => setShowDictionary(false)}
+            onClick={closeDictionary}
           />
           <div
             className={`absolute left-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
@@ -617,7 +633,7 @@ export default function Reader() {
                 className="flex-1 bg-transparent outline-none text-sm"
               />
               <button
-                onClick={() => setShowDictionary(false)}
+                onClick={closeDictionary}
                 className="p-1 text-gray-400 hover:text-red-500"
               >
                 <X size={18} />
