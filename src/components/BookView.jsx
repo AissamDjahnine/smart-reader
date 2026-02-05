@@ -121,7 +121,15 @@ export default function BookView({
         const text = range.toString();
         if (text && onSelection) {
           const rect = range.getBoundingClientRect();
-          onSelection(text, cfiRange, { x: rect.left, y: rect.top }, false);
+          let x = rect.left;
+          let y = rect.top;
+          const frame = contents?.window?.frameElement;
+          if (frame) {
+            const frameRect = frame.getBoundingClientRect();
+            x += frameRect.left;
+            y += frameRect.top;
+          }
+          onSelection(text, cfiRange, { x, y }, false);
         }
         contents.window.getSelection().removeAllRanges();
       });

@@ -8,7 +8,7 @@ import {
   Moon, Sun, BookOpen, Scroll, Type, 
   ChevronLeft, Menu, X,
   Search as SearchIcon, ChevronUp, ChevronDown, Sparkles, Wand2, User,
-  BookOpenText
+  BookOpenText, Highlighter
 } from 'lucide-react';
 
 export default function Reader() {
@@ -21,6 +21,7 @@ export default function Reader() {
   const [showSidebar, setShowSidebar] = useState(false);
   const [showSearchMenu, setShowSearchMenu] = useState(false);
   const [showAIModal, setShowAIModal] = useState(false);
+  const [showHighlightsPanel, setShowHighlightsPanel] = useState(false);
   const [isPageSummarizing, setIsPageSummarizing] = useState(false);
   const [isChapterSummarizing, setIsChapterSummarizing] = useState(false);
   const [isStoryRecapping, setIsStoryRecapping] = useState(false);
@@ -53,6 +54,8 @@ export default function Reader() {
   const dictionaryTokenRef = useRef(0);
   const lastActiveRef = useRef(Date.now());
   const isUpdatingStatsRef = useRef(false);
+  const [highlights, setHighlights] = useState([]);
+  const [selection, setSelection] = useState(null);
 
   useEffect(() => {
     if (showAIModal && rendition) {
@@ -103,6 +106,12 @@ export default function Reader() {
     }
     return '';
   };
+
+  const highlightColors = [
+    { name: 'Amber', value: '#fcd34d' },
+    { name: 'Rose', value: '#f9a8d4' },
+    { name: 'Sky', value: '#7dd3fc' }
+  ];
 
   const cancelSearch = () => {
     searchTokenRef.current += 1;
@@ -245,7 +254,7 @@ export default function Reader() {
     }
   };
 
-  const handleSelection = (text) => {
+  const openDictionaryForText = (text) => {
     const trimmed = (text || '').trim();
     if (!trimmed) return;
     const wordCount = trimmed.split(/\s+/).length;
@@ -258,6 +267,60 @@ export default function Reader() {
     } else {
       setDictionaryEntry(null);
       setDictionaryError('Select a single word to look it up.');
+    }
+  };
+
+  const handleSelection = (text, cfiRange, pos, isExisting = false) => {
+    const trimmed = (text || '').trim();
+    if (!trimmed) return;
+    setSelection({
+      text: trimmed,
+      cfiRange,
+      pos,
+      isExisting
+    });
+  };
+
+  const clearSelection = () => {
+    setSelection(null);
+  };
+
+  const addHighlight = async (color) => {
+    const currentBook = bookRef.current;
+    if (!currentBook || !selection?.cfiRange) return;
+    const newHighlight = {
+      cfiRange: selection.cfiRange,
+      text: selection.text,
+      color,
+      createdAt: new Date().toISOString()
+    };
+
+    try {
+      const updated = await saveHighlight(currentBook.id, newHighlight);
+      if (updated) {
+        setHighlights(updated);
+        setBook({ ...currentBook, highlights: updated });
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      clearSelection();
+    }
+  };
+
+  const removeHighlight = async (cfiRange) => {
+    const currentBook = bookRef.current;
+    if (!currentBook || !cfiRange) return;
+    try {
+      const updated = await deleteHighlight(currentBook.id, cfiRange);
+      if (updated) {
+        setHighlights(updated);
+        setBook({ ...currentBook, highlights: updated });
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      clearSelection();
     }
   };
 
@@ -404,6 +467,12 @@ export default function Reader() {
     const loadBook = async () => { if (bookId) setBook(await getBook(bookId)); };
     loadBook();
   }, [bookId]);
+
+  useEffect(() => {
+    if (book?.highlights) {
+      setHighlights(book.highlights);
+    }
+  }, [book]);
 
   useEffect(() => {
     if (!bookId) return;
@@ -731,6 +800,118 @@ export default function Reader() {
         </div>
       )}
 
+      {showHighlightsPanel && (
+        <div className="fixed inset-0 z-[55]">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setShowHighlightsPanel(false)}
+          />
+          <div
+            className={`absolute right-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
+              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Highlighter size={18} className="text-gray-400" />
+                <div className="text-sm font-bold">Highlights</div>
+              </div>
+              <button
+                onClick={() => setShowHighlightsPanel(false)}
+                className="p-1 text-gray-400 hover:text-red-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-3 text-[11px] text-gray-500">
+              {highlights.length} highlight{highlights.length === 1 ? '' : 's'}
+            </div>
+
+            <div className="mt-4 max-h-[55vh] overflow-y-auto pr-1 space-y-3">
+              {highlights.length === 0 && (
+                <div className="text-xs text-gray-500">No highlights yet.</div>
+              )}
+              {highlights.map((h, idx) => (
+                <div
+                  key={`${h.cfiRange}-${idx}`}
+                  className="p-3 rounded-2xl border border-transparent hover:border-gray-200 dark:hover:border-gray-700 transition"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      onClick={() => {
+                        setJumpTarget(h.cfiRange);
+                        setShowHighlightsPanel(false);
+                      }}
+                      className="text-left flex-1"
+                    >
+                      <div className="text-[10px] uppercase tracking-widest text-gray-400 mb-1">
+                        Highlight {idx + 1}
+                      </div>
+                      <div className="text-sm text-gray-700 dark:text-gray-200 line-clamp-3">
+                        {h.text}
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => removeHighlight(h.cfiRange)}
+                      className="text-xs text-red-500 hover:text-red-600"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                  <div className="mt-2 h-1.5 rounded-full" style={{ background: h.color }} />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selection && selection.pos && (
+        <div
+          className="fixed z-[70] pointer-events-auto"
+          style={{ left: selection.pos.x, top: Math.max(selection.pos.y - 50, 10) }}
+        >
+          <div className={`flex items-center gap-2 px-3 py-2 rounded-2xl shadow-xl border ${
+            settings.theme === 'dark' ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-800'
+          }`}>
+            {selection.isExisting ? (
+              <button
+                onClick={() => removeHighlight(selection.cfiRange)}
+                className="text-xs font-bold text-red-500 hover:text-red-600"
+              >
+                Delete highlight
+              </button>
+            ) : (
+              <>
+                {highlightColors.map((c) => (
+                  <button
+                    key={c.name}
+                    onClick={() => addHighlight(c.value)}
+                    className="w-5 h-5 rounded-full border border-white/40 shadow"
+                    title={`Highlight ${c.name}`}
+                    style={{ background: c.value }}
+                  />
+                ))}
+              </>
+            )}
+            <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
+            <button
+              onClick={() => openDictionaryForText(selection.text)}
+              className="text-xs font-bold text-blue-600 dark:text-blue-400"
+            >
+              Define
+            </button>
+            <button
+              onClick={clearSelection}
+              className="text-xs text-gray-400 hover:text-red-500"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* TOP BAR */}
       <div className={`flex items-center justify-between p-3 border-b shadow-sm z-20 ${settings.theme === 'dark' ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-800'}`}>
         <div className="flex items-center gap-2">
@@ -765,6 +946,13 @@ export default function Reader() {
           >
             <BookOpenText size={18} />
           </button>
+          <button
+            onClick={() => setShowHighlightsPanel((s) => !s)}
+            className={`p-2 rounded-full transition ${showHighlightsPanel ? 'text-blue-600 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`}
+            title="Highlights"
+          >
+            <Highlighter size={18} />
+          </button>
           <div className="w-px h-6 bg-gray-200 dark:bg-gray-700 mx-1" />
           <button onClick={() => setSettings(s => ({...s, theme: s.theme === 'light' ? 'dark' : 'light'}))} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">{settings.theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}</button>
           <button onClick={() => setSettings(s => ({...s, flow: s.flow === 'paginated' ? 'scrolled' : 'paginated'}))} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">{settings.flow === 'paginated' ? <Scroll size={20} /> : <BookOpen size={20} />}</button>
@@ -780,7 +968,8 @@ export default function Reader() {
           onRenditionReady={setRendition}
           onChapterEnd={handleChapterEnd}
           searchResults={searchResults}
-          onSelection={(text) => handleSelection(text)}
+          highlights={highlights}
+          onSelection={(text, cfiRange, pos, isExisting) => handleSelection(text, cfiRange, pos, isExisting)}
         />
       </div>
     </div>
