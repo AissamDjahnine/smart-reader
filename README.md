@@ -1,16 +1,63 @@
-# React + Vite
+# Smart Reader
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Smart Reader is a local-first EPUB library and reading experience with AI-powered page explanations and story recaps. It runs entirely in the browser, storing your books and reading progress locally.
 
-Currently, two official plugins are available:
+## What It Does
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **EPUB Library**
+  - Upload `.epub` files and keep them in a personal library.
+  - Store covers, title, author, publisher, and publication date metadata.
+  - Search by title/author and filter by favorites or finished books.
+  - Track reading progress, total reading time, and last read date.
+  - Favorite and delete books.
 
-## React Compiler
+- **Reader Experience**
+  - Open books from the library and continue from the last location.
+  - Paginated or scrolling reading modes.
+  - Light/dark themes and adjustable font size.
+  - Progress bar and page navigation controls.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- **AI-Assisted Understanding**
+  - **Background story memory:** Each page change is summarized to build a running story memory.
+  - **Explain Page:** Explains the current page using the story memory for context.
+  - **Story So Far:** Generates a recap using the story memory (and the current page as the latest scene).
+  - **Chapter summaries:** When you finish a chapter, a summary is saved for long-term recall.
 
-## Expanding the ESLint configuration
+## Tech Stack
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+- React + Vite
+- Tailwind CSS
+- `epubjs` for EPUB rendering
+- `localforage` for local storage
+- Google Gemini API for AI summaries
+
+## Running Locally
+
+```bash
+npm install
+npm run dev
+```
+
+Open the URL shown by Vite (usually `http://localhost:5173`).
+
+## Notes
+
+- This app is **local-first**: all books and progress are stored in the browser’s IndexedDB.
+- The current AI integration uses a **client-side API key** in `/Users/aissam/my-smart-reader/src/services/ai.js`. For production use, move this to a server-side proxy to avoid exposing the key.
+
+## Scripts
+
+```bash
+npm run dev       # start dev server
+npm run build     # production build
+npm run preview   # preview production build
+npm run lint      # lint code
+```
+
+## Repo Structure (High Level)
+
+- `/Users/aissam/my-smart-reader/src/pages/Home.jsx` — Library UI and upload/search/filter.
+- `/Users/aissam/my-smart-reader/src/pages/Reader.jsx` — Reader UI and AI features.
+- `/Users/aissam/my-smart-reader/src/components/BookView.jsx` — EPUB rendering and navigation.
+- `/Users/aissam/my-smart-reader/src/services/db.js` — Local data storage and summaries.
+- `/Users/aissam/my-smart-reader/src/services/ai.js` — AI summarization logic.
