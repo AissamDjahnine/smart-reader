@@ -90,10 +90,21 @@ export default function Reader() {
     return '';
   };
 
+  const cancelSearch = () => {
+    searchTokenRef.current += 1;
+    setIsSearching(false);
+  };
+
   const clearSearch = () => {
+    cancelSearch();
     setSearchQuery("");
     setSearchResults([]);
     setActiveSearchIndex(-1);
+  };
+
+  const closeSearchMenu = () => {
+    cancelSearch();
+    setShowSearchMenu(false);
   };
 
   const goToSearchIndex = (index) => {
@@ -491,7 +502,7 @@ export default function Reader() {
         <div className="fixed inset-0 z-[55]">
           <div
             className="absolute inset-0 bg-black/40"
-            onClick={() => setShowSearchMenu(false)}
+            onClick={closeSearchMenu}
           />
           <div
             className={`absolute right-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
@@ -511,7 +522,7 @@ export default function Reader() {
                 className="flex-1 bg-transparent outline-none text-sm"
               />
               <button
-                onClick={() => setShowSearchMenu(false)}
+                onClick={closeSearchMenu}
                 className="p-1 text-gray-400 hover:text-red-500"
               >
                 <X size={18} />
