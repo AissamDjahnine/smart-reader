@@ -45,6 +45,8 @@ export default function Reader() {
   const [storyRecap, setStoryRecap] = useState("");
   const [pageError, setPageError] = useState("");
   const [storyError, setStoryError] = useState("");
+  const [isRebuildingMemory, setIsRebuildingMemory] = useState(false);
+  const [rebuildProgress, setRebuildProgress] = useState({ current: 0, total: 0 });
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
@@ -479,6 +481,7 @@ export default function Reader() {
   const summariseBackground = async (cfi) => {
     const currentBook = bookRef.current;
     if (!rendition || !currentBook) return;
+    if (isRebuildingMemory) return;
     try {
       isBackgroundSummarizingRef.current = true;
       const viewer = rendition.getContents()[0];
@@ -499,6 +502,66 @@ export default function Reader() {
       console.error(err);
     } finally {
       isBackgroundSummarizingRef.current = false;
+    }
+  };
+
+  const rebuildStoryMemory = async () => {
+    const currentBook = bookRef.current;
+    if (!currentBook || !rendition) return;
+
+    setIsRebuildingMemory(true);
+    setRebuildProgress({ current: 0, total: 0 });
+    setStoryError("");
+
+    try {
+      const epubBook = rendition.book;
+      if (epubBook?.ready) await epubBook.ready;
+      const spineItems = epubBook?.spine?.spineItems || [];
+      const chapters = spineItems.filter(
+        (section) => section && section.linear !== "no" && section.linear !== false
+      );
+
+      if (!chapters.length) {
+        setStoryError('No readable chapters found.');
+        return;
+      }
+
+      let memory = "";
+      let updatedBook = null;
+      setRebuildProgress({ current: 0, total: chapters.length });
+
+      for (let i = 0; i < chapters.length; i += 1) {
+        const section = chapters[i];
+        await section.load(epubBook.load.bind(epubBook));
+        const rawText = section?.document?.body?.innerText || "";
+        section.unload();
+
+        if (!rawText.trim()) {
+          setRebuildProgress({ current: i + 1, total: chapters.length });
+          continue;
+        }
+
+        const result = await summarizeChapter(rawText, memory, 'cumulative');
+        if (!result.text && result.error) {
+          setStoryError(result.error);
+          break;
+        }
+        if (result.text) {
+          memory = memory ? `${memory}\n\n${result.text}` : result.text;
+          updatedBook = await saveChapterSummary(currentBook.id, section.href, result.text, memory);
+        }
+        setRebuildProgress({ current: i + 1, total: chapters.length });
+      }
+
+      if (updatedBook) {
+        setBook(updatedBook);
+        setStoryRecap(memory);
+      }
+    } catch (err) {
+      console.error(err);
+      setStoryError('Failed to rebuild memory. Please try again.');
+    } finally {
+      setIsRebuildingMemory(false);
     }
   };
 
@@ -609,6 +672,29 @@ export default function Reader() {
                 {modalContext?.chapterLabel && (
                   <div className="text-[10px] uppercase tracking-[0.2em] text-gray-400">
                     {modalContext.chapterLabel}
+                  </div>
+                )}
+
+                {modalMode === 'page' && !isPageSummarizing && !getStoryMemory(book) && (
+                  <div className="text-xs text-yellow-500">
+                    No story memory yet. This explanation may lack context.
+                  </div>
+                )}
+                {modalMode === 'story' && !isStoryRecapping && !getStoryMemory(book) && (
+                  <div className="flex items-center justify-between gap-3 text-xs text-yellow-500">
+                    <span>No story memory yet. Rebuild it to get a full recap.</span>
+                    <button
+                      onClick={rebuildStoryMemory}
+                      disabled={isRebuildingMemory}
+                      className="px-3 py-1 rounded-full bg-blue-600 text-white text-[10px] font-bold disabled:opacity-60"
+                    >
+                      {isRebuildingMemory ? 'Rebuilding…' : 'Rebuild Memory'}
+                    </button>
+                  </div>
+                )}
+                {modalMode === 'story' && isRebuildingMemory && (
+                  <div className="text-[10px] text-gray-400">
+                    Rebuilding {rebuildProgress.current}/{rebuildProgress.total}
                   </div>
                 )}
 
