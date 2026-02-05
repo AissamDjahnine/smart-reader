@@ -6,7 +6,7 @@ import { summarizeChapter } from '../services/ai';
 
 import { 
   Moon, Sun, BookOpen, Scroll, Type, 
-  ChevronLeft, Menu, X, List, Trash2, Clock, 
+  ChevronLeft, Menu, X,
   Search as SearchIcon, ChevronUp, ChevronDown, Sparkles, Wand2, User
 } from 'lucide-react';
 
@@ -23,6 +23,7 @@ export default function Reader() {
   const [isPageSummarizing, setIsPageSummarizing] = useState(false);
   const [isChapterSummarizing, setIsChapterSummarizing] = useState(false);
   const [isStoryRecapping, setIsStoryRecapping] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
   const [sidebarTab, setSidebarTab] = useState('chapters');
   const [toc, setToc] = useState([]);
   const [jumpTarget, setJumpTarget] = useState(null);
@@ -39,6 +40,10 @@ export default function Reader() {
   const [pageSummary, setPageSummary] = useState("");
   // Holds the story-so-far recap returned from the AI.
   const [storyRecap, setStoryRecap] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
+  const searchTokenRef = useRef(0);
 
   useEffect(() => {
     if (showAIModal && rendition) {
@@ -77,6 +82,80 @@ export default function Reader() {
       return currentBook.aiSummaries.map(s => s.summary).filter(Boolean).join("\n\n");
     }
     return '';
+  };
+
+  const clearSearch = () => {
+    setSearchQuery("");
+    setSearchResults([]);
+    setActiveSearchIndex(-1);
+  };
+
+  const goToSearchIndex = (index) => {
+    if (!searchResults.length) return;
+    const clamped = Math.max(0, Math.min(index, searchResults.length - 1));
+    setActiveSearchIndex(clamped);
+    const target = searchResults[clamped];
+    if (target?.cfi) setJumpTarget(target.cfi);
+  };
+
+  const goToNextResult = () => {
+    if (!searchResults.length) return;
+    const next = activeSearchIndex + 1 >= searchResults.length ? 0 : activeSearchIndex + 1;
+    goToSearchIndex(next);
+  };
+
+  const goToPrevResult = () => {
+    if (!searchResults.length) return;
+    const prev = activeSearchIndex - 1 < 0 ? searchResults.length - 1 : activeSearchIndex - 1;
+    goToSearchIndex(prev);
+  };
+
+  const runSearch = async (query) => {
+    const term = query.trim();
+    if (!rendition || !term) {
+      clearSearch();
+      return;
+    }
+
+    const token = searchTokenRef.current + 1;
+    searchTokenRef.current = token;
+    setIsSearching(true);
+    setSearchResults([]);
+    setActiveSearchIndex(-1);
+
+    try {
+      const book = rendition.book;
+      if (book?.ready) await book.ready;
+
+      const results = [];
+      const spineItems = book?.spine?.spineItems || [];
+      for (const section of spineItems) {
+        if (searchTokenRef.current !== token) return;
+        if (!section) continue;
+        if (section.linear === "no" || section.linear === false) continue;
+        await section.load(book.load.bind(book));
+        const matches = section.search(term) || [];
+        matches.forEach((match) => {
+          results.push({
+            ...match,
+            href: section.href,
+            spineIndex: section.index
+          });
+        });
+        section.unload();
+      }
+
+      if (searchTokenRef.current !== token) return;
+      setSearchResults(results);
+      if (results.length) {
+        setActiveSearchIndex(0);
+        if (results[0]?.cfi) setJumpTarget(results[0].cfi);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      if (searchTokenRef.current === token) setIsSearching(false);
+    }
   };
 
   const handleLocationChange = (loc) => {
@@ -340,6 +419,101 @@ export default function Reader() {
         </div>
       )}
 
+      {showSearchMenu && (
+        <div className="fixed inset-0 z-[55]">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setShowSearchMenu(false)}
+          />
+          <div
+            className={`absolute right-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
+              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <SearchIcon size={18} className="text-gray-400" />
+              <input
+                type="text"
+                placeholder="Search inside this book..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') runSearch(searchQuery);
+                }}
+                className="flex-1 bg-transparent outline-none text-sm"
+              />
+              <button
+                onClick={() => setShowSearchMenu(false)}
+                className="p-1 text-gray-400 hover:text-red-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-3 flex items-center justify-between text-[11px] text-gray-500">
+              <span>
+                {isSearching ? 'Searching...' : `${searchResults.length} result${searchResults.length === 1 ? '' : 's'}`}
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={goToPrevResult}
+                  disabled={!searchResults.length}
+                  className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40"
+                >
+                  <ChevronUp size={14} />
+                </button>
+                <button
+                  onClick={goToNextResult}
+                  disabled={!searchResults.length}
+                  className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40"
+                >
+                  <ChevronDown size={14} />
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={() => runSearch(searchQuery)}
+                className="flex-1 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700"
+              >
+                Search
+              </button>
+              <button
+                onClick={clearSearch}
+                className="flex-1 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-bold"
+              >
+                Clear
+              </button>
+            </div>
+
+            <div className="mt-4 max-h-[45vh] overflow-y-auto pr-1 space-y-2">
+              {!isSearching && searchQuery && searchResults.length === 0 && (
+                <div className="text-xs text-gray-500">No matches found.</div>
+              )}
+              {searchResults.map((result, idx) => (
+                <button
+                  key={`${result.cfi}-${idx}`}
+                  onClick={() => goToSearchIndex(idx)}
+                  className={`w-full text-left p-3 rounded-2xl border transition ${
+                    activeSearchIndex === idx
+                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/30'
+                      : 'border-transparent hover:border-gray-200 dark:hover:border-gray-700'
+                  }`}
+                >
+                  <div className="text-[10px] uppercase tracking-widest text-gray-400 mb-1">
+                    Result {idx + 1}
+                  </div>
+                  <div className="text-sm text-gray-700 dark:text-gray-200">
+                    {result.excerpt}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* TOP BAR */}
       <div className={`flex items-center justify-between p-3 border-b shadow-sm z-20 ${settings.theme === 'dark' ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-800'}`}>
         <div className="flex items-center gap-2">
@@ -360,6 +534,13 @@ export default function Reader() {
             <Sparkles size={20} />
             <span className="hidden md:inline text-xs font-black uppercase">Story</span>
           </button>
+          <button
+            onClick={() => setShowSearchMenu((s) => !s)}
+            className={`p-2 rounded-full transition ${showSearchMenu ? 'text-blue-600 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`}
+            title="Search"
+          >
+            <SearchIcon size={18} />
+          </button>
           <div className="w-px h-6 bg-gray-200 dark:bg-gray-700 mx-1" />
           <button onClick={() => setSettings(s => ({...s, theme: s.theme === 'light' ? 'dark' : 'light'}))} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">{settings.theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}</button>
           <button onClick={() => setSettings(s => ({...s, flow: s.flow === 'paginated' ? 'scrolled' : 'paginated'}))} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">{settings.flow === 'paginated' ? <Scroll size={20} /> : <BookOpen size={20} />}</button>
@@ -374,6 +555,7 @@ export default function Reader() {
           onTocLoaded={setToc} tocJump={jumpTarget}
           onRenditionReady={setRendition}
           onChapterEnd={handleChapterEnd}
+          searchResults={searchResults}
         />
       </div>
     </div>
