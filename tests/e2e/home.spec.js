@@ -110,3 +110,26 @@ test('quick card actions open reader highlights and bookmarks panels', async ({ 
   await expect(page).toHaveURL(/panel=bookmarks/);
   await expect(page.getByTestId('bookmarks-panel')).toBeVisible();
 });
+
+test('reading streak badge updates after starting a book', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+
+  const streakBadge = page.getByTestId('library-streak-badge');
+  await expect(streakBadge).toBeVisible();
+  await expect(streakBadge).toContainText('No streak yet');
+
+  await page.getByRole('link', { name: /Test Book/i }).first().click();
+  await expect(page.getByRole('button', { name: /Explain Page/i })).toBeVisible();
+  await page.waitForTimeout(500);
+
+  await page.goto('/');
+  await expect(page.getByTestId('library-streak-badge')).toContainText('1-day streak');
+});

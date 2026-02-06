@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { addBook, getAllBooks, deleteBook, toggleFavorite, markBookStarted } from '../services/db'; 
-import { Plus, Book as BookIcon, User, Calendar, Trash2, Clock, Search, Heart, Filter, ArrowUpDown, LayoutGrid, List } from 'lucide-react';
+import { Plus, Book as BookIcon, User, Calendar, Trash2, Clock, Search, Heart, Filter, ArrowUpDown, LayoutGrid, List, Flame } from 'lucide-react';
 
 const STARTED_BOOK_IDS_KEY = 'library-started-book-ids';
 
@@ -123,7 +123,54 @@ export default function Home() {
     const parsed = new Date(value || 0).getTime();
     return Number.isFinite(parsed) ? parsed : 0;
   };
+  const toLocalDateKey = (value) => {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "";
+    const year = date.getFullYear();
+    const month = `${date.getMonth() + 1}`.padStart(2, "0");
+    const day = `${date.getDate()}`.padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
   const startedBookIds = readStartedBookIds();
+
+  const getReadingStreak = (libraryBooks) => {
+    const dayKeys = new Set(
+      libraryBooks
+        .filter((book) => {
+          const progress = normalizeNumber(book.progress);
+          return startedBookIds.has(book.id) || Boolean(book.hasStarted) || Boolean(book.lastLocation) || progress > 0 || normalizeNumber(book.readingTime) > 0;
+        })
+        .map((book) => toLocalDateKey(book.lastRead))
+        .filter(Boolean)
+    );
+
+    if (!dayKeys.size) {
+      return { streakCount: 0, readToday: false };
+    }
+
+    const now = new Date();
+    const todayKey = toLocalDateKey(now);
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayKey = toLocalDateKey(yesterday);
+    const startKey = dayKeys.has(todayKey) ? todayKey : (dayKeys.has(yesterdayKey) ? yesterdayKey : "");
+
+    if (!startKey) {
+      return { streakCount: 0, readToday: false };
+    }
+
+    let streakCount = 0;
+    const cursor = new Date(startKey);
+    while (dayKeys.has(toLocalDateKey(cursor))) {
+      streakCount += 1;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+
+    return {
+      streakCount,
+      readToday: dayKeys.has(todayKey)
+    };
+  };
 
   const sortedBooks = [...books]
     .filter((book) => {
@@ -172,6 +219,7 @@ export default function Home() {
     .slice(0, 8);
 
   const showContinueReading = activeFilter === "all" && !searchQuery.trim() && continueReadingBooks.length > 0;
+  const { streakCount, readToday } = getReadingStreak(books);
 
   const formatTime = (totalSeconds) => {
     if (!totalSeconds || totalSeconds < 60) return "Just started";
@@ -203,6 +251,18 @@ export default function Home() {
                 ? `You have ${books.length} books` 
                 : `Showing ${sortedBooks.length} of ${books.length} books`}
             </p>
+            <div
+              data-testid="library-streak-badge"
+              className={`mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${
+                streakCount > 0
+                  ? 'border-orange-200 bg-orange-50 text-orange-700'
+                  : 'border-gray-200 bg-white text-gray-500'
+              }`}
+              title={streakCount > 0 && !readToday ? 'Read today to keep your streak alive.' : 'Daily reading streak'}
+            >
+              <Flame size={14} className={streakCount > 0 ? 'text-orange-500' : 'text-gray-400'} />
+              <span>{streakCount > 0 ? `${streakCount}-day streak` : 'No streak yet'}</span>
+            </div>
           </div>
 
           <label className={`cursor-pointer flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-full shadow-lg transition-all transform hover:scale-105 ${isUploading ? 'opacity-50 pointer-events-none' : ''}`}>
