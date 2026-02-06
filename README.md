@@ -78,6 +78,8 @@ Everything runs in the browser. No backend required for core reading.
   - Infinite scroll
 - Infinite scroll uses a centered portrait-style reading column with left/right empty space for better focus.
 - Switch light/dark theme.
+- Switch light/dark theme.
+- Enable `Sepia` night-reading mode (owl toggle) for warm yellow paper-style reading.
 - Change font size.
 - Change font family (multiple popular fonts available).
 - Per-book reader settings persistence:
@@ -184,8 +186,11 @@ E2E tests live in:
 
 - `tests/e2e/reader.spec.js`
   - Search cancellation behavior
+  - Search marker cleanup after `Clear`
   - Dictionary stale-response race handling
   - Translation behavior
+  - Repeated theme toggle stability (dark/light)
+  - Sepia mode toggle behavior
   - Reader iframe remount regression guard
 - `tests/e2e/home.spec.js`
   - Library sort/filter behavior
