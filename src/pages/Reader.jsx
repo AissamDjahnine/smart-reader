@@ -70,11 +70,13 @@ export default function Reader() {
   const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
   const searchTokenRef = useRef(0);
   const [showDictionary, setShowDictionary] = useState(false);
+  const [dictionaryAnchor, setDictionaryAnchor] = useState(null);
   const [dictionaryQuery, setDictionaryQuery] = useState("");
   const [dictionaryEntry, setDictionaryEntry] = useState(null);
   const [dictionaryError, setDictionaryError] = useState("");
   const dictionaryTokenRef = useRef(0);
   const [showTranslation, setShowTranslation] = useState(false);
+  const [translationAnchor, setTranslationAnchor] = useState(null);
   const [translationQuery, setTranslationQuery] = useState("");
   const [translationResult, setTranslationResult] = useState("");
   const [translationError, setTranslationError] = useState("");
@@ -663,6 +665,7 @@ export default function Reader() {
   const closeDictionary = () => {
     cancelDictionaryLookup();
     setShowDictionary(false);
+    setDictionaryAnchor(null);
   };
 
   const cancelTranslation = () => {
@@ -680,6 +683,7 @@ export default function Reader() {
   const closeTranslation = () => {
     cancelTranslation();
     setShowTranslation(false);
+    setTranslationAnchor(null);
   };
 
   const lookupDictionary = async (term) => {
@@ -801,6 +805,11 @@ export default function Reader() {
     const wordCount = trimmed.split(/\s+/).length;
     const clean = sanitizeDictionaryTerm(trimmed);
     if (!clean) return;
+    if (selection?.pos) {
+      setDictionaryAnchor({ ...selection.pos });
+    }
+    setShowTranslation(false);
+    setTranslationAnchor(null);
     setShowDictionary(true);
     setDictionaryQuery(clean);
     if (wordCount === 1) {
@@ -814,11 +823,42 @@ export default function Reader() {
   const openTranslationForText = (text) => {
     const trimmed = (text || '').trim();
     if (!trimmed) return;
+    if (selection?.pos) {
+      setTranslationAnchor({ ...selection.pos });
+    }
+    setShowDictionary(false);
+    setDictionaryAnchor(null);
     setShowTranslation(true);
     setTranslationQuery(trimmed);
     setTranslationResult("");
     setTranslationError("");
     translateText(trimmed, targetLanguage, sourceLanguage);
+  };
+
+  const getContextPanelStyle = (anchor) => {
+    const padding = 12;
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1200;
+    const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
+    const width = Math.min(420, Math.max(280, viewportWidth - padding * 2));
+    const maxHeight = Math.min(520, Math.max(260, Math.floor(viewportHeight * 0.72)));
+
+    const safeAnchorX = anchor?.x ?? viewportWidth / 2;
+    const safeAnchorY = anchor?.y ?? viewportHeight / 2;
+
+    let left = safeAnchorX + 8;
+    let top = safeAnchorY + 8;
+
+    if (left + width > viewportWidth - padding) {
+      left = viewportWidth - width - padding;
+    }
+    if (left < padding) left = padding;
+
+    if (top + maxHeight > viewportHeight - padding) {
+      top = Math.max(padding, safeAnchorY - maxHeight - 8);
+    }
+    if (top < padding) top = padding;
+
+    return { left, top, width, maxHeight };
   };
 
   const getChapterLabel = (loc) => {
@@ -1697,16 +1737,16 @@ export default function Reader() {
         </div>
       )}
 
-      {showDictionary && (
-        <div className="fixed inset-0 z-[55]">
+      {showDictionary && (() => {
+        const panelStyle = getContextPanelStyle(dictionaryAnchor || selection?.pos);
+        return (
+        <div className="fixed inset-0 z-[75]" onClick={closeDictionary}>
           <div
-            className="absolute inset-0 bg-black/40"
-            onClick={closeDictionary}
-          />
-          <div
-            className={`absolute left-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
+            className={`absolute rounded-3xl shadow-2xl p-5 flex flex-col ${
               settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
             }`}
+            style={panelStyle}
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center gap-2">
               <BookOpenText size={18} className="text-gray-400" />
@@ -1743,7 +1783,7 @@ export default function Reader() {
               </button>
             </div>
 
-            <div className="mt-4 max-h-[45vh] overflow-y-auto pr-1 space-y-4">
+            <div className="mt-4 flex-1 min-h-0 overflow-y-auto pr-1 space-y-4">
               {isDefining && (
                 <div className="text-xs text-gray-500">Looking up definition...</div>
               )}
@@ -1778,18 +1818,19 @@ export default function Reader() {
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
-      {showTranslation && (
-        <div className="fixed inset-0 z-[55]" data-testid="translation-panel">
+      {showTranslation && (() => {
+        const panelStyle = getContextPanelStyle(translationAnchor || selection?.pos);
+        return (
+        <div className="fixed inset-0 z-[75]" data-testid="translation-panel" onClick={closeTranslation}>
           <div
-            className="absolute inset-0 bg-black/40"
-            onClick={closeTranslation}
-          />
-          <div
-            className={`absolute right-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
+            className={`absolute rounded-3xl shadow-2xl p-5 flex flex-col ${
               settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
             }`}
+            style={panelStyle}
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center gap-2">
               <Languages size={18} className="text-gray-400" />
@@ -1860,7 +1901,7 @@ export default function Reader() {
               Provider: {translateProviderLabel}{SUPPORTS_AUTO_DETECT ? '' : ' · select source language'}
             </div>
 
-            <div className="mt-4 max-h-[45vh] overflow-y-auto pr-1 space-y-3">
+            <div className="mt-4 flex-1 min-h-0 overflow-y-auto pr-1 space-y-3">
               {isTranslating && (
                 <div className="text-xs text-gray-500">Translating...</div>
               )}
@@ -1875,7 +1916,8 @@ export default function Reader() {
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {showHighlightsPanel && (
         <div className="fixed inset-0 z-[55]">
@@ -2135,7 +2177,7 @@ export default function Reader() {
         </div>
       )}
 
-      {selection && selection.pos && (() => {
+      {selection && selection.pos && !showDictionary && !showTranslation && (() => {
         const padding = 12;
         const rawX = selection.pos.x;
         const rawY = selection.pos.y;
