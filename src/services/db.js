@@ -37,6 +37,7 @@ export const addBook = async (file) => {
     data: file,
     progress: 0,
     highlights: [],
+    bookmarks: [],
     isFavorite: false,
     readingTime: 0,
     lastRead: new Date().toISOString(),
@@ -153,6 +154,30 @@ export const deleteHighlight = async (bookId, cfiRange) => {
     book.highlights = book.highlights.filter(h => h.cfiRange !== cfiRange);
     await bookStore.setItem(bookId, book);
     return book.highlights;
+  }
+  return [];
+};
+
+export const saveBookmark = async (bookId, bookmark) => {
+  const book = await bookStore.getItem(bookId);
+  if (book) {
+    if (!book.bookmarks) book.bookmarks = [];
+    const exists = book.bookmarks.some((b) => b.cfi === bookmark.cfi);
+    if (!exists) {
+      book.bookmarks.push(bookmark);
+      await bookStore.setItem(bookId, book);
+    }
+    return book.bookmarks;
+  }
+  return [];
+};
+
+export const deleteBookmark = async (bookId, cfi) => {
+  const book = await bookStore.getItem(bookId);
+  if (book) {
+    book.bookmarks = (book.bookmarks || []).filter(b => b.cfi !== cfi);
+    await bookStore.setItem(bookId, book);
+    return book.bookmarks;
   }
   return [];
 };

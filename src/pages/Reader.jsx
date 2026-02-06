@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { getBook, updateBookProgress, saveHighlight, deleteHighlight, updateReadingStats, saveChapterSummary, savePageSummary } from '../services/db';
+import { getBook, updateBookProgress, saveHighlight, deleteHighlight, updateReadingStats, saveChapterSummary, savePageSummary, saveBookmark, deleteBookmark } from '../services/db';
 import BookView from '../components/BookView';
 import { summarizeChapter } from '../services/ai'; 
 
@@ -8,7 +8,7 @@ import {
   Moon, Sun, BookOpen, Scroll, Type, 
   ChevronLeft, Menu, X,
   Search as SearchIcon, ChevronUp, ChevronDown, Sparkles, Wand2, User,
-  BookOpenText, Highlighter, Languages
+  BookOpenText, Highlighter, Languages, Bookmark
 } from 'lucide-react';
 
 const DEFAULT_TRANSLATE_PROVIDER = 'mymemory';
@@ -30,6 +30,7 @@ export default function Reader() {
   const [showSearchMenu, setShowSearchMenu] = useState(false);
   const [showAIModal, setShowAIModal] = useState(false);
   const [showHighlightsPanel, setShowHighlightsPanel] = useState(false);
+  const [showBookmarksPanel, setShowBookmarksPanel] = useState(false);
   const [isPageSummarizing, setIsPageSummarizing] = useState(false);
   const [isChapterSummarizing, setIsChapterSummarizing] = useState(false);
   const [isStoryRecapping, setIsStoryRecapping] = useState(false);
@@ -75,6 +76,7 @@ export default function Reader() {
   const lastActiveRef = useRef(Date.now());
   const isUpdatingStatsRef = useRef(false);
   const [highlights, setHighlights] = useState([]);
+  const [bookmarks, setBookmarks] = useState([]);
   const [selection, setSelection] = useState(null);
   const [selectionMode, setSelectionMode] = useState('actions');
   const tempSelectionRef = useRef(null);
@@ -478,6 +480,58 @@ export default function Reader() {
     translateText(trimmed, targetLanguage, sourceLanguage);
   };
 
+  const getChapterLabel = (loc) => {
+    if (!loc?.start) return 'Bookmark';
+    const match = toc.find(t => t.href && loc.start.href && t.href.includes(loc.start.href));
+    if (match?.label) return match.label;
+    if (typeof loc.start.index === 'number') return `Section ${loc.start.index + 1}`;
+    return 'Bookmark';
+  };
+
+  const addBookmarkAtLocation = async () => {
+    const currentBook = bookRef.current;
+    if (!currentBook || !rendition) return;
+    try {
+      const loc = rendition.currentLocation();
+      if (!loc?.start?.cfi) return;
+
+      const viewer = rendition.getContents()[0];
+      const pageText = viewer?.document?.body?.innerText || '';
+      const snippet = pageText.trim().slice(0, 140);
+      const label = getChapterLabel(loc);
+
+      const newBookmark = {
+        cfi: loc.start.cfi,
+        href: loc.start.href || '',
+        label,
+        text: snippet,
+        createdAt: new Date().toISOString()
+      };
+
+      const updated = await saveBookmark(currentBook.id, newBookmark);
+      if (updated) {
+        setBookmarks(updated);
+        setBook({ ...currentBook, bookmarks: updated });
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const removeBookmark = async (cfi) => {
+    const currentBook = bookRef.current;
+    if (!currentBook || !cfi) return;
+    try {
+      const updated = await deleteBookmark(currentBook.id, cfi);
+      if (updated) {
+        setBookmarks(updated);
+        setBook({ ...currentBook, bookmarks: updated });
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const handleSelection = (text, cfiRange, pos, isExisting = false) => {
     const trimmed = (text || '').trim();
     if (!trimmed) return;
@@ -809,6 +863,12 @@ export default function Reader() {
   useEffect(() => {
     if (book?.highlights) {
       setHighlights(book.highlights);
+    }
+  }, [book]);
+
+  useEffect(() => {
+    if (book?.bookmarks) {
+      setBookmarks(book.bookmarks);
     }
   }, [book]);
 
@@ -1425,6 +1485,82 @@ export default function Reader() {
         </div>
       )}
 
+      {showBookmarksPanel && (
+        <div className="fixed inset-0 z-[55]">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setShowBookmarksPanel(false)}
+          />
+          <div
+            className={`absolute right-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
+              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Bookmark size={18} className="text-gray-400" />
+                <div className="text-sm font-bold">Bookmarks</div>
+              </div>
+              <button
+                onClick={() => setShowBookmarksPanel(false)}
+                className="p-1 text-gray-400 hover:text-red-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-3 flex items-center justify-between text-[11px] text-gray-500">
+              <span>
+                {bookmarks.length} bookmark{bookmarks.length === 1 ? '' : 's'}
+              </span>
+              <button
+                onClick={addBookmarkAtLocation}
+                className="px-3 py-1 rounded-full bg-blue-600 text-white text-[10px] font-bold"
+              >
+                Add Bookmark
+              </button>
+            </div>
+
+            <div className="mt-4 max-h-[55vh] overflow-y-auto pr-1 space-y-3">
+              {bookmarks.length === 0 && (
+                <div className="text-xs text-gray-500">No bookmarks yet.</div>
+              )}
+              {bookmarks.map((b, idx) => (
+                <div
+                  key={`${b.cfi}-${idx}`}
+                  className="p-3 rounded-2xl border border-transparent hover:border-gray-200 dark:hover:border-gray-700 transition"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <button
+                      onClick={() => {
+                        setJumpTarget(b.cfi);
+                        setShowBookmarksPanel(false);
+                      }}
+                      className="text-left flex-1"
+                    >
+                      <div className="text-[10px] uppercase tracking-widest text-gray-400 mb-1">
+                        {b.label || `Bookmark ${idx + 1}`}
+                      </div>
+                      {b.text && (
+                        <div className="text-sm text-gray-700 dark:text-gray-200 line-clamp-2">
+                          {b.text}
+                        </div>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => removeBookmark(b.cfi)}
+                      className="text-xs text-red-500 hover:text-red-600"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {selection && selection.pos && (() => {
         const padding = 12;
         const rawX = selection.pos.x;
@@ -1563,6 +1699,13 @@ export default function Reader() {
             title="Highlights"
           >
             <Highlighter size={18} />
+          </button>
+          <button
+            onClick={() => setShowBookmarksPanel((s) => !s)}
+            className={`p-2 rounded-full transition ${showBookmarksPanel ? 'text-blue-600 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`}
+            title="Bookmarks"
+          >
+            <Bookmark size={18} />
           </button>
           <div className="w-px h-6 bg-gray-200 dark:bg-gray-700 mx-1" />
           <button onClick={() => setSettings(s => ({...s, theme: s.theme === 'light' ? 'dark' : 'light'}))} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">{settings.theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}</button>
