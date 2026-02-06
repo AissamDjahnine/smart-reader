@@ -1035,10 +1035,22 @@ export default function Reader() {
         </div>
       )}
 
-      {selection && selection.pos && (
+      {selection && selection.pos && (() => {
+        const padding = 12;
+        const rawX = selection.pos.x;
+        const rawY = selection.pos.y;
+        const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : rawX;
+        const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : rawY;
+        const panelWidth = 260;
+        const panelHeight = 48;
+        const clampedX = Math.min(Math.max(rawX, padding), Math.max(padding, viewportWidth - panelWidth - padding));
+        const clampedY = Math.min(Math.max(rawY, padding), Math.max(padding, viewportHeight - panelHeight - padding));
+        const transform = 'translate(8px, 8px)';
+
+        return (
         <div
           className="fixed z-[70] pointer-events-auto"
-          style={{ left: selection.pos.x, top: Math.max(selection.pos.y - 50, 10) }}
+          style={{ left: clampedX, top: clampedY, transform }}
         >
           <div className={`flex items-center gap-2 px-3 py-2 rounded-2xl shadow-xl border ${
             settings.theme === 'dark' ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-800'
@@ -1103,7 +1115,8 @@ export default function Reader() {
             </button>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* TOP BAR */}
       <div className={`flex items-center justify-between p-3 border-b shadow-sm z-20 ${settings.theme === 'dark' ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-800'}`}>

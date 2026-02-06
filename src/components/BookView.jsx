@@ -53,6 +53,16 @@ export default function BookView({
   }, [searchResults]);
 
   useEffect(() => {
+    if (!renditionRef.current) return;
+    renditionRef.current.annotations.remove('hl');
+    highlights.forEach(h => {
+      renditionRef.current.annotations.add('highlight', h.cfiRange, {}, (e) => {
+        if (onSelection) onSelection(h.text, h.cfiRange, { x: e.clientX, y: e.clientY }, true);
+      }, 'hl', { fill: h.color, 'fill-opacity': '0.3', 'mix-blend-mode': 'multiply' });
+    });
+  }, [highlights]);
+
+  useEffect(() => {
     if (!bookData) return;
     const book = ePub(bookData);
     bookRef.current = book;
@@ -117,12 +127,15 @@ export default function BookView({
     });
 
     rendition.on('selected', (cfiRange, contents) => {
-      book.getRange(cfiRange).then((range) => {
-        const text = range.toString();
+      const range = contents?.range ? contents.range(cfiRange) : book.getRange(cfiRange);
+      Promise.resolve(range).then((resolvedRange) => {
+        if (!resolvedRange) return;
+        const text = resolvedRange.toString();
         if (text && onSelection) {
-          const rect = range.getBoundingClientRect();
-          let x = rect.left;
-          let y = rect.top;
+          const rects = resolvedRange.getClientRects();
+          const rect = rects.length ? rects[rects.length - 1] : resolvedRange.getBoundingClientRect();
+          let x = rect.right;
+          let y = rect.bottom;
           const frame = contents?.window?.frameElement;
           if (frame) {
             const frameRect = frame.getBoundingClientRect();
@@ -131,7 +144,6 @@ export default function BookView({
           }
           onSelection(text, cfiRange, { x, y }, false);
         }
-        contents.window.getSelection().removeAllRanges();
       });
     });
 
