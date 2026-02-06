@@ -172,6 +172,20 @@ export default function Reader() {
     ? 'LibreTranslate'
     : 'MyMemory (free)';
 
+  const fontOptions = [
+    { value: 'publisher', label: 'Publisher default' },
+    { value: "'Merriweather', Georgia, serif", label: 'Merriweather' },
+    { value: "'Lora', Georgia, serif", label: 'Lora' },
+    { value: "'Playfair Display', Georgia, serif", label: 'Playfair Display' },
+    { value: "'Source Serif 4', Georgia, serif", label: 'Source Serif 4' },
+    { value: "'Source Sans 3', Helvetica, Arial, sans-serif", label: 'Source Sans 3' },
+    { value: "'Nunito', Arial, sans-serif", label: 'Nunito' },
+    { value: "'Raleway', Arial, sans-serif", label: 'Raleway' },
+    { value: "'Montserrat', Arial, sans-serif", label: 'Montserrat' },
+    { value: "'Poppins', Arial, sans-serif", label: 'Poppins' },
+    { value: "'Fira Sans', Arial, sans-serif", label: 'Fira Sans' }
+  ];
+
   const formatDuration = (seconds) => {
     if (!Number.isFinite(seconds) || seconds <= 0) return '';
     const minutes = Math.max(1, Math.round(seconds / 60));
@@ -1057,10 +1071,11 @@ export default function Reader() {
                   onChange={(e) => setSettings(s => ({ ...s, fontFamily: e.target.value }))}
                   className="w-full py-2 px-3 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-bold bg-transparent"
                 >
-                  <option value="publisher">Publisher default</option>
-                  <option value="Georgia, Times New Roman, serif">Serif</option>
-                  <option value="Verdana, Trebuchet MS, sans-serif">Sans</option>
-                  <option value="Courier New, Courier, monospace">Mono</option>
+                  {fontOptions.map((font) => (
+                    <option key={font.label} value={font.value}>
+                      {font.label}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -1541,13 +1556,6 @@ export default function Reader() {
             title="Search"
           >
             <SearchIcon size={18} />
-          </button>
-          <button
-            onClick={() => setShowDictionary((s) => !s)}
-            className={`p-2 rounded-full transition ${showDictionary ? 'text-blue-600 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`}
-            title="Dictionary"
-          >
-            <BookOpenText size={18} />
           </button>
           <button
             onClick={() => setShowHighlightsPanel((s) => !s)}
