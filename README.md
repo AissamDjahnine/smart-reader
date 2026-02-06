@@ -41,6 +41,10 @@ Everything runs in the browser. No backend required for core reading.
   - Shows recently started, unfinished books
   - Displays progress/time/last-read snapshot
   - Includes quick `View in-progress` action
+- Reading streak badge:
+  - Compact `Flame` badge in library header
+  - Shows `No streak yet` or `N-day streak`
+  - Uses started-reading activity to avoid false streaks
 - Quick card actions:
   - `Resume` (open reader directly)
   - `Highlights` (open reader with highlights panel)
@@ -101,6 +105,7 @@ Everything runs in the browser. No backend required for core reading.
 - Persist reading progress per book.
 - Track total reading time.
 - Track last-read timestamp.
+- Show daily streak on Home based on consecutive reading days.
 
 ## Translation Providers
 
@@ -165,6 +170,7 @@ E2E tests live in:
   - Library view toggle persistence
   - Continue Reading rail visibility behavior
   - Quick card action navigation (`Highlights` / `Bookmarks`)
+  - Reading streak badge behavior
   - Favorites filter behavior
 
 To run browser tests locally:
@@ -186,3 +192,4 @@ If AI features are re-enabled for production, move model calls behind a secure s
 - `src/components/BookView.jsx` - epub.js rendering, navigation, location events
 - `src/services/db.js` - local data persistence (books, highlights, notes, bookmarks, settings, started-state)
 - `src/services/ai.js` - AI summarization integration (currently not active for product flow)
+- `Improvements.md` - lightweight backlog of requested improvement ideas
