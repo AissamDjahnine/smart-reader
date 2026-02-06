@@ -3,6 +3,8 @@ import { useSearchParams, Link } from 'react-router-dom';
 import { getBook, updateBookProgress, saveHighlight, deleteHighlight, updateReadingStats, saveChapterSummary, savePageSummary, saveBookmark, deleteBookmark } from '../services/db';
 import BookView from '../components/BookView';
 import { summarizeChapter } from '../services/ai'; 
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
 
 import { 
   Moon, Sun, BookOpen, Scroll, Type, 
@@ -31,6 +33,7 @@ export default function Reader() {
   const [showAIModal, setShowAIModal] = useState(false);
   const [showHighlightsPanel, setShowHighlightsPanel] = useState(false);
   const [showBookmarksPanel, setShowBookmarksPanel] = useState(false);
+  const [isExportingHighlights, setIsExportingHighlights] = useState(false);
   const [isPageSummarizing, setIsPageSummarizing] = useState(false);
   const [isChapterSummarizing, setIsChapterSummarizing] = useState(false);
   const [isStoryRecapping, setIsStoryRecapping] = useState(false);
@@ -76,6 +79,8 @@ export default function Reader() {
   const lastActiveRef = useRef(Date.now());
   const isUpdatingStatsRef = useRef(false);
   const [highlights, setHighlights] = useState([]);
+  const [selectedHighlights, setSelectedHighlights] = useState([]);
+  const selectionTouchedRef = useRef(false);
   const [bookmarks, setBookmarks] = useState([]);
   const [selection, setSelection] = useState(null);
   const [selectionMode, setSelectionMode] = useState('actions');
@@ -187,6 +192,319 @@ export default function Reader() {
     { value: "'Poppins', Arial, sans-serif", label: 'Poppins' },
     { value: "'Fira Sans', Arial, sans-serif", label: 'Fira Sans' }
   ];
+
+  const sentenceSplit = (text) => {
+    if (!text) return [];
+    const cleaned = text.replace(/\s+/g, ' ').trim();
+    if (!cleaned) return [];
+    const matches = cleaned.match(/[^.!?]+[.!?]+|[^.!?]+$/g);
+    return matches ? matches.map((s) => s.trim()).filter(Boolean) : [cleaned];
+  };
+
+  const clampText = (text, max = 320) => {
+    if (!text) return '';
+    if (text.length <= max) return text;
+    return `${text.slice(0, max - 1).trim()}…`;
+  };
+
+  const normalizeForMatch = (text) => {
+    if (!text) return { normalized: '', map: [] };
+    const map = [];
+    let normalized = '';
+    let lastWasSpace = false;
+
+    for (let i = 0; i < text.length; i += 1) {
+      let ch = text[i];
+      if (ch === '’' || ch === '‘') ch = "'";
+      if (ch === '“' || ch === '”') ch = '"';
+      if (ch === '…') ch = '.';
+
+      if (/\s/.test(ch)) {
+        if (!lastWasSpace) {
+          normalized += ' ';
+          map.push(i);
+          lastWasSpace = true;
+        }
+        continue;
+      }
+
+      lastWasSpace = false;
+      normalized += ch.toLowerCase();
+      map.push(i);
+    }
+
+    return { normalized, map };
+  };
+
+  const findSentenceBounds = (text, startIndex, endIndex) => {
+    const isBoundary = (idx) => {
+      const ch = text[idx];
+      return ch === '.' || ch === '!' || ch === '?';
+    };
+
+    let prev = -1;
+    for (let i = startIndex - 1; i >= 0; i -= 1) {
+      if (isBoundary(i)) { prev = i; break; }
+    }
+
+    let next = text.length;
+    for (let i = endIndex; i < text.length; i += 1) {
+      if (isBoundary(i)) { next = i + 1; break; }
+    }
+
+    return { prev, next };
+  };
+
+  const segmentSentences = (text) => {
+    if (!text) return [];
+    if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+      try {
+        const segmenter = new Intl.Segmenter('en', { granularity: 'sentence' });
+        const segments = [];
+        for (const segment of segmenter.segment(text)) {
+          const trimmed = segment.segment.trim();
+          if (!trimmed) continue;
+          segments.push({
+            text: trimmed,
+            start: segment.index,
+            end: segment.index + segment.segment.length
+          });
+        }
+        return segments;
+      } catch (err) {
+        console.error(err);
+      }
+    }
+    return [];
+  };
+
+  const extractSentenceContext = (raw, highlightText) => {
+    const target = (highlightText || '').replace(/\s+/g, ' ').trim();
+    if (!raw) return { before: '', current: target, after: '' };
+
+    const rawClean = raw.replace(/\s+/g, ' ').trim();
+    if (!target) return { before: '', current: clampText(rawClean), after: '' };
+
+    const { normalized: rawNorm, map } = normalizeForMatch(rawClean);
+    const { normalized: targetNorm } = normalizeForMatch(target);
+    let matchIndex = rawNorm.indexOf(targetNorm);
+
+    if (matchIndex < 0 && targetNorm.length) {
+      const words = targetNorm.split(' ').filter(Boolean);
+      if (words.length >= 3) {
+        const probe = words.slice(0, 4).join(' ');
+        matchIndex = rawNorm.indexOf(probe);
+      }
+    }
+
+    if (matchIndex < 0) {
+      return { before: '', current: clampText(rawClean), after: '' };
+    }
+
+    const startOriginal = map[matchIndex] ?? 0;
+    const endOriginal = map[Math.min(matchIndex + targetNorm.length - 1, map.length - 1)] ?? startOriginal;
+
+    const segments = segmentSentences(rawClean);
+    if (segments.length) {
+      const idx = segments.findIndex((seg) => seg.start <= startOriginal && seg.end >= endOriginal);
+      const currentSeg = segments[idx >= 0 ? idx : 0];
+      const beforeSeg = idx > 0 ? segments[idx - 1] : null;
+      const afterSeg = idx >= 0 && idx + 1 < segments.length ? segments[idx + 1] : null;
+      return {
+        before: clampText(beforeSeg?.text || ''),
+        current: clampText(currentSeg?.text || target),
+        after: clampText(afterSeg?.text || '')
+      };
+    }
+
+    const { prev, next } = findSentenceBounds(rawClean, startOriginal, endOriginal);
+    const current = rawClean.slice(prev + 1, next).trim();
+
+    const { prev: prevPrev } = findSentenceBounds(rawClean, Math.max(prev, 0), Math.max(prev, 0));
+    const before = prev >= 0 ? rawClean.slice(prevPrev + 1, prev + 1).trim() : '';
+
+    const { next: nextNext } = findSentenceBounds(rawClean, next + 1, next + 1);
+    const after = next < rawClean.length ? rawClean.slice(next, nextNext).trim() : '';
+
+    return {
+      before: clampText(before),
+      current: clampText(current || target),
+      after: clampText(after)
+    };
+  };
+
+  const hexToRgba = (hex, alpha = 0.35) => {
+    if (!hex) return `rgba(250, 204, 21, ${alpha})`;
+    const clean = hex.replace('#', '').trim();
+    if (clean.length === 3) {
+      const r = parseInt(clean[0] + clean[0], 16);
+      const g = parseInt(clean[1] + clean[1], 16);
+      const b = parseInt(clean[2] + clean[2], 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+    if (clean.length === 6) {
+      const r = parseInt(clean.slice(0, 2), 16);
+      const g = parseInt(clean.slice(2, 4), 16);
+      const b = parseInt(clean.slice(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+    return `rgba(250, 204, 21, ${alpha})`;
+  };
+
+  const buildHighlightContext = async (cfiRange, highlightText) => {
+    try {
+      if (!rendition?.book) return { before: '', current: highlightText, after: '' };
+      if (rendition.book?.ready) await rendition.book.ready;
+      const range = await rendition.book.getRange(cfiRange);
+      if (!range) return { before: '', current: highlightText, after: '' };
+      const node = range.commonAncestorContainer?.nodeType === 3
+        ? range.commonAncestorContainer.parentElement
+        : range.commonAncestorContainer;
+      const block = node?.closest?.('p, li, blockquote') || node?.closest?.('div') || node;
+      const raw = block?.textContent || '';
+      return extractSentenceContext(raw, highlightText);
+    } catch (err) {
+      console.error(err);
+      return { before: '', current: highlightText, after: '' };
+    }
+  };
+
+  const exportHighlightsPdf = async () => {
+    const targets = selectedHighlights.length
+      ? highlights.filter((h) => selectedHighlights.includes(h.cfiRange))
+      : highlights;
+    if (!targets.length || isExportingHighlights) return;
+    setIsExportingHighlights(true);
+    try {
+      const exportRoot = document.createElement('div');
+      exportRoot.style.position = 'fixed';
+      exportRoot.style.left = '-10000px';
+      exportRoot.style.top = '0';
+      exportRoot.style.width = '720px';
+      exportRoot.style.padding = '24px';
+      document.body.appendChild(exportRoot);
+
+      const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 36;
+      const gap = 18;
+      const availableWidth = pageWidth - margin * 2;
+      let cursorY = margin;
+
+      for (let i = 0; i < targets.length; i += 1) {
+        const h = targets[i];
+        exportRoot.innerHTML = '';
+
+        const card = document.createElement('div');
+        card.style.background = '#0f172a';
+        card.style.border = '1px solid #1e293b';
+        card.style.borderRadius = '16px';
+        card.style.padding = '24px';
+        card.style.color = '#e2e8f0';
+        card.style.fontFamily = "'Source Serif 4', Georgia, serif";
+        card.style.boxShadow = '0 16px 40px rgba(15, 23, 42, 0.4)';
+
+        const header = document.createElement('div');
+        header.style.display = 'flex';
+        header.style.alignItems = 'center';
+        header.style.justifyContent = 'space-between';
+        header.style.marginBottom = '16px';
+        header.style.fontFamily = "'Fira Sans', Arial, sans-serif";
+        header.style.textTransform = 'uppercase';
+        header.style.letterSpacing = '0.12em';
+        header.style.fontSize = '10px';
+        header.style.color = '#94a3b8';
+        header.textContent = `${book?.title || 'Highlights'} · Highlight ${i + 1} of ${targets.length}`;
+
+        let chapterLabel = '';
+        let locationLabel = '';
+        try {
+          if (rendition?.book?.spine?.get) {
+            const spineItem = rendition.book.spine.get(h.cfiRange);
+            const href = spineItem?.href || '';
+            const match = toc.find(t => t.href && href && href.includes(t.href));
+            if (match?.label) chapterLabel = match.label;
+          }
+          const locations = rendition?.book?.locations;
+          if (locations?.locationFromCfi) {
+            const loc = locations.locationFromCfi(h.cfiRange);
+            if (Number.isFinite(loc)) {
+              const total = typeof locations.total === 'number'
+                ? locations.total
+                : (typeof locations.length === 'function' ? locations.length() : null);
+              locationLabel = total ? `Page ${loc + 1} / ${total}` : `Page ${loc + 1}`;
+            }
+          }
+        } catch (err) {
+          console.error(err);
+        }
+
+        const meta = document.createElement('div');
+        meta.style.marginTop = '6px';
+        meta.style.fontFamily = "'Fira Sans', Arial, sans-serif";
+        meta.style.fontSize = '11px';
+        meta.style.color = '#94a3b8';
+        meta.textContent = [chapterLabel, locationLabel].filter(Boolean).join(' · ');
+
+        const main = document.createElement('div');
+        main.style.margin = '14px 0';
+        main.style.fontSize = '16px';
+        main.style.lineHeight = '1.7';
+        main.style.fontWeight = '600';
+        main.style.whiteSpace = 'normal';
+        main.style.wordBreak = 'break-word';
+        main.style.overflowWrap = 'anywhere';
+
+        const target = (h.text || '').replace(/\s+/g, ' ').trim();
+        if (target) {
+          const spanMatch = document.createElement('span');
+          spanMatch.textContent = target;
+          spanMatch.style.background = hexToRgba(h.color, 0.55);
+          spanMatch.style.color = '#0b1220';
+          spanMatch.style.padding = '2px 6px 5px';
+          spanMatch.style.borderRadius = '6px';
+          spanMatch.style.lineHeight = '1.8';
+          spanMatch.style.boxDecorationBreak = 'clone';
+          spanMatch.style.webkitBoxDecorationBreak = 'clone';
+          spanMatch.style.backgroundClip = 'padding-box';
+          main.append(spanMatch);
+        } else {
+          main.textContent = '';
+        }
+
+        card.append(header, meta, main);
+        exportRoot.appendChild(card);
+
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const canvas = await html2canvas(card, { scale: 2, backgroundColor: null });
+        const imgData = canvas.toDataURL('image/png');
+
+        const ratio = canvas.height / canvas.width;
+        let imgWidth = availableWidth;
+        let imgHeight = imgWidth * ratio;
+        if (imgHeight > pageHeight - margin * 2) {
+          imgHeight = pageHeight - margin * 2;
+          imgWidth = imgHeight / ratio;
+        }
+        if (cursorY + imgHeight > pageHeight - margin) {
+          pdf.addPage();
+          cursorY = margin;
+        }
+        const x = (pageWidth - imgWidth) / 2;
+        pdf.addImage(imgData, 'PNG', x, cursorY, imgWidth, imgHeight);
+        cursorY += imgHeight + gap;
+      }
+
+      const suffix = selectedHighlights.length ? 'selected' : 'highlights';
+      pdf.save(`${book?.title || 'highlights'}-${suffix}.pdf`);
+      document.body.removeChild(exportRoot);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsExportingHighlights(false);
+    }
+  };
 
   const formatDuration = (seconds) => {
     if (!Number.isFinite(seconds) || seconds <= 0) return '';
@@ -558,6 +876,21 @@ export default function Reader() {
     setSelectionMode(isExisting ? 'delete' : 'actions');
   };
 
+  const jumpToCfi = (cfi) => {
+    if (!cfi) return;
+    if (rendition) {
+      try {
+        rendition.display(cfi);
+      } catch (err) {
+        console.error(err);
+        setJumpTarget(cfi);
+      }
+    } else {
+      setJumpTarget(cfi);
+    }
+    setTimeout(() => setJumpTarget(null), 0);
+  };
+
   const clearSelection = () => {
     setSelection(null);
     setSelectionMode('actions');
@@ -616,12 +949,6 @@ export default function Reader() {
     const nextProgress = Math.min(Math.max(Math.floor((loc.percentage || 0) * 100), 0), 100);
     updateBookProgress(bookId, loc.start.cfi, loc.percentage || 0);
     setProgressPct(nextProgress);
-    setBook((prev) => prev ? {
-      ...prev,
-      progress: nextProgress,
-      lastLocation: loc.start.cfi,
-      lastRead: new Date().toISOString()
-    } : prev);
 
     // Automatically summarise each new "screen" in the background.  If the
     // current CFI differs from the last summarised one and no background
@@ -865,6 +1192,21 @@ export default function Reader() {
       setHighlights(book.highlights);
     }
   }, [book]);
+
+  useEffect(() => {
+    if (!highlights.length) {
+      setSelectedHighlights([]);
+      selectionTouchedRef.current = false;
+      return;
+    }
+
+    if (!selectionTouchedRef.current) {
+      setSelectedHighlights(highlights.map((h) => h.cfiRange));
+      return;
+    }
+
+    setSelectedHighlights((prev) => prev.filter((cfi) => highlights.some((h) => h.cfiRange === cfi)));
+  }, [highlights]);
 
   useEffect(() => {
     if (book?.bookmarks) {
@@ -1444,6 +1786,39 @@ export default function Reader() {
 
             <div className="mt-3 text-[11px] text-gray-500">
               {highlights.length} highlight{highlights.length === 1 ? '' : 's'}
+              <button
+                onClick={exportHighlightsPdf}
+                disabled={!selectedHighlights.length || isExportingHighlights}
+                className="ml-3 px-3 py-1 rounded-full bg-blue-600 text-white text-[10px] font-bold disabled:opacity-50"
+              >
+                {isExportingHighlights ? 'Exporting...' : 'Export Selected'}
+              </button>
+            </div>
+
+            <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500">
+              <span>
+                {selectedHighlights.length} selected
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    selectionTouchedRef.current = true;
+                    setSelectedHighlights(highlights.map((h) => h.cfiRange));
+                  }}
+                  className="text-[10px] font-bold text-blue-500"
+                >
+                  Select all
+                </button>
+                <button
+                  onClick={() => {
+                    selectionTouchedRef.current = true;
+                    setSelectedHighlights([]);
+                  }}
+                  className="text-[10px] font-bold text-gray-400 hover:text-gray-600"
+                >
+                  Clear
+                </button>
+              </div>
             </div>
 
             <div className="mt-4 max-h-[55vh] overflow-y-auto pr-1 space-y-3">
@@ -1455,10 +1830,29 @@ export default function Reader() {
                   key={`${h.cfiRange}-${idx}`}
                   className="p-3 rounded-2xl border border-transparent hover:border-gray-200 dark:hover:border-gray-700 transition"
                 >
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-start gap-2">
                     <button
                       onClick={() => {
-                        setJumpTarget(h.cfiRange);
+                        selectionTouchedRef.current = true;
+                        setSelectedHighlights((prev) => prev.includes(h.cfiRange)
+                          ? prev.filter((cfi) => cfi !== h.cfiRange)
+                          : [...prev, h.cfiRange]
+                        );
+                      }}
+                      className={`mt-1 w-4 h-4 rounded border flex items-center justify-center ${
+                        selectedHighlights.includes(h.cfiRange)
+                          ? 'bg-blue-600 border-blue-600'
+                          : 'border-gray-300 dark:border-gray-600'
+                      }`}
+                      title="Select highlight"
+                    >
+                      {selectedHighlights.includes(h.cfiRange) && (
+                        <span className="w-2 h-2 bg-white rounded-sm" />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => {
+                        jumpToCfi(h.cfiRange);
                         setShowHighlightsPanel(false);
                       }}
                       className="text-left flex-1"
@@ -1470,6 +1864,9 @@ export default function Reader() {
                         {h.text}
                       </div>
                     </button>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <div className="h-1.5 rounded-full flex-1" style={{ background: h.color }} />
                     <button
                       onClick={() => removeHighlight(h.cfiRange)}
                       className="text-xs text-red-500 hover:text-red-600"
@@ -1477,7 +1874,6 @@ export default function Reader() {
                       Delete
                     </button>
                   </div>
-                  <div className="mt-2 h-1.5 rounded-full" style={{ background: h.color }} />
                 </div>
               ))}
             </div>
@@ -1533,7 +1929,7 @@ export default function Reader() {
                   <div className="flex items-start justify-between gap-2">
                     <button
                       onClick={() => {
-                        setJumpTarget(b.cfi);
+                        jumpToCfi(b.cfi);
                         setShowBookmarksPanel(false);
                       }}
                       className="text-left flex-1"
