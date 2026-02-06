@@ -30,6 +30,7 @@ Everything runs in the browser. No backend required for core reading.
   - Finished
   - Has highlights
   - Has notes
+  - Trash
 - Sort by:
   - Last read (newest/oldest)
   - Added date (newest/oldest)
@@ -53,13 +54,20 @@ Everything runs in the browser. No backend required for core reading.
   - `Resume` (open reader directly)
   - `Highlights` (open reader with highlights panel)
   - `Bookmarks` (open reader with bookmarks panel)
+- Dedicated Trash icon in the library header:
+  - Opens Trash view directly
+  - Shows trashed-book count badge
 - Book metadata badges on library cards (grid + list):
   - `Language`
   - `Pages` (estimated)
   - `Genre` (when available)
 - Automatic metadata backfill for legacy books already in local storage.
 - Favorite/unfavorite books.
-- Delete books.
+- Trash & restore workflow:
+  - Move books to Trash (soft delete)
+  - Restore books from Trash
+  - Permanently delete from Trash
+  - Auto-purge after 30 days in Trash
 
 ### 2) Read Comfortably (Per Book)
 
@@ -181,6 +189,8 @@ E2E tests live in:
   - Continue Reading rail visibility behavior
   - Quick card action navigation (`Highlights` / `Bookmarks`)
   - Reading streak badge behavior
+  - Trash icon flow (`move -> restore -> delete forever`)
+  - 30-day trash auto-purge behavior
   - Favorites filter behavior
 
 To run browser tests locally:
@@ -197,9 +207,9 @@ If AI features are re-enabled for production, move model calls behind a secure s
 
 ## Key Files
 
-- `src/pages/Home.jsx` - library upload/search/sort/filter/view-toggle/continue-reading/quick-actions
+- `src/pages/Home.jsx` - library upload/search/sort/filter/trash/view-toggle/continue-reading/quick-actions
 - `src/pages/Reader.jsx` - reader UI, contextual tools, highlights/bookmarks panels, export, panel deep-link handling
 - `src/components/BookView.jsx` - epub.js rendering, navigation, location events
-- `src/services/db.js` - local data persistence (books, metadata backfill, highlights, notes, bookmarks, settings, started-state)
+- `src/services/db.js` - local data persistence (books, metadata backfill, trash retention/purge, highlights, notes, bookmarks, settings, started-state)
 - `src/services/ai.js` - AI summarization integration (currently not active for product flow)
 - `Improvements.md` - lightweight backlog of requested improvement ideas
