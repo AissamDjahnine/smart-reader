@@ -327,6 +327,67 @@ export default function Home() {
     return `Deleted ${date.toLocaleDateString()}`;
   };
 
+  const formatSessionDuration = (seconds) => {
+    const safeSeconds = Math.max(0, Number(seconds) || 0);
+    const minutes = Math.max(1, Math.round(safeSeconds / 60));
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    if (hours <= 0) return `${minutes} min`;
+    if (remainingMinutes === 0) return `${hours}h`;
+    return `${hours}h ${remainingMinutes} min`;
+  };
+
+  const getCalendarDayDiff = (dateString) => {
+    const date = new Date(dateString || 0);
+    if (!Number.isFinite(date.getTime())) return 0;
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const dateStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const diffMs = todayStart.getTime() - dateStart.getTime();
+    if (!Number.isFinite(diffMs) || diffMs <= 0) return 0;
+    return Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  };
+
+  const getSessionStats = (book) => {
+    const sessions = Array.isArray(book?.readingSessions) ? book.readingSessions : [];
+    if (!sessions.length) {
+      return { lastSessionSeconds: 0, lastSessionDaysAgo: 0 };
+    }
+
+    const latestSession = sessions[sessions.length - 1];
+    const lastSessionSeconds = Math.max(0, Number(latestSession?.seconds) || 0);
+    const lastSessionDate = latestSession?.endAt || latestSession?.startAt || "";
+    const lastSessionDaysAgo = getCalendarDayDiff(lastSessionDate);
+    return { lastSessionSeconds, lastSessionDaysAgo };
+  };
+
+  const renderSessionTimeline = (book, options = {}) => {
+    const { compact = false } = options;
+    const { lastSessionSeconds, lastSessionDaysAgo } = getSessionStats(book);
+    if (!lastSessionSeconds) return null;
+    const daysSuffix = lastSessionDaysAgo > 0
+      ? ` (${lastSessionDaysAgo} day${lastSessionDaysAgo === 1 ? "" : "s"} ago)`
+      : "";
+    const label = `Last session: ${formatSessionDuration(lastSessionSeconds)}${daysSuffix}`;
+
+    if (compact) {
+      return (
+        <div className="mt-1 text-[10px] font-semibold text-gray-500">
+          {label}
+        </div>
+      );
+    }
+
+    return (
+      <div
+        data-testid="book-session-summary"
+        className="mt-2 text-[10px] font-semibold text-gray-500"
+      >
+        <span data-testid="book-last-session">{label}</span>
+      </div>
+    );
+  };
+
   const renderMetadataBadges = (book) => {
     const language = formatLanguageLabel(book.language);
     const estimatedPages = toPositiveNumber(book.estimatedPages);
@@ -476,6 +537,7 @@ export default function Home() {
                       <div className="mt-2 text-[11px] text-blue-600 font-semibold">
                         {normalizeNumber(book.progress)}% · {formatTime(book.readingTime)}
                       </div>
+                      {renderSessionTimeline(book, { compact: true })}
                       <div className="mt-1 text-[10px] text-gray-400">{formatLastRead(book.lastRead)}</div>
                       <div className="mt-2 w-full bg-gray-100 h-1.5 rounded-full overflow-hidden">
                         <div
@@ -702,6 +764,7 @@ export default function Home() {
                       <Clock size={12} />
                       <span>{formatTime(book.readingTime)}</span>
                     </div>
+                    {renderSessionTimeline(book)}
 
                     <div className="mt-auto pt-4 flex justify-between items-center text-[10px] text-gray-400 font-medium">
                       {book.pubDate ? (
@@ -802,6 +865,7 @@ export default function Home() {
                         <Clock size={12} />
                         <span>{formatTime(book.readingTime)}</span>
                       </div>
+                      {renderSessionTimeline(book)}
 
                       <div className="mt-2 text-[11px] text-gray-400 flex items-center justify-between gap-3">
                         <span>{inTrash ? formatDeletedAt(book.deletedAt) : formatLastRead(book.lastRead)}</span>

@@ -257,3 +257,31 @@ test('trash items older than 30 days are auto-purged on load', async ({ page }) 
   await page.getByTestId('trash-toggle-button').click();
   await expect(page.getByText('Trash is empty.')).toBeVisible();
 });
+
+test('library shows reading session timeline after active reading', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
+  await bookLink.click();
+
+  await expect(page.getByRole('button', { name: /Explain Page/i })).toBeVisible();
+  await page.waitForTimeout(17000);
+
+  await page.goto('/');
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  const sessionSummary = page.getByTestId('book-session-summary').first();
+  await expect(sessionSummary).toContainText(/Last session:/i);
+  await expect(sessionSummary).toContainText(/min|h/i);
+  await expect(sessionSummary).not.toContainText(/7d sessions/i);
+  await expect(sessionSummary).not.toContainText(/\(0 days ago\)/i);
+});
