@@ -8,8 +8,16 @@ import {
   Moon, Sun, BookOpen, Scroll, Type, 
   ChevronLeft, Menu, X,
   Search as SearchIcon, ChevronUp, ChevronDown, Sparkles, Wand2, User,
-  BookOpenText, Highlighter
+  BookOpenText, Highlighter, Languages
 } from 'lucide-react';
+
+const DEFAULT_TRANSLATE_PROVIDER = 'mymemory';
+const TRANSLATE_PROVIDER = (import.meta.env.VITE_TRANSLATE_PROVIDER || DEFAULT_TRANSLATE_PROVIDER).toLowerCase();
+const SUPPORTS_AUTO_DETECT = TRANSLATE_PROVIDER.includes('libre');
+const MYMEMORY_ENDPOINT = 'https://api.mymemory.translated.net/get';
+const LIBRE_ENDPOINT = import.meta.env.VITE_TRANSLATE_ENDPOINT || 'https://libretranslate.com/translate';
+const TRANSLATE_API_KEY = import.meta.env.VITE_TRANSLATE_API_KEY || '';
+const TRANSLATE_EMAIL = import.meta.env.VITE_TRANSLATE_EMAIL || '';
 
 export default function Reader() {
   const [searchParams] = useSearchParams();
@@ -56,6 +64,14 @@ export default function Reader() {
   const [dictionaryEntry, setDictionaryEntry] = useState(null);
   const [dictionaryError, setDictionaryError] = useState("");
   const dictionaryTokenRef = useRef(0);
+  const [showTranslation, setShowTranslation] = useState(false);
+  const [translationQuery, setTranslationQuery] = useState("");
+  const [translationResult, setTranslationResult] = useState("");
+  const [translationError, setTranslationError] = useState("");
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [sourceLanguage, setSourceLanguage] = useState(SUPPORTS_AUTO_DETECT ? 'auto' : 'en');
+  const [targetLanguage, setTargetLanguage] = useState('fr');
+  const translationTokenRef = useRef(0);
   const lastActiveRef = useRef(Date.now());
   const isUpdatingStatsRef = useRef(false);
   const [highlights, setHighlights] = useState([]);
@@ -124,6 +140,25 @@ export default function Reader() {
     { name: 'Teal', value: '#5eead4' },
     { name: 'Orange', value: '#fdba74' }
   ];
+
+  const languageOptions = [
+    { code: 'en', label: 'English' },
+    { code: 'fr', label: 'French' },
+    { code: 'es', label: 'Spanish' },
+    { code: 'ar', label: 'Arabic' },
+    { code: 'de', label: 'German' },
+    { code: 'it', label: 'Italian' },
+    { code: 'pt', label: 'Portuguese' },
+    { code: 'ja', label: 'Japanese' }
+  ];
+
+  const sourceLanguageOptions = SUPPORTS_AUTO_DETECT
+    ? [{ code: 'auto', label: 'Auto detect' }, ...languageOptions]
+    : languageOptions;
+
+  const translateProviderLabel = TRANSLATE_PROVIDER.includes('libre')
+    ? 'LibreTranslate'
+    : 'MyMemory (free)';
 
   const cancelSearch = () => {
     searchTokenRef.current += 1;
@@ -235,6 +270,23 @@ export default function Reader() {
     setShowDictionary(false);
   };
 
+  const cancelTranslation = () => {
+    translationTokenRef.current += 1;
+    setIsTranslating(false);
+  };
+
+  const clearTranslation = () => {
+    cancelTranslation();
+    setTranslationQuery("");
+    setTranslationResult("");
+    setTranslationError("");
+  };
+
+  const closeTranslation = () => {
+    cancelTranslation();
+    setShowTranslation(false);
+  };
+
   const lookupDictionary = async (term) => {
     const clean = sanitizeDictionaryTerm(term);
     if (!clean) {
@@ -266,6 +318,88 @@ export default function Reader() {
     }
   };
 
+  const translateText = async (text, target = targetLanguage, source = sourceLanguage) => {
+    const trimmed = (text || '').trim();
+    if (!trimmed) {
+      clearTranslation();
+      return;
+    }
+
+    const token = translationTokenRef.current + 1;
+    translationTokenRef.current = token;
+    setTranslationError("");
+    setTranslationResult("");
+    setIsTranslating(true);
+
+    try {
+      const provider = TRANSLATE_PROVIDER.includes('libre') ? 'libre' : 'mymemory';
+      let translated = '';
+
+      if (provider === 'mymemory') {
+        if ((source || 'auto') === 'auto') {
+          throw new Error('Pick a source language for MyMemory.');
+        }
+        const langpair = `${source || 'en'}|${target}`;
+        const params = new URLSearchParams({ q: trimmed, langpair });
+        if (TRANSLATE_EMAIL) params.set('de', TRANSLATE_EMAIL);
+        const response = await fetch(`${MYMEMORY_ENDPOINT}?${params.toString()}`);
+        const data = await response.json();
+        if (data?.responseStatus !== 200) {
+          const details = data?.responseDetails || 'Translation failed.';
+          if ((source || 'auto') === 'auto') {
+            throw new Error(`Auto-detect failed. Pick a source language. ${details}`);
+          }
+          throw new Error(details);
+        }
+        translated = data?.responseData?.translatedText || '';
+      } else {
+        const payload = {
+          q: trimmed,
+          source: source || 'auto',
+          target,
+          format: 'text'
+        };
+
+        if (TRANSLATE_API_KEY) {
+          payload.api_key = TRANSLATE_API_KEY;
+        }
+
+        const response = await fetch(LIBRE_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        let data = {};
+        try {
+          data = await response.json();
+        } catch (err) {
+          data = {};
+        }
+
+        if (!response.ok) {
+          const message = data?.error || data?.message || `Translation failed (${response.status})`;
+          throw new Error(message);
+        }
+
+        translated = data?.translatedText || data?.translation || data?.text || '';
+      }
+
+      if (!translated) {
+        throw new Error('Translation returned no text.');
+      }
+
+      if (translationTokenRef.current !== token) return;
+      setTranslationResult(translated);
+    } catch (err) {
+      if (translationTokenRef.current !== token) return;
+      console.error(err);
+      setTranslationError(err?.message || 'Translation failed.');
+    } finally {
+      if (translationTokenRef.current === token) setIsTranslating(false);
+    }
+  };
+
   const openDictionaryForText = (text) => {
     const trimmed = (text || '').trim();
     if (!trimmed) return;
@@ -280,6 +414,16 @@ export default function Reader() {
       setDictionaryEntry(null);
       setDictionaryError('Select a single word to look it up.');
     }
+  };
+
+  const openTranslationForText = (text) => {
+    const trimmed = (text || '').trim();
+    if (!trimmed) return;
+    setShowTranslation(true);
+    setTranslationQuery(trimmed);
+    setTranslationResult("");
+    setTranslationError("");
+    translateText(trimmed, targetLanguage, sourceLanguage);
   };
 
   const handleSelection = (text, cfiRange, pos, isExisting = false) => {
@@ -972,6 +1116,103 @@ export default function Reader() {
         </div>
       )}
 
+      {showTranslation && (
+        <div className="fixed inset-0 z-[55]" data-testid="translation-panel">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={closeTranslation}
+          />
+          <div
+            className={`absolute right-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
+              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <Languages size={18} className="text-gray-400" />
+              <textarea
+                rows={2}
+                placeholder="Translate this text..."
+                value={translationQuery}
+                onChange={(e) => setTranslationQuery(e.target.value)}
+                className="flex-1 bg-transparent outline-none text-sm resize-none"
+              />
+              <button
+                onClick={closeTranslation}
+                className="p-1 text-gray-400 hover:text-red-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <select
+                value={sourceLanguage}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setSourceLanguage(next);
+                  if (translationQuery.trim()) translateText(translationQuery, targetLanguage, next);
+                }}
+                className="py-2 px-3 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-bold bg-transparent"
+              >
+                {sourceLanguageOptions.map((lang) => (
+                  <option key={lang.code} value={lang.code}>
+                    {lang.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={targetLanguage}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setTargetLanguage(next);
+                  if (translationQuery.trim()) translateText(translationQuery, next, sourceLanguage);
+                }}
+                className="py-2 px-3 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-bold bg-transparent"
+              >
+                {languageOptions.map((lang) => (
+                  <option key={lang.code} value={lang.code}>
+                    {lang.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <button
+                onClick={() => translateText(translationQuery, targetLanguage, sourceLanguage)}
+                className="py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700"
+              >
+                Translate
+              </button>
+              <button
+                onClick={clearTranslation}
+                className="py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-bold"
+              >
+                Clear
+              </button>
+            </div>
+
+            <div className="mt-2 text-[10px] uppercase tracking-widest text-gray-400">
+              Provider: {translateProviderLabel}{SUPPORTS_AUTO_DETECT ? '' : ' · select source language'}
+            </div>
+
+            <div className="mt-4 max-h-[45vh] overflow-y-auto pr-1 space-y-3">
+              {isTranslating && (
+                <div className="text-xs text-gray-500">Translating...</div>
+              )}
+              {!isTranslating && translationError && (
+                <div className="text-xs text-red-500">{translationError}</div>
+              )}
+              {!isTranslating && translationResult && (
+                <div className="p-3 rounded-2xl bg-gray-50 dark:bg-gray-900/40 text-sm text-gray-700 dark:text-gray-200 whitespace-pre-wrap">
+                  {translationResult}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {showHighlightsPanel && (
         <div className="fixed inset-0 z-[55]">
           <div
@@ -1045,7 +1286,7 @@ export default function Reader() {
         const rawY = selection.pos.y;
         const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : rawX;
         const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : rawY;
-        const panelWidth = 260;
+        const panelWidth = 320;
         const panelHeight = 48;
         const clampedX = Math.min(Math.max(rawX, padding), Math.max(padding, viewportWidth - panelWidth - padding));
         const clampedY = Math.min(Math.max(rawY, padding), Math.max(padding, viewportHeight - panelHeight - padding));
@@ -1055,6 +1296,7 @@ export default function Reader() {
         <div
           className="fixed z-[70] pointer-events-auto"
           style={{ left: clampedX, top: clampedY, transform }}
+          data-testid="selection-toolbar"
         >
           <div className={`flex items-center gap-2 px-3 py-2 rounded-2xl shadow-xl border ${
             settings.theme === 'dark' ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-800'
@@ -1073,6 +1315,14 @@ export default function Reader() {
                   className="text-xs font-bold text-blue-600 dark:text-blue-400"
                 >
                   Dictionary
+                </button>
+                <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
+                <button
+                  onClick={() => openTranslationForText(selection.text)}
+                  className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1"
+                >
+                  <Languages size={12} />
+                  Translate
                 </button>
               </>
             ) : selectionMode === 'colors' ? (
@@ -1108,6 +1358,14 @@ export default function Reader() {
                 >
                   <Highlighter size={12} />
                   Highlight
+                </button>
+                <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
+                <button
+                  onClick={() => openTranslationForText(selection.text)}
+                  className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1"
+                >
+                  <Languages size={12} />
+                  Translate
                 </button>
               </>
             )}

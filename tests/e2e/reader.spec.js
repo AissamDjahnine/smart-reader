@@ -17,6 +17,14 @@ async function openFixtureBook(page) {
   await expect(page.getByRole('button', { name: /Explain Page/i })).toBeVisible();
 }
 
+async function selectTextInBook(page) {
+  const frame = page.frameLocator('iframe');
+  const textBlock = frame.locator('p, span, div').first();
+  await textBlock.waitFor();
+  await textBlock.dblclick();
+  await expect(page.getByTestId('selection-toolbar')).toBeVisible();
+}
+
 test('search clear cancels results', async ({ page }) => {
   await openFixtureBook(page);
 
@@ -68,4 +76,50 @@ test('dictionary ignores stale responses', async ({ page }) => {
 
   await expect(page.getByText('Definition for beta')).toBeVisible();
   await expect(page.getByText('Definition for alpha')).toHaveCount(0);
+});
+
+test('translation uses mymemory and shows result', async ({ page }) => {
+  await page.route('https://api.mymemory.translated.net/get**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        responseStatus: 200,
+        responseData: { translatedText: 'Translated text' }
+      })
+    });
+  });
+
+  await openFixtureBook(page);
+  await selectTextInBook(page);
+
+  const toolbar = page.getByTestId('selection-toolbar');
+  await toolbar.getByRole('button', { name: 'Translate' }).click();
+
+  await expect(page.getByTestId('translation-panel')).toBeVisible();
+  await expect(page.getByText('Translated text')).toBeVisible();
+});
+
+test('translation requires source language with mymemory', async ({ page }) => {
+  await page.route('https://api.mymemory.translated.net/get**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        responseStatus: 200,
+        responseData: { translatedText: 'Bonjour' }
+      })
+    });
+  });
+
+  await openFixtureBook(page);
+  await selectTextInBook(page);
+
+  const toolbar = page.getByTestId('selection-toolbar');
+  await toolbar.getByRole('button', { name: 'Translate' }).click();
+
+  const panel = page.getByTestId('translation-panel');
+  await expect(panel).toBeVisible();
+  await expect(panel.getByRole('combobox').first()).toBeVisible();
+  await expect(panel.getByRole('option', { name: /Auto detect/i })).toHaveCount(0);
 });
