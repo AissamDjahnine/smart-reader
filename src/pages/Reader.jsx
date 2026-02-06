@@ -60,6 +60,8 @@ export default function Reader() {
   const isUpdatingStatsRef = useRef(false);
   const [highlights, setHighlights] = useState([]);
   const [selection, setSelection] = useState(null);
+  const [selectionMode, setSelectionMode] = useState('actions');
+  const tempSelectionRef = useRef(null);
 
   const aiUnavailableMessage = "AI features are not available now.";
 
@@ -279,16 +281,40 @@ export default function Reader() {
   const handleSelection = (text, cfiRange, pos, isExisting = false) => {
     const trimmed = (text || '').trim();
     if (!trimmed) return;
+    if (!isExisting && rendition) {
+      try {
+        if (tempSelectionRef.current) {
+          rendition.annotations.remove('temp-selection');
+          tempSelectionRef.current = null;
+        }
+        rendition.annotations.add('highlight', cfiRange, {}, null, 'temp-selection', {
+          fill: '#fde68a', 'fill-opacity': '0.6', 'mix-blend-mode': 'multiply'
+        });
+        tempSelectionRef.current = cfiRange;
+      } catch (err) {
+        console.error(err);
+      }
+    }
     setSelection({
       text: trimmed,
       cfiRange,
       pos,
       isExisting
     });
+    setSelectionMode(isExisting ? 'delete' : 'actions');
   };
 
   const clearSelection = () => {
     setSelection(null);
+    setSelectionMode('actions');
+    if (rendition && tempSelectionRef.current) {
+      try {
+        rendition.annotations.remove('temp-selection');
+        tempSelectionRef.current = null;
+      } catch (err) {
+        console.error(err);
+      }
+    }
   };
 
   const addHighlight = async (color) => {
@@ -1018,13 +1044,22 @@ export default function Reader() {
             settings.theme === 'dark' ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-800'
           }`}>
             {selection.isExisting ? (
-              <button
-                onClick={() => removeHighlight(selection.cfiRange)}
-                className="text-xs font-bold text-red-500 hover:text-red-600"
-              >
-                Delete highlight
-              </button>
-            ) : (
+              <>
+                <button
+                  onClick={() => removeHighlight(selection.cfiRange)}
+                  className="text-xs font-bold text-red-500 hover:text-red-600"
+                >
+                  Delete highlight
+                </button>
+                <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
+                <button
+                  onClick={() => openDictionaryForText(selection.text)}
+                  className="text-xs font-bold text-blue-600 dark:text-blue-400"
+                >
+                  Dictionary
+                </button>
+              </>
+            ) : selectionMode === 'colors' ? (
               <>
                 {highlightColors.map((c) => (
                   <button
@@ -1035,15 +1070,31 @@ export default function Reader() {
                     style={{ background: c.value }}
                   />
                 ))}
+                <button
+                  onClick={() => setSelectionMode('actions')}
+                  className="ml-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                >
+                  Back
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => openDictionaryForText(selection.text)}
+                  className="text-xs font-bold text-blue-600 dark:text-blue-400"
+                >
+                  Dictionary
+                </button>
+                <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
+                <button
+                  onClick={() => setSelectionMode('colors')}
+                  className="text-xs font-bold text-gray-700 dark:text-gray-200 flex items-center gap-1"
+                >
+                  <Highlighter size={12} />
+                  Highlight
+                </button>
               </>
             )}
-            <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
-            <button
-              onClick={() => openDictionaryForText(selection.text)}
-              className="text-xs font-bold text-blue-600 dark:text-blue-400"
-            >
-              Define
-            </button>
             <button
               onClick={clearSelection}
               className="text-xs text-gray-400 hover:text-red-500"
