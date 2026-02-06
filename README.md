@@ -1,63 +1,155 @@
 # Smart Reader
 
-Smart Reader is a local-first EPUB library and reading experience with AI-powered page explanations and story recaps. It runs entirely in the browser, storing your books and reading progress locally.
+Smart Reader is a local-first EPUB app focused on real reading workflows:
+library management, strong in-reader tools, highlights/notes, bookmarks, and export.
 
-## What It Does
+Everything runs in the browser. No backend required for core reading.
 
-- **EPUB Library**
-  - Upload `.epub` files and keep them in a personal library.
-  - Store covers, title, author, publisher, and publication date metadata.
-  - Search by title/author and filter by favorites or finished books.
-  - Track reading progress, total reading time, and last read date.
-  - Favorite and delete books.
+## Current Product Status
 
-- **Reader Experience**
-  - Open books from the library and continue from the last location.
-  - Paginated or scrolling reading modes.
-  - Light/dark themes and adjustable font size.
-  - Progress bar and page navigation controls.
+- Core reading features are active and stable.
+- AI controls are visible in the reader, but currently marked in-app as:
+  - `AI FEATURES: NOT AVAILABLE NOW`
 
-- **AI-Assisted Understanding**
-  - **Background story memory:** Each page change is summarized to build a running story memory.
-  - **Explain Page:** Explains the current page using the story memory for context.
-  - **Story So Far:** Generates a recap using the story memory (and the current page as the latest scene).
-  - **Chapter summaries:** When you finish a chapter, a summary is saved for long-term recall.
+## What You Can Do Today
+
+### 1) Build a Personal EPUB Library
+
+- Upload `.epub` books.
+- Auto-extract metadata (title, author, publisher, publication date).
+- Store and render covers.
+- Search by title/author.
+- Filter by:
+  - All
+  - Favorites
+  - Finished
+- Favorite/unfavorite books.
+- Delete books.
+
+### 2) Read Comfortably (Per Book)
+
+- Resume from last read location automatically.
+- Use either reading flow:
+  - Paginated
+  - Infinite scroll
+- Switch light/dark theme.
+- Change font size.
+- Change font family (multiple popular fonts available).
+- Per-book reader settings persistence:
+  - Theme
+  - Flow mode
+  - Font size
+  - Font family
+
+### 3) Navigate Faster
+
+- Top progress indicator with estimated time left.
+- Keyboard navigation:
+  - `ArrowLeft/ArrowRight` in paginated mode
+  - `ArrowUp/ArrowDown` in scroll mode
+- Click chapter entries from TOC.
+- Save bookmarks from current position and jump back instantly.
+
+### 4) Work on Text While Reading
+
+- Select text to open contextual actions:
+  - Dictionary
+  - Highlight
+  - Translate
+- Dictionary and translation popovers open near selection (contextual placement).
+- Translation supports source/target language selection.
+
+### 5) Highlight, Annotate, and Export
+
+- Create highlights with multiple colors.
+- Open highlights panel to:
+  - Browse all highlights
+  - Jump directly to a highlight in-book
+  - Delete highlights
+  - Add/edit notes on highlights
+  - Select all or specific highlights
+- Export selected highlights to PDF:
+  - Clean card layout
+  - Compact spacing
+  - Includes chapter/page context
+  - Includes notes in exported output
+
+### 6) Track Reading Over Time
+
+- Persist reading progress per book.
+- Track total reading time.
+- Track last-read timestamp.
+
+## Translation Providers
+
+The reader supports free translation options out of the box.
+
+- Default provider: `MyMemory`
+- Optional provider: `LibreTranslate`
+
+Environment variables:
+
+```bash
+VITE_TRANSLATE_PROVIDER=mymemory
+VITE_TRANSLATE_ENDPOINT=https://libretranslate.com/translate
+VITE_TRANSLATE_API_KEY=
+VITE_TRANSLATE_EMAIL=
+```
+
+Notes:
+
+- `VITE_TRANSLATE_EMAIL` increases MyMemory free daily quota if provided.
+- If provider is MyMemory, source language selection is required (auto-detect is not available there).
 
 ## Tech Stack
 
 - React + Vite
 - Tailwind CSS
-- `epubjs` for EPUB rendering
-- `localforage` for local storage
-- Google Gemini API for AI summaries
+- epub.js
+- localforage (IndexedDB abstraction)
+- html2canvas + jsPDF (highlight export)
+- Playwright (E2E tests)
 
-## Running Locally
+## Run Locally
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open the URL shown by Vite (usually `http://localhost:5173`).
-
-## Notes
-
-- This app is **local-first**: all books and progress are stored in the browser’s IndexedDB.
-- The current AI integration uses a **client-side API key** in `/Users/aissam/my-smart-reader/src/services/ai.js`. For production use, move this to a server-side proxy to avoid exposing the key.
+Open the Vite URL (usually `http://localhost:5173`).
 
 ## Scripts
 
 ```bash
-npm run dev       # start dev server
-npm run build     # production build
-npm run preview   # preview production build
-npm run lint      # lint code
+npm run dev        # start dev server
+npm run build      # production build
+npm run preview    # preview production build
+npm run lint       # run ESLint
+npm run test:e2e   # run Playwright tests
 ```
 
-## Repo Structure (High Level)
+## Testing
 
-- `/Users/aissam/my-smart-reader/src/pages/Home.jsx` — Library UI and upload/search/filter.
-- `/Users/aissam/my-smart-reader/src/pages/Reader.jsx` — Reader UI and AI features.
-- `/Users/aissam/my-smart-reader/src/components/BookView.jsx` — EPUB rendering and navigation.
-- `/Users/aissam/my-smart-reader/src/services/db.js` — Local data storage and summaries.
-- `/Users/aissam/my-smart-reader/src/services/ai.js` — AI summarization logic.
+E2E tests live in `tests/e2e/reader.spec.js` and cover key reader flows
+including search cancellation, dictionary race handling, and translation behavior.
+
+To run browser tests locally:
+
+```bash
+npx playwright install chromium
+npm run test:e2e
+```
+
+## Important Security Note
+
+`src/services/ai.js` currently contains a client-side Gemini API key pattern.
+If AI features are re-enabled for production, move model calls behind a secure server-side proxy.
+
+## Key Files
+
+- `src/pages/Home.jsx` - library upload/search/filter/favorites view
+- `src/pages/Reader.jsx` - reader UI, contextual tools, highlights, bookmarks, export
+- `src/components/BookView.jsx` - epub.js rendering, navigation, location events
+- `src/services/db.js` - local data persistence (books, highlights, notes, bookmarks, settings)
+- `src/services/ai.js` - AI summarization integration (currently not active for product flow)
