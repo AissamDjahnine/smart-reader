@@ -43,26 +43,6 @@ export default function BookView({
   }, [tocJump]);
 
   useEffect(() => {
-    if (!renditionRef.current) return;
-    renditionRef.current.annotations.remove('search-hl');
-    searchResults.forEach(result => {
-      renditionRef.current.annotations.add('highlight', result.cfi, {}, null, 'search-hl', {
-        fill: '#facc15', 'fill-opacity': '0.4', 'mix-blend-mode': 'multiply'
-      });
-    });
-  }, [searchResults]);
-
-  useEffect(() => {
-    if (!renditionRef.current) return;
-    renditionRef.current.annotations.remove('hl');
-    highlights.forEach(h => {
-      renditionRef.current.annotations.add('highlight', h.cfiRange, {}, (e) => {
-        if (onSelection) onSelection(h.text, h.cfiRange, { x: e.clientX, y: e.clientY }, true);
-      }, 'hl', { fill: h.color, 'fill-opacity': '0.3', 'mix-blend-mode': 'multiply' });
-    });
-  }, [highlights]);
-
-  useEffect(() => {
     if (!bookData) return;
     const book = ePub(bookData);
     bookRef.current = book;
@@ -84,12 +64,6 @@ export default function BookView({
     applyTheme(rendition, settings.theme);
 
     rendition.display(initialLocation || undefined).then(() => {
-      highlights.forEach(h => {
-        rendition.annotations.add('highlight', h.cfiRange, {}, (e) => {
-          if (onSelection) onSelection(h.text, h.cfiRange, { x: e.clientX, y: e.clientY }, true);
-        }, 'hl', { fill: h.color, 'fill-opacity': '0.3', 'mix-blend-mode': 'multiply' });
-      });
-
       book.locations.generate(1024).then(() => {
         const updateProgress = async () => {
             const loc = rendition.currentLocation();
@@ -166,6 +140,34 @@ export default function BookView({
       console.error('Font override failed', err);
     }
   }, [settings.fontFamily]);
+
+  useEffect(() => {
+    if (!renditionRef.current) return;
+    const timer = setTimeout(() => {
+      if (!renditionRef.current) return;
+      renditionRef.current.annotations.remove('search-hl');
+      searchResults.forEach((result) => {
+        renditionRef.current.annotations.add('highlight', result.cfi, {}, null, 'search-hl', {
+          fill: '#facc15', 'fill-opacity': '0.4', 'mix-blend-mode': 'multiply'
+        });
+      });
+    }, 40);
+    return () => clearTimeout(timer);
+  }, [searchResults, settings.fontSize, settings.fontFamily, settings.flow, settings.theme]);
+
+  useEffect(() => {
+    if (!renditionRef.current) return;
+    const timer = setTimeout(() => {
+      if (!renditionRef.current) return;
+      renditionRef.current.annotations.remove('hl');
+      highlights.forEach((h) => {
+        renditionRef.current.annotations.add('highlight', h.cfiRange, {}, (e) => {
+          if (onSelection) onSelection(h.text, h.cfiRange, { x: e.clientX, y: e.clientY }, true);
+        }, 'hl', { fill: h.color, 'fill-opacity': '0.3', 'mix-blend-mode': 'multiply' });
+      });
+    }, 40);
+    return () => clearTimeout(timer);
+  }, [highlights, onSelection, settings.fontSize, settings.fontFamily, settings.flow, settings.theme]);
 
 
   const prevPage = () => renditionRef.current?.prev();

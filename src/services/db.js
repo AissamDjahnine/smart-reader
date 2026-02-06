@@ -38,6 +38,12 @@ export const addBook = async (file) => {
     progress: 0,
     highlights: [],
     bookmarks: [],
+    readerSettings: {
+      fontSize: 100,
+      theme: 'light',
+      flow: 'paginated',
+      fontFamily: 'publisher'
+    },
     isFavorite: false,
     readingTime: 0,
     lastRead: new Date().toISOString(),
@@ -74,6 +80,20 @@ export const updateBookProgress = async (id, location, percentage) => {
     book.lastRead = new Date().toISOString();
     await bookStore.setItem(id, book);
   }
+};
+
+export const updateBookReaderSettings = async (id, readerSettings) => {
+  const book = await bookStore.getItem(id);
+  if (book) {
+    const current = book.readerSettings || {};
+    book.readerSettings = {
+      ...current,
+      ...readerSettings
+    };
+    await bookStore.setItem(id, book);
+    return book.readerSettings;
+  }
+  return null;
 };
 
 export const updateReadingStats = async (id, secondsToAdd) => {

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { getBook, updateBookProgress, saveHighlight, deleteHighlight, updateReadingStats, saveChapterSummary, savePageSummary, saveBookmark, deleteBookmark, updateHighlightNote } from '../services/db';
+import { getBook, updateBookProgress, saveHighlight, deleteHighlight, updateReadingStats, saveChapterSummary, savePageSummary, saveBookmark, deleteBookmark, updateHighlightNote, updateBookReaderSettings } from '../services/db';
 import BookView from '../components/BookView';
 import { summarizeChapter } from '../services/ai'; 
 import html2canvas from 'html2canvas';
@@ -20,6 +20,12 @@ const MYMEMORY_ENDPOINT = 'https://api.mymemory.translated.net/get';
 const LIBRE_ENDPOINT = import.meta.env.VITE_TRANSLATE_ENDPOINT || 'https://libretranslate.com/translate';
 const TRANSLATE_API_KEY = import.meta.env.VITE_TRANSLATE_API_KEY || '';
 const TRANSLATE_EMAIL = import.meta.env.VITE_TRANSLATE_EMAIL || '';
+const DEFAULT_READER_SETTINGS = {
+  fontSize: 100,
+  theme: 'light',
+  flow: 'paginated',
+  fontFamily: 'publisher'
+};
 
 export default function Reader() {
   const [searchParams] = useSearchParams();
@@ -88,17 +94,19 @@ export default function Reader() {
   const [selectionMode, setSelectionMode] = useState('actions');
   const tempSelectionRef = useRef(null);
   const [progressPct, setProgressPct] = useState(0);
-  const [settings, setSettings] = useState(() => {
-    const defaults = { fontSize: 100, theme: 'light', flow: 'paginated', fontFamily: 'publisher' };
+  const [legacyReaderSettings] = useState(() => {
     const saved = localStorage.getItem('reader-settings');
-    if (!saved) return defaults;
+    if (!saved) return null;
     try {
-      return { ...defaults, ...JSON.parse(saved) };
+      const parsed = JSON.parse(saved);
+      return parsed && typeof parsed === 'object' ? parsed : null;
     } catch (err) {
       console.error(err);
-      return defaults;
+      return null;
     }
   });
+  const settingsHydratedRef = useRef(false);
+  const [settings, setSettings] = useState(DEFAULT_READER_SETTINGS);
 
   const aiUnavailableMessage = "AI features are not available now.";
 
@@ -919,6 +927,24 @@ export default function Reader() {
     }
   };
 
+  useEffect(() => {
+    if (!rendition || !selection || selection.isExisting || !selection.cfiRange) return;
+    const timer = setTimeout(() => {
+      try {
+        if (tempSelectionRef.current) {
+          rendition.annotations.remove('temp-selection');
+        }
+        rendition.annotations.add('highlight', selection.cfiRange, {}, null, 'temp-selection', {
+          fill: '#fde68a', 'fill-opacity': '0.6', 'mix-blend-mode': 'multiply'
+        });
+        tempSelectionRef.current = selection.cfiRange;
+      } catch (err) {
+        console.error(err);
+      }
+    }, 40);
+    return () => clearTimeout(timer);
+  }, [rendition, selection, settings.fontSize, settings.fontFamily, settings.flow]);
+
   const addHighlight = async (color) => {
     const currentBook = bookRef.current;
     if (!currentBook || !selection?.cfiRange) return;
@@ -1229,6 +1255,21 @@ export default function Reader() {
   }, [bookId]);
 
   useEffect(() => {
+    if (!book?.id) return;
+    const hasBookSettings = !!(book.readerSettings && Object.keys(book.readerSettings).length);
+    const merged = hasBookSettings
+      ? { ...DEFAULT_READER_SETTINGS, ...book.readerSettings }
+      : { ...DEFAULT_READER_SETTINGS, ...(legacyReaderSettings || {}) };
+
+    setSettings((prev) => {
+      const prevJson = JSON.stringify(prev);
+      const nextJson = JSON.stringify(merged);
+      return prevJson === nextJson ? prev : merged;
+    });
+    settingsHydratedRef.current = true;
+  }, [book?.id, legacyReaderSettings]);
+
+  useEffect(() => {
     if (book?.highlights) {
       setHighlights(book.highlights);
     }
@@ -1287,12 +1328,14 @@ export default function Reader() {
   }, [bookId]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('reader-settings', JSON.stringify(settings));
-    } catch (err) {
-      console.error(err);
-    }
-  }, [settings]);
+    if (!bookId || !settingsHydratedRef.current) return;
+    const timeoutId = setTimeout(() => {
+      updateBookReaderSettings(bookId, settings).catch((err) => {
+        console.error(err);
+      });
+    }, 250);
+    return () => clearTimeout(timeoutId);
+  }, [bookId, settings]);
 
   useEffect(() => {
     const handleKey = (event) => {
