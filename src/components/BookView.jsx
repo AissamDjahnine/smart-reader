@@ -1,6 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import ePub from 'epubjs';
 
+const EPUB_THEME_KEY = 'reader-theme';
+
 export default function BookView({ 
   bookData, 
   settings, 
@@ -78,8 +80,8 @@ export default function BookView({
           }
         };
     
-    rendition.themes.register(theme, bodyStyles);
-    rendition.themes.select(theme);
+    rendition.themes.register(EPUB_THEME_KEY, bodyStyles);
+    rendition.themes.select(EPUB_THEME_KEY);
     rendition.themes.fontSize(`${settings.fontSize}%`);
   };
 
@@ -195,15 +197,17 @@ export default function BookView({
     const timer = setTimeout(() => {
       if (!renditionRef.current) return;
       const rendition = renditionRef.current;
+      const annotationType = 'underline';
       const nextSet = new Set();
       searchResults.forEach((result) => {
         if (!result?.cfi) return;
         nextSet.add(result.cfi);
         if (!appliedSearchRef.current.has(result.cfi)) {
           try {
-            rendition.annotations.add('highlight', result.cfi, {}, null, 'search-hl', {
-              fill: '#facc15',
-              'fill-opacity': '0.4',
+            rendition.annotations.add(annotationType, result.cfi, {}, null, 'search-hl', {
+              stroke: '#facc15',
+              'stroke-opacity': '0.95',
+              'stroke-width': '2.5',
               'mix-blend-mode': 'normal'
             });
           } catch (err) {
@@ -211,7 +215,15 @@ export default function BookView({
           }
         }
       });
-      appliedSearchRef.current = new Set([...appliedSearchRef.current, ...nextSet]);
+      appliedSearchRef.current.forEach((cfi) => {
+        if (nextSet.has(cfi)) return;
+        try {
+          rendition.annotations.remove(cfi, annotationType);
+        } catch (err) {
+          console.error('Search highlight cleanup failed', err);
+        }
+      });
+      appliedSearchRef.current = nextSet;
     }, 40);
     return () => clearTimeout(timer);
   }, [bookData, searchResults, settings.fontSize, settings.fontFamily, settings.flow, settings.theme]);

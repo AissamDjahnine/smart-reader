@@ -42,6 +42,24 @@ test('search clear cancels results', async ({ page }) => {
   await expect(page.getByText('Result 1')).toHaveCount(0);
 });
 
+test('search clear removes in-book search markers', async ({ page }) => {
+  await openFixtureBook(page);
+
+  await page.getByTitle('Search').click();
+  const searchInput = page.getByPlaceholder('Search inside this book...');
+  await searchInput.fill('wizard');
+  await searchInput.press('Enter');
+  await expect(page.getByText(/results?/)).toBeVisible();
+
+  const frame = page.frameLocator('iframe');
+  await expect
+    .poll(async () => frame.locator('.search-hl').count(), { timeout: 20000 })
+    .toBeGreaterThanOrEqual(0);
+
+  await page.getByRole('button', { name: 'Clear' }).click();
+  await expect.poll(async () => frame.locator('.search-hl').count(), { timeout: 10000 }).toBe(0);
+});
+
 test('dictionary ignores stale responses', async ({ page }) => {
   await page.route('https://api.dictionaryapi.dev/api/v2/entries/en/**', async (route) => {
     const url = route.request().url();
@@ -143,4 +161,22 @@ test('reader iframe does not remount during background stats updates', async ({ 
   await page.mouse.move(220, 220);
   const currentFrameId = await page.locator('iframe').first().evaluate((el) => el.dataset.instanceId || '');
   expect(currentFrameId).toBe(initialFrameId);
+});
+
+test('theme toggle works repeatedly in reader', async ({ page }) => {
+  await openFixtureBook(page);
+
+  const iframe = page.frameLocator('iframe');
+  const getBodyBg = async () =>
+    iframe.locator('body').first().evaluate((el) => getComputedStyle(el).backgroundColor);
+
+  const initialBg = await getBodyBg();
+
+  await page.getByTestId('theme-toggle').click();
+  const toggledBg = await getBodyBg();
+  expect(toggledBg).not.toBe(initialBg);
+
+  await page.getByTestId('theme-toggle').click();
+  const revertedBg = await getBodyBg();
+  expect(revertedBg).toBe(initialBg);
 });

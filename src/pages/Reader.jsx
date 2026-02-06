@@ -2393,7 +2393,13 @@ export default function Reader() {
             <Bookmark size={18} />
           </button>
           <div className="w-px h-6 bg-gray-200 dark:bg-gray-700 mx-1" />
-          <button onClick={() => setSettings(s => ({...s, theme: s.theme === 'light' ? 'dark' : 'light'}))} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">{settings.theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}</button>
+          <button
+            onClick={() => setSettings(s => ({...s, theme: s.theme === 'light' ? 'dark' : 'light'}))}
+            className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700"
+            data-testid="theme-toggle"
+          >
+            {settings.theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
+          </button>
           <button onClick={() => setSettings(s => ({...s, flow: s.flow === 'paginated' ? 'scrolled' : 'paginated'}))} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">{settings.flow === 'paginated' ? <Scroll size={20} /> : <BookOpen size={20} />}</button>
           <button onClick={() => setShowFontMenu(!showFontMenu)} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700"><Type size={20} /></button>
         </div>
