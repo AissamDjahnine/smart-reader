@@ -41,6 +41,10 @@ Everything runs in the browser. No backend required for core reading.
   - Shows recently started, unfinished books
   - Displays progress/time/last-read snapshot
   - Includes quick `View in-progress` action
+- Quick card actions:
+  - `Resume` (open reader directly)
+  - `Highlights` (open reader with highlights panel)
+  - `Bookmarks` (open reader with bookmarks panel)
 - Favorite/unfavorite books.
 - Delete books.
 
@@ -160,6 +164,7 @@ E2E tests live in:
   - Library sort/filter behavior
   - Library view toggle persistence
   - Continue Reading rail visibility behavior
+  - Quick card action navigation (`Highlights` / `Bookmarks`)
   - Favorites filter behavior
 
 To run browser tests locally:
@@ -176,8 +181,8 @@ If AI features are re-enabled for production, move model calls behind a secure s
 
 ## Key Files
 
-- `src/pages/Home.jsx` - library upload/search/sort/filter/view-toggle/continue-reading
-- `src/pages/Reader.jsx` - reader UI, contextual tools, highlights, bookmarks, export
+- `src/pages/Home.jsx` - library upload/search/sort/filter/view-toggle/continue-reading/quick-actions
+- `src/pages/Reader.jsx` - reader UI, contextual tools, highlights/bookmarks panels, export, panel deep-link handling
 - `src/components/BookView.jsx` - epub.js rendering, navigation, location events
 - `src/services/db.js` - local data persistence (books, highlights, notes, bookmarks, settings, started-state)
 - `src/services/ai.js` - AI summarization integration (currently not active for product flow)
