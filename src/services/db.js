@@ -59,6 +59,7 @@ export const addBook = async (file) => {
     cover: finalCover,
     data: file,
     progress: 0,
+    hasStarted: false,
     highlights: [],
     bookmarks: [],
     readerSettings: {
@@ -119,6 +120,16 @@ export const updateBookReaderSettings = async (id, readerSettings) => {
 export const updateReadingStats = async (id, secondsToAdd) => {
   return runBookMutation(id, (book) => {
     book.readingTime = (book.readingTime || 0) + secondsToAdd;
+    book.lastRead = new Date().toISOString();
+    return book;
+  });
+};
+
+export const markBookStarted = async (id) => {
+  return runBookMutation(id, (book) => {
+    if (!book.hasStarted) {
+      book.hasStarted = true;
+    }
     book.lastRead = new Date().toISOString();
     return book;
   });

@@ -59,3 +59,31 @@ test('library view toggle persists after reload', async ({ page }) => {
   await expect(page.getByTestId('library-books-list')).toBeVisible();
   await expect(page.getByTestId('library-view-list')).toHaveAttribute('aria-pressed', 'true');
 });
+
+test('continue reading rail appears for started books and hides in filtered mode', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
+  await expect(page.getByTestId('continue-reading-rail')).toHaveCount(0);
+
+  await bookLink.click();
+  await expect(page.getByRole('button', { name: /Explain Page/i })).toBeVisible();
+  await page.waitForTimeout(600);
+
+  await page.goto('/');
+  await expect.poll(async () => page.getByTestId('continue-reading-rail').count()).toBeGreaterThan(0);
+  const rail = page.getByTestId('continue-reading-rail');
+  await expect(page.getByTestId('continue-reading-card')).toHaveCount(1);
+
+  await page.getByRole('button', { name: 'View in-progress' }).click();
+  await expect(page.getByTestId('library-filter')).toHaveValue('in-progress');
+  await expect(page.getByTestId('continue-reading-rail')).toHaveCount(0);
+});

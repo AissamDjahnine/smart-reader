@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { addBook, getAllBooks, deleteBook, toggleFavorite } from '../services/db'; 
+import { addBook, getAllBooks, deleteBook, toggleFavorite, markBookStarted } from '../services/db'; 
 import { Plus, Book as BookIcon, User, Calendar, Trash2, Clock, Search, Heart, Filter, ArrowUpDown, LayoutGrid, List } from 'lucide-react';
+
+const STARTED_BOOK_IDS_KEY = 'library-started-book-ids';
 
 export default function Home() {
   const [books, setBooks] = useState([]);
@@ -25,6 +27,32 @@ export default function Home() {
   const loadLibrary = async () => {
     const storedBooks = await getAllBooks();
     setBooks(storedBooks);
+  };
+
+  const readStartedBookIds = () => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const raw = window.localStorage.getItem(STARTED_BOOK_IDS_KEY);
+      const parsed = JSON.parse(raw || "[]");
+      return new Set(Array.isArray(parsed) ? parsed : []);
+    } catch (err) {
+      console.error(err);
+      return new Set();
+    }
+  };
+
+  const persistStartedBookId = (id) => {
+    if (!id || typeof window === "undefined") return;
+    const next = readStartedBookIds();
+    next.add(id);
+    window.localStorage.setItem(STARTED_BOOK_IDS_KEY, JSON.stringify([...next]));
+  };
+
+  const handleOpenBook = (id) => {
+    persistStartedBookId(id);
+    markBookStarted(id).catch((err) => {
+      console.error(err);
+    });
   };
 
   const handleDeleteBook = async (e, id) => {
@@ -81,6 +109,7 @@ export default function Home() {
     const parsed = new Date(value || 0).getTime();
     return Number.isFinite(parsed) ? parsed : 0;
   };
+  const startedBookIds = readStartedBookIds();
 
   const sortedBooks = [...books]
     .filter((book) => {
@@ -118,6 +147,17 @@ export default function Home() {
       if (sortBy === "author-desc") return normalizeString(right.author).localeCompare(normalizeString(left.author));
       return normalizeString(left.title).localeCompare(normalizeString(right.title));
     });
+
+  const continueReadingBooks = [...books]
+    .filter((book) => {
+      const progress = normalizeNumber(book.progress);
+      const hasStarted = startedBookIds.has(book.id) || Boolean(book.hasStarted) || Boolean(book.lastLocation) || progress > 0 || normalizeNumber(book.readingTime) > 0;
+      return hasStarted && progress < 100;
+    })
+    .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead))
+    .slice(0, 8);
+
+  const showContinueReading = activeFilter === "all" && !searchQuery.trim() && continueReadingBooks.length > 0;
 
   const formatTime = (totalSeconds) => {
     if (!totalSeconds || totalSeconds < 60) return "Just started";
@@ -157,6 +197,63 @@ export default function Home() {
             <input type="file" accept=".epub" className="hidden" onChange={handleFileUpload} />
           </label>
         </header>
+
+        {showContinueReading && (
+          <section className="mb-8" data-testid="continue-reading-rail">
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">Continue Reading</h2>
+                <p className="text-xs text-gray-500">Quick resume for books you already started.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveFilter("in-progress")}
+                className="text-xs font-bold text-blue-600 hover:text-blue-700"
+              >
+                View in-progress
+              </button>
+            </div>
+
+            <div className="flex gap-4 overflow-x-auto pb-2">
+              {continueReadingBooks.map((book) => (
+                <Link
+                  to={`/read?id=${book.id}`}
+                  key={`continue-${book.id}`}
+                  data-testid="continue-reading-card"
+                  onClick={() => handleOpenBook(book.id)}
+                  className="min-w-[240px] max-w-[240px] rounded-2xl border border-gray-200 bg-white shadow-sm hover:shadow-md transition-all"
+                >
+                  <div className="p-3 flex gap-3">
+                    <div className="w-14 h-20 bg-gray-200 rounded-lg overflow-hidden shrink-0">
+                      {book.cover ? (
+                        <img src={book.cover} alt={book.title} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-gray-300">
+                          <BookIcon size={16} />
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-bold text-gray-900 line-clamp-2">{book.title}</div>
+                      <div className="mt-1 text-xs text-gray-500 truncate">{book.author}</div>
+                      <div className="mt-2 text-[11px] text-blue-600 font-semibold">
+                        {normalizeNumber(book.progress)}% · {formatTime(book.readingTime)}
+                      </div>
+                      <div className="mt-1 text-[10px] text-gray-400">{formatLastRead(book.lastRead)}</div>
+                      <div className="mt-2 w-full bg-gray-100 h-1.5 rounded-full overflow-hidden">
+                        <div
+                          className="bg-blue-600 h-full transition-all duration-700"
+                          style={{ width: `${normalizeNumber(book.progress)}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* Search, Filter and Sort Bar */}
         <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_220px_280px_120px] gap-3 mb-3">
@@ -263,6 +360,7 @@ export default function Home() {
               <Link 
                 to={`/read?id=${book.id}`} 
                 key={book.id}
+                onClick={() => handleOpenBook(book.id)}
                 className="group bg-white rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden border border-gray-100 flex flex-col relative"
               >
                 <div className="aspect-[3/4] bg-gray-200 overflow-hidden relative">
@@ -342,6 +440,7 @@ export default function Home() {
               <Link
                 to={`/read?id=${book.id}`}
                 key={book.id}
+                onClick={() => handleOpenBook(book.id)}
                 className="group bg-white rounded-2xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden border border-gray-100 flex"
               >
                 <div className="w-24 sm:w-28 md:w-32 bg-gray-200 overflow-hidden relative shrink-0">

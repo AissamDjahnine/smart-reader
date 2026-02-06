@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { getBook, updateBookProgress, saveHighlight, deleteHighlight, updateReadingStats, saveChapterSummary, savePageSummary, saveBookmark, deleteBookmark, updateHighlightNote, updateBookReaderSettings } from '../services/db';
+import { getBook, updateBookProgress, saveHighlight, deleteHighlight, updateReadingStats, saveChapterSummary, savePageSummary, saveBookmark, deleteBookmark, updateHighlightNote, updateBookReaderSettings, markBookStarted } from '../services/db';
 import BookView from '../components/BookView';
 import { summarizeChapter } from '../services/ai'; 
 import html2canvas from 'html2canvas';
@@ -1316,6 +1316,13 @@ export default function Reader() {
     };
     loadBook();
   }, [bookId, mergeBookUpdate]);
+
+  useEffect(() => {
+    if (!bookId) return;
+    markBookStarted(bookId).catch((err) => {
+      console.error(err);
+    });
+  }, [bookId]);
 
   useEffect(() => {
     if (!book?.id) return;
