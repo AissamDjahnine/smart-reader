@@ -30,6 +30,7 @@ const DEFAULT_READER_SETTINGS = {
 export default function Reader() {
   const [searchParams] = useSearchParams();
   const bookId = searchParams.get('id');
+  const panelParam = searchParams.get('panel');
   const [book, setBook] = useState(null);
   const bookRef = useRef(null);
   
@@ -108,6 +109,7 @@ export default function Reader() {
   });
   const settingsHydratedRef = useRef(false);
   const [settings, setSettings] = useState(DEFAULT_READER_SETTINGS);
+  const initialPanelAppliedRef = useRef(false);
 
   const aiUnavailableMessage = "AI features are not available now.";
 
@@ -1325,6 +1327,22 @@ export default function Reader() {
   }, [bookId]);
 
   useEffect(() => {
+    initialPanelAppliedRef.current = false;
+  }, [bookId, panelParam]);
+
+  useEffect(() => {
+    if (!book?.id || initialPanelAppliedRef.current) return;
+    if (panelParam === 'highlights') {
+      setShowHighlightsPanel(true);
+      setShowBookmarksPanel(false);
+    } else if (panelParam === 'bookmarks') {
+      setShowBookmarksPanel(true);
+      setShowHighlightsPanel(false);
+    }
+    initialPanelAppliedRef.current = true;
+  }, [book?.id, panelParam]);
+
+  useEffect(() => {
     if (!book?.id) return;
     const hasBookSettings = !!(book.readerSettings && Object.keys(book.readerSettings).length);
     const merged = hasBookSettings
@@ -1971,7 +1989,7 @@ export default function Reader() {
       })()}
 
       {showHighlightsPanel && (
-        <div className="fixed inset-0 z-[55]">
+        <div className="fixed inset-0 z-[55]" data-testid="highlights-panel">
           <div
             className="absolute inset-0 bg-black/40"
             onClick={() => setShowHighlightsPanel(false)}
@@ -2153,7 +2171,7 @@ export default function Reader() {
       )}
 
       {showBookmarksPanel && (
-        <div className="fixed inset-0 z-[55]">
+        <div className="fixed inset-0 z-[55]" data-testid="bookmarks-panel">
           <div
             className="absolute inset-0 bg-black/40"
             onClick={() => setShowBookmarksPanel(false)}

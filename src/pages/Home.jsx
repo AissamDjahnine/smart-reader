@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { addBook, getAllBooks, deleteBook, toggleFavorite, markBookStarted } from '../services/db'; 
 import { Plus, Book as BookIcon, User, Calendar, Trash2, Clock, Search, Heart, Filter, ArrowUpDown, LayoutGrid, List } from 'lucide-react';
 
 const STARTED_BOOK_IDS_KEY = 'library-started-book-ids';
 
 export default function Home() {
+  const navigate = useNavigate();
   const [books, setBooks] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
   
@@ -53,6 +54,19 @@ export default function Home() {
     markBookStarted(id).catch((err) => {
       console.error(err);
     });
+  };
+
+  const buildReaderPath = (id, panel = '') => {
+    const params = new URLSearchParams({ id });
+    if (panel) params.set('panel', panel);
+    return `/read?${params.toString()}`;
+  };
+
+  const handleQuickOpen = (e, id, panel = '') => {
+    e.preventDefault();
+    e.stopPropagation();
+    handleOpenBook(id);
+    navigate(buildReaderPath(id, panel));
   };
 
   const handleDeleteBook = async (e, id) => {
@@ -217,7 +231,7 @@ export default function Home() {
             <div className="flex gap-4 overflow-x-auto pb-2">
               {continueReadingBooks.map((book) => (
                 <Link
-                  to={`/read?id=${book.id}`}
+                  to={buildReaderPath(book.id)}
                   key={`continue-${book.id}`}
                   data-testid="continue-reading-card"
                   onClick={() => handleOpenBook(book.id)}
@@ -358,7 +372,7 @@ export default function Home() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8 animate-in fade-in duration-500" data-testid="library-books-grid">
             {sortedBooks.map((book) => (
               <Link 
-                to={`/read?id=${book.id}`} 
+                to={buildReaderPath(book.id)} 
                 key={book.id}
                 onClick={() => handleOpenBook(book.id)}
                 className="group bg-white rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden border border-gray-100 flex flex-col relative"
@@ -430,6 +444,33 @@ export default function Home() {
                       style={{ width: `${book.progress}%` }}
                     />
                   </div>
+
+                  <div className="mt-3 grid grid-cols-3 gap-2">
+                    <button
+                      data-testid="quick-action-resume"
+                      onClick={(e) => handleQuickOpen(e, book.id)}
+                      className="text-[10px] font-bold py-1.5 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50"
+                      title="Resume"
+                    >
+                      Resume
+                    </button>
+                    <button
+                      data-testid="quick-action-highlights"
+                      onClick={(e) => handleQuickOpen(e, book.id, 'highlights')}
+                      className="text-[10px] font-bold py-1.5 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50"
+                      title="Open highlights"
+                    >
+                      Highlights
+                    </button>
+                    <button
+                      data-testid="quick-action-bookmarks"
+                      onClick={(e) => handleQuickOpen(e, book.id, 'bookmarks')}
+                      className="text-[10px] font-bold py-1.5 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50"
+                      title="Open bookmarks"
+                    >
+                      Bookmarks
+                    </button>
+                  </div>
                 </div>
               </Link>
             ))}
@@ -438,7 +479,7 @@ export default function Home() {
           <div className="space-y-4 animate-in fade-in duration-500" data-testid="library-books-list">
             {sortedBooks.map((book) => (
               <Link
-                to={`/read?id=${book.id}`}
+                to={buildReaderPath(book.id)}
                 key={book.id}
                 onClick={() => handleOpenBook(book.id)}
                 className="group bg-white rounded-2xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden border border-gray-100 flex"
@@ -491,23 +532,52 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={(e) => handleToggleFavorite(e, book.id)}
-                      className={`p-2 rounded-xl shadow-sm transition-all active:scale-95 ${
-                        book.isFavorite ? 'bg-pink-500 text-white' : 'bg-white border border-gray-200 text-gray-400 hover:text-pink-500'
-                      }`}
-                      title="Favorite"
-                    >
-                      <Heart size={16} fill={book.isFavorite ? "currentColor" : "none"} />
-                    </button>
-                    <button
-                      onClick={(e) => handleDeleteBook(e, book.id)}
-                      className="p-2 bg-red-500 hover:bg-red-600 text-white rounded-xl shadow-sm transition-transform active:scale-95"
-                      title="Delete Book"
-                    >
-                      <Trash2 size={16} />
-                    </button>
+                  <div className="flex flex-col gap-2 md:w-44">
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        data-testid="quick-action-resume"
+                        onClick={(e) => handleQuickOpen(e, book.id)}
+                        className="text-[10px] font-bold py-1.5 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50"
+                        title="Resume"
+                      >
+                        Resume
+                      </button>
+                      <button
+                        data-testid="quick-action-highlights"
+                        onClick={(e) => handleQuickOpen(e, book.id, 'highlights')}
+                        className="text-[10px] font-bold py-1.5 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50"
+                        title="Open highlights"
+                      >
+                        Highlights
+                      </button>
+                      <button
+                        data-testid="quick-action-bookmarks"
+                        onClick={(e) => handleQuickOpen(e, book.id, 'bookmarks')}
+                        className="text-[10px] font-bold py-1.5 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50"
+                        title="Open bookmarks"
+                      >
+                        Bookmarks
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-2 justify-end">
+                      <button
+                        onClick={(e) => handleToggleFavorite(e, book.id)}
+                        className={`p-2 rounded-xl shadow-sm transition-all active:scale-95 ${
+                          book.isFavorite ? 'bg-pink-500 text-white' : 'bg-white border border-gray-200 text-gray-400 hover:text-pink-500'
+                        }`}
+                        title="Favorite"
+                      >
+                        <Heart size={16} fill={book.isFavorite ? "currentColor" : "none"} />
+                      </button>
+                      <button
+                        onClick={(e) => handleDeleteBook(e, book.id)}
+                        className="p-2 bg-red-500 hover:bg-red-600 text-white rounded-xl shadow-sm transition-transform active:scale-95"
+                        title="Delete Book"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </Link>

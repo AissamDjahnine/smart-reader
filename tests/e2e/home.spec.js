@@ -87,3 +87,26 @@ test('continue reading rail appears for started books and hides in filtered mode
   await expect(page.getByTestId('library-filter')).toHaveValue('in-progress');
   await expect(page.getByTestId('continue-reading-rail')).toHaveCount(0);
 });
+
+test('quick card actions open reader highlights and bookmarks panels', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await page.getByTestId('quick-action-highlights').first().click();
+  await expect(page).toHaveURL(/panel=highlights/);
+  await expect(page.getByTestId('highlights-panel')).toBeVisible();
+
+  await page.goto('/');
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await page.getByTestId('quick-action-bookmarks').first().click();
+  await expect(page).toHaveURL(/panel=bookmarks/);
+  await expect(page.getByTestId('bookmarks-panel')).toBeVisible();
+});
