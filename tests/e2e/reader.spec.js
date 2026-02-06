@@ -66,8 +66,9 @@ test('dictionary ignores stale responses', async ({ page }) => {
   });
 
   await openFixtureBook(page);
-
-  await page.getByTitle('Dictionary').click();
+  await selectTextInBook(page);
+  const toolbar = page.getByTestId('selection-toolbar');
+  await toolbar.getByRole('button', { name: 'Dictionary' }).click();
   const dictInput = page.getByPlaceholder('Look up a word...');
   await dictInput.fill('alpha');
   await dictInput.press('Enter');
