@@ -28,14 +28,54 @@ export default function BookView({
 
   const applyTheme = (rendition, theme) => {
     if (!rendition) return;
+    const isScrolled = settings.flow === 'scrolled';
+    const textColor = theme === 'dark' ? '#e5e7eb' : '#111827';
+    const scrolledOuterBackground = theme === 'dark' ? '#0b1220' : '#f3f4f6';
+    const scrolledPageBackground = theme === 'dark' ? '#111827' : '#ffffff';
     const bodyStyles = theme === 'dark' 
       ? { 
-          'body': { 'color': '#e5e7eb !important', 'background': '#111827 !important' },
-          'p, span, div, li, h1, h2, h3, h4, h5, h6': { 'color': '#e5e7eb !important' }
+          'html': {
+            'background': `${isScrolled ? scrolledOuterBackground : '#111827'} !important`
+          },
+          'body': {
+            'color': `${textColor} !important`,
+            'background': `${scrolledPageBackground} !important`,
+            'max-width': isScrolled ? 'min(940px, calc(100vw - 88px)) !important' : 'none !important',
+            'width': '100% !important',
+            'margin': isScrolled ? '20px auto 28px auto !important' : '0 !important',
+            'padding-left': isScrolled ? '32px !important' : '0 !important',
+            'padding-right': isScrolled ? '32px !important' : '0 !important',
+            'padding-top': isScrolled ? '0 !important' : '0 !important',
+            'padding-bottom': isScrolled ? '0 !important' : '0 !important',
+            'box-sizing': 'border-box !important'
+          },
+          'p, span, div, li, h1, h2, h3, h4, h5, h6': { 'color': `${textColor} !important` },
+          'img, svg, video, canvas': {
+            'max-width': '100% !important',
+            'height': 'auto !important'
+          }
         } 
       : { 
-          'body': { 'color': '#111827 !important', 'background': '#ffffff !important' },
-          'p, span, div, li, h1, h2, h3, h4, h5, h6': { 'color': '#111827 !important' }
+          'html': {
+            'background': `${isScrolled ? scrolledOuterBackground : '#ffffff'} !important`
+          },
+          'body': {
+            'color': `${textColor} !important`,
+            'background': `${scrolledPageBackground} !important`,
+            'max-width': isScrolled ? 'min(940px, calc(100vw - 88px)) !important' : 'none !important',
+            'width': '100% !important',
+            'margin': isScrolled ? '20px auto 28px auto !important' : '0 !important',
+            'padding-left': isScrolled ? '32px !important' : '0 !important',
+            'padding-right': isScrolled ? '32px !important' : '0 !important',
+            'padding-top': isScrolled ? '0 !important' : '0 !important',
+            'padding-bottom': isScrolled ? '0 !important' : '0 !important',
+            'box-sizing': 'border-box !important'
+          },
+          'p, span, div, li, h1, h2, h3, h4, h5, h6': { 'color': `${textColor} !important` },
+          'img, svg, video, canvas': {
+            'max-width': '100% !important',
+            'height': 'auto !important'
+          }
         };
     
     rendition.themes.register(theme, bodyStyles);
