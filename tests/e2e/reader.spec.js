@@ -25,6 +25,7 @@ async function selectTextInBook(page) {
   await expect(page.getByTestId('selection-toolbar')).toBeVisible();
 }
 
+
 test('search clear cancels results', async ({ page }) => {
   await openFixtureBook(page);
 
@@ -65,8 +66,9 @@ test('dictionary ignores stale responses', async ({ page }) => {
   });
 
   await openFixtureBook(page);
-
-  await page.getByTitle('Dictionary').click();
+  await selectTextInBook(page);
+  const toolbar = page.getByTestId('selection-toolbar');
+  await toolbar.getByRole('button', { name: 'Dictionary' }).click();
   const dictInput = page.getByPlaceholder('Look up a word...');
   await dictInput.fill('alpha');
   await dictInput.press('Enter');
@@ -122,4 +124,23 @@ test('translation requires source language with mymemory', async ({ page }) => {
   await expect(panel).toBeVisible();
   await expect(panel.getByRole('combobox').first()).toBeVisible();
   await expect(panel.getByRole('option', { name: /Auto detect/i })).toHaveCount(0);
+});
+
+test('reader iframe does not remount during background stats updates', async ({ page }) => {
+  await openFixtureBook(page);
+  const iframe = page.locator('iframe').first();
+  const initialFrameId = await iframe.evaluate((el) => {
+    const id = `reader-${Date.now()}-${Math.random()}`;
+    el.dataset.instanceId = id;
+    return id;
+  });
+
+  // Keep the tab active so reading stats background updates run.
+  await page.mouse.move(200, 200);
+
+  // Reading stats update runs every 15s. Ensure it does not remount the reader iframe.
+  await page.waitForTimeout(17000);
+  await page.mouse.move(220, 220);
+  const currentFrameId = await page.locator('iframe').first().evaluate((el) => el.dataset.instanceId || '');
+  expect(currentFrameId).toBe(initialFrameId);
 });

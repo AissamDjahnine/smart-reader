@@ -2,6 +2,31 @@ import localforage from 'localforage';
 import ePub from 'epubjs';
 
 const bookStore = localforage.createInstance({ name: "SmartReaderLib" });
+const mutationQueues = new Map();
+const BOOK_METADATA_VERSION = 1;
+const TRASH_RETENTION_DAYS = 30;
+
+const runBookMutation = async (id, mutator) => {
+  const previous = mutationQueues.get(id) || Promise.resolve();
+  const current = previous
+    .catch(() => {})
+    .then(async () => {
+      const book = await bookStore.getItem(id);
+      if (!book) return null;
+      const nextBook = (await mutator(book)) || book;
+      await bookStore.setItem(id, nextBook);
+      return nextBook;
+    });
+
+  mutationQueues.set(
+    id,
+    current.finally(() => {
+      if (mutationQueues.get(id) === current) mutationQueues.delete(id);
+    })
+  );
+
+  return current;
+};
 
 const toBase64 = (url) => fetch(url)
   .then(response => response.blob())
@@ -12,10 +37,64 @@ const toBase64 = (url) => fetch(url)
     reader.readAsDataURL(blob);
   }));
 
+const toPositiveInteger = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.max(1, Math.round(parsed));
+};
+
+const extractGenre = (metadata = {}) => {
+  const candidates = [metadata.genre, metadata.subject, metadata.subjects, metadata.type];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      const firstText = candidate.find((item) => typeof item === "string" && item.trim());
+      if (firstText) return firstText.trim();
+      continue;
+    }
+    if (typeof candidate === "string" && candidate.trim()) {
+      const [first] = candidate.split(/[,;|]/);
+      if (first?.trim()) return first.trim();
+    }
+  }
+  return "";
+};
+
+const estimatePageCount = async (book) => {
+  try {
+    // epub.js location chunks are a practical approximation for "pages".
+    await book.ready;
+    await book.locations.generate(1024);
+    const generatedTotal = toPositiveInteger(book.locations?.total);
+    if (generatedTotal) return generatedTotal;
+  } catch (err) {
+    console.error("Page estimation fallback engaged", err);
+  }
+
+  const spineCount = Array.isArray(book?.packaging?.spine) ? book.packaging.spine.length : 0;
+  if (spineCount > 0) {
+    return toPositiveInteger(spineCount * 8);
+  }
+
+  return null;
+};
+
+const needsMetadataBackfill = (book) => {
+  if (!book) return false;
+  if (!book.data) return false;
+  if ((book.metadataVersion || 0) < BOOK_METADATA_VERSION) return true;
+
+  const missingLanguage = !String(book.language || "").trim();
+  const missingPages = !toPositiveInteger(book.estimatedPages);
+  const missingGenreField = typeof book.genre !== "string";
+  return missingLanguage || missingPages || missingGenreField;
+};
+
 export const addBook = async (file) => {
   const id = Date.now().toString();
   const book = ePub(file);
   const metadata = await book.loaded.metadata;
+  const estimatedPages = await estimatePageCount(book);
+  const genre = extractGenre(metadata);
   const rawCoverUrl = await book.coverUrl();
   
   let finalCover = null;
@@ -31,13 +110,27 @@ export const addBook = async (file) => {
     id,
     title: metadata.title || file.name.replace('.epub', ''),
     author: metadata.creator || "Unknown Author",
+    language: metadata.language || "",
+    genre: genre || "",
+    estimatedPages: estimatedPages || null,
+    metadataVersion: BOOK_METADATA_VERSION,
     publisher: metadata.publisher || "Unknown Publisher",
     pubDate: metadata.pubdate || "",
     cover: finalCover,
     data: file,
     progress: 0,
+    hasStarted: false,
     highlights: [],
+    bookmarks: [],
+    readerSettings: {
+      fontSize: 100,
+      theme: 'light',
+      flow: 'paginated',
+      fontFamily: 'publisher'
+    },
     isFavorite: false,
+    isDeleted: false,
+    deletedAt: null,
     readingTime: 0,
     lastRead: new Date().toISOString(),
     addedAt: new Date(),
@@ -63,32 +156,113 @@ export const getAllBooks = async () => {
   });
 };
 
+export const purgeExpiredTrashBooks = async (retentionDays = TRASH_RETENTION_DAYS) => {
+  const cutoffMs = Date.now() - (retentionDays * 24 * 60 * 60 * 1000);
+  const idsToDelete = [];
+
+  await bookStore.iterate((value, key) => {
+    if (!value?.isDeleted) return;
+    const deletedAtMs = new Date(value.deletedAt || 0).getTime();
+    if (!Number.isFinite(deletedAtMs)) return;
+    if (deletedAtMs <= cutoffMs) {
+      idsToDelete.push(key);
+    }
+  });
+
+  for (const id of idsToDelete) {
+    await bookStore.removeItem(id);
+    mutationQueues.delete(id);
+  }
+
+  return idsToDelete.length;
+};
+
+export const backfillBookMetadata = async (id) => {
+  return runBookMutation(id, async (book) => {
+    if (!needsMetadataBackfill(book)) {
+      return book;
+    }
+
+    try {
+      const epub = ePub(book.data);
+      const metadata = await epub.loaded.metadata;
+      const estimatedPages = await estimatePageCount(epub);
+      const genre = extractGenre(metadata);
+
+      const language = String(book.language || "").trim() || metadata.language || "";
+      const nextPages = toPositiveInteger(book.estimatedPages) || estimatedPages || null;
+      const nextGenre = typeof book.genre === "string" && book.genre.trim()
+        ? book.genre.trim()
+        : (genre || "");
+
+      const isChanged =
+        language !== (book.language || "") ||
+        nextPages !== (book.estimatedPages || null) ||
+        nextGenre !== (book.genre || "") ||
+        (book.metadataVersion || 0) < BOOK_METADATA_VERSION;
+
+      if (!isChanged) {
+        return book;
+      }
+
+      return {
+        ...book,
+        language,
+        estimatedPages: nextPages,
+        genre: nextGenre,
+        metadataVersion: BOOK_METADATA_VERSION
+      };
+    } catch (err) {
+      console.error("Book metadata backfill failed", err);
+      return book;
+    }
+  });
+};
+
 export const getBook = async (id) => await bookStore.getItem(id);
 
 export const updateBookProgress = async (id, location, percentage) => {
-  const book = await bookStore.getItem(id);
-  if (book) {
+  await runBookMutation(id, (book) => {
     book.lastLocation = location;
     book.progress = Math.min(Math.max(Math.floor(percentage * 100), 0), 100); 
     book.lastRead = new Date().toISOString();
-    await bookStore.setItem(id, book);
-  }
+    return book;
+  });
+};
+
+export const updateBookReaderSettings = async (id, readerSettings) => {
+  const updatedBook = await runBookMutation(id, (book) => {
+    const current = book.readerSettings || {};
+    book.readerSettings = {
+      ...current,
+      ...readerSettings
+    };
+    return book;
+  });
+  return updatedBook ? updatedBook.readerSettings : null;
 };
 
 export const updateReadingStats = async (id, secondsToAdd) => {
-  const book = await bookStore.getItem(id);
-  if (book) {
+  return runBookMutation(id, (book) => {
     book.readingTime = (book.readingTime || 0) + secondsToAdd;
     book.lastRead = new Date().toISOString();
-    await bookStore.setItem(id, book);
     return book;
-  }
+  });
+};
+
+export const markBookStarted = async (id) => {
+  return runBookMutation(id, (book) => {
+    if (!book.hasStarted) {
+      book.hasStarted = true;
+    }
+    book.lastRead = new Date().toISOString();
+    return book;
+  });
 };
 
 // NEW: Save a chapter summary and update the global story summary
 export const saveChapterSummary = async (bookId, chapterHref, chapterSummary, newGlobalSummary) => {
-  const book = await bookStore.getItem(bookId);
-  if (book) {
+  return runBookMutation(bookId, (book) => {
     if (!book.chapterSummaries) book.chapterSummaries = [];
     
     // Check if we already have a summary for this chapter to avoid duplicates
@@ -100,14 +274,12 @@ export const saveChapterSummary = async (bookId, chapterHref, chapterSummary, ne
     }
 
     book.globalSummary = newGlobalSummary;
-    await bookStore.setItem(bookId, book);
     return book;
-  }
+  });
 };
 
 export const savePageSummary = async (bookId, pageKey, pageSummary, newGlobalSummary) => {
-  const book = await bookStore.getItem(bookId);
-  if (book) {
+  return runBookMutation(bookId, (book) => {
     if (!book.pageSummaries) book.pageSummaries = [];
 
     const index = book.pageSummaries.findIndex(s => s.pageKey === pageKey);
@@ -118,41 +290,93 @@ export const savePageSummary = async (bookId, pageKey, pageSummary, newGlobalSum
     }
 
     book.globalSummary = newGlobalSummary;
-    await bookStore.setItem(bookId, book);
     return book;
-  }
+  });
 };
 
 export const deleteBook = async (id) => {
   await bookStore.removeItem(id);
+  mutationQueues.delete(id);
+};
+
+export const moveBookToTrash = async (id) => {
+  return runBookMutation(id, (book) => {
+    book.isDeleted = true;
+    book.deletedAt = new Date().toISOString();
+    return book;
+  });
+};
+
+export const restoreBookFromTrash = async (id) => {
+  return runBookMutation(id, (book) => {
+    book.isDeleted = false;
+    book.deletedAt = null;
+    return book;
+  });
 };
 
 export const toggleFavorite = async (id) => {
-  const book = await bookStore.getItem(id);
-  if (book) {
+  return runBookMutation(id, (book) => {
     book.isFavorite = !book.isFavorite;
-    await bookStore.setItem(id, book);
     return book;
-  }
+  });
 };
 
 export const saveHighlight = async (bookId, highlight) => {
-  const book = await bookStore.getItem(bookId);
-  if (book) {
+  const updatedBook = await runBookMutation(bookId, (book) => {
     if (!book.highlights) book.highlights = [];
-    book.highlights.push(highlight);
-    await bookStore.setItem(bookId, book);
-    return book.highlights;
-  }
-  return [];
+    const idx = book.highlights.findIndex((h) => h.cfiRange === highlight.cfiRange);
+    if (idx > -1) {
+      const previous = book.highlights[idx];
+      book.highlights[idx] = {
+        ...previous,
+        ...highlight,
+        note: previous.note || highlight.note || ''
+      };
+    } else {
+      book.highlights.push(highlight);
+    }
+    return book;
+  });
+  return updatedBook?.highlights || [];
+};
+
+export const updateHighlightNote = async (bookId, cfiRange, note) => {
+  const updatedBook = await runBookMutation(bookId, (book) => {
+    if (!book.highlights) book.highlights = [];
+    const idx = book.highlights.findIndex(h => h.cfiRange === cfiRange);
+    if (idx > -1) {
+      book.highlights[idx].note = note;
+    }
+    return book;
+  });
+  return updatedBook?.highlights || [];
 };
 
 export const deleteHighlight = async (bookId, cfiRange) => {
-  const book = await bookStore.getItem(bookId);
-  if (book) {
+  const updatedBook = await runBookMutation(bookId, (book) => {
     book.highlights = book.highlights.filter(h => h.cfiRange !== cfiRange);
-    await bookStore.setItem(bookId, book);
-    return book.highlights;
-  }
-  return [];
+    return book;
+  });
+  return updatedBook?.highlights || [];
+};
+
+export const saveBookmark = async (bookId, bookmark) => {
+  const updatedBook = await runBookMutation(bookId, (book) => {
+    if (!book.bookmarks) book.bookmarks = [];
+    const exists = book.bookmarks.some((b) => b.cfi === bookmark.cfi);
+    if (!exists) {
+      book.bookmarks.push(bookmark);
+    }
+    return book;
+  });
+  return updatedBook?.bookmarks || [];
+};
+
+export const deleteBookmark = async (bookId, cfi) => {
+  const updatedBook = await runBookMutation(bookId, (book) => {
+    book.bookmarks = (book.bookmarks || []).filter(b => b.cfi !== cfi);
+    return book;
+  });
+  return updatedBook?.bookmarks || [];
 };

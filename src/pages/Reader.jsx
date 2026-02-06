@@ -1,14 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { getBook, updateBookProgress, saveHighlight, deleteHighlight, updateReadingStats, saveChapterSummary, savePageSummary } from '../services/db';
+import { getBook, updateBookProgress, saveHighlight, deleteHighlight, updateReadingStats, saveChapterSummary, savePageSummary, saveBookmark, deleteBookmark, updateHighlightNote, updateBookReaderSettings, markBookStarted } from '../services/db';
 import BookView from '../components/BookView';
 import { summarizeChapter } from '../services/ai'; 
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
 
 import { 
   Moon, Sun, BookOpen, Scroll, Type, 
   ChevronLeft, Menu, X,
   Search as SearchIcon, ChevronUp, ChevronDown, Sparkles, Wand2, User,
-  BookOpenText, Highlighter, Languages
+  BookOpenText, Highlighter, Languages, Bookmark
 } from 'lucide-react';
 
 const DEFAULT_TRANSLATE_PROVIDER = 'mymemory';
@@ -18,10 +20,17 @@ const MYMEMORY_ENDPOINT = 'https://api.mymemory.translated.net/get';
 const LIBRE_ENDPOINT = import.meta.env.VITE_TRANSLATE_ENDPOINT || 'https://libretranslate.com/translate';
 const TRANSLATE_API_KEY = import.meta.env.VITE_TRANSLATE_API_KEY || '';
 const TRANSLATE_EMAIL = import.meta.env.VITE_TRANSLATE_EMAIL || '';
+const DEFAULT_READER_SETTINGS = {
+  fontSize: 100,
+  theme: 'light',
+  flow: 'paginated',
+  fontFamily: 'publisher'
+};
 
 export default function Reader() {
   const [searchParams] = useSearchParams();
   const bookId = searchParams.get('id');
+  const panelParam = searchParams.get('panel');
   const [book, setBook] = useState(null);
   const bookRef = useRef(null);
   
@@ -30,6 +39,8 @@ export default function Reader() {
   const [showSearchMenu, setShowSearchMenu] = useState(false);
   const [showAIModal, setShowAIModal] = useState(false);
   const [showHighlightsPanel, setShowHighlightsPanel] = useState(false);
+  const [showBookmarksPanel, setShowBookmarksPanel] = useState(false);
+  const [isExportingHighlights, setIsExportingHighlights] = useState(false);
   const [isPageSummarizing, setIsPageSummarizing] = useState(false);
   const [isChapterSummarizing, setIsChapterSummarizing] = useState(false);
   const [isStoryRecapping, setIsStoryRecapping] = useState(false);
@@ -60,11 +71,13 @@ export default function Reader() {
   const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
   const searchTokenRef = useRef(0);
   const [showDictionary, setShowDictionary] = useState(false);
+  const [dictionaryAnchor, setDictionaryAnchor] = useState(null);
   const [dictionaryQuery, setDictionaryQuery] = useState("");
   const [dictionaryEntry, setDictionaryEntry] = useState(null);
   const [dictionaryError, setDictionaryError] = useState("");
   const dictionaryTokenRef = useRef(0);
   const [showTranslation, setShowTranslation] = useState(false);
+  const [translationAnchor, setTranslationAnchor] = useState(null);
   const [translationQuery, setTranslationQuery] = useState("");
   const [translationResult, setTranslationResult] = useState("");
   const [translationError, setTranslationError] = useState("");
@@ -75,10 +88,28 @@ export default function Reader() {
   const lastActiveRef = useRef(Date.now());
   const isUpdatingStatsRef = useRef(false);
   const [highlights, setHighlights] = useState([]);
+  const [selectedHighlights, setSelectedHighlights] = useState([]);
+  const selectionTouchedRef = useRef(false);
+  const [editingHighlight, setEditingHighlight] = useState(null);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [bookmarks, setBookmarks] = useState([]);
   const [selection, setSelection] = useState(null);
   const [selectionMode, setSelectionMode] = useState('actions');
-  const tempSelectionRef = useRef(null);
   const [progressPct, setProgressPct] = useState(0);
+  const [legacyReaderSettings] = useState(() => {
+    const saved = localStorage.getItem('reader-settings');
+    if (!saved) return null;
+    try {
+      const parsed = JSON.parse(saved);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (err) {
+      console.error(err);
+      return null;
+    }
+  });
+  const settingsHydratedRef = useRef(false);
+  const [settings, setSettings] = useState(DEFAULT_READER_SETTINGS);
+  const initialPanelAppliedRef = useRef(false);
 
   const aiUnavailableMessage = "AI features are not available now.";
 
@@ -106,6 +137,18 @@ export default function Reader() {
   useEffect(() => {
     bookRef.current = book;
   }, [book]);
+
+  const mergeBookUpdate = useCallback((nextBook) => {
+    if (!nextBook) return;
+    setBook((prev) => {
+      if (!prev) return nextBook;
+      if (prev.id !== nextBook.id) return nextBook;
+      if (prev.data && prev.data !== nextBook.data) {
+        return { ...nextBook, data: prev.data };
+      }
+      return nextBook;
+    });
+  }, []);
 
   useEffect(() => {
     const markActive = () => {
@@ -160,6 +203,384 @@ export default function Reader() {
   const translateProviderLabel = TRANSLATE_PROVIDER.includes('libre')
     ? 'LibreTranslate'
     : 'MyMemory (free)';
+
+  const fontOptions = [
+    { value: 'publisher', label: 'Publisher default' },
+    { value: "'Merriweather', Georgia, serif", label: 'Merriweather' },
+    { value: "'Lora', Georgia, serif", label: 'Lora' },
+    { value: "'Playfair Display', Georgia, serif", label: 'Playfair Display' },
+    { value: "'Source Serif 4', Georgia, serif", label: 'Source Serif 4' },
+    { value: "'Source Sans 3', Helvetica, Arial, sans-serif", label: 'Source Sans 3' },
+    { value: "'Nunito', Arial, sans-serif", label: 'Nunito' },
+    { value: "'Raleway', Arial, sans-serif", label: 'Raleway' },
+    { value: "'Montserrat', Arial, sans-serif", label: 'Montserrat' },
+    { value: "'Poppins', Arial, sans-serif", label: 'Poppins' },
+    { value: "'Fira Sans', Arial, sans-serif", label: 'Fira Sans' }
+  ];
+
+  const sameHighlights = (a = [], b = []) => {
+    if (a === b) return true;
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      const left = a[i] || {};
+      const right = b[i] || {};
+      if (
+        left.cfiRange !== right.cfiRange ||
+        left.color !== right.color ||
+        left.note !== right.note ||
+        left.text !== right.text
+      ) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const sameBookmarks = (a = [], b = []) => {
+    if (a === b) return true;
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      const left = a[i] || {};
+      const right = b[i] || {};
+      if (
+        left.cfi !== right.cfi ||
+        left.label !== right.label ||
+        left.text !== right.text ||
+        left.href !== right.href
+      ) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const sentenceSplit = (text) => {
+    if (!text) return [];
+    const cleaned = text.replace(/\s+/g, ' ').trim();
+    if (!cleaned) return [];
+    const matches = cleaned.match(/[^.!?]+[.!?]+|[^.!?]+$/g);
+    return matches ? matches.map((s) => s.trim()).filter(Boolean) : [cleaned];
+  };
+
+  const clampText = (text, max = 320) => {
+    if (!text) return '';
+    if (text.length <= max) return text;
+    return `${text.slice(0, max - 1).trim()}…`;
+  };
+
+  const normalizeForMatch = (text) => {
+    if (!text) return { normalized: '', map: [] };
+    const map = [];
+    let normalized = '';
+    let lastWasSpace = false;
+
+    for (let i = 0; i < text.length; i += 1) {
+      let ch = text[i];
+      if (ch === '’' || ch === '‘') ch = "'";
+      if (ch === '“' || ch === '”') ch = '"';
+      if (ch === '…') ch = '.';
+
+      if (/\s/.test(ch)) {
+        if (!lastWasSpace) {
+          normalized += ' ';
+          map.push(i);
+          lastWasSpace = true;
+        }
+        continue;
+      }
+
+      lastWasSpace = false;
+      normalized += ch.toLowerCase();
+      map.push(i);
+    }
+
+    return { normalized, map };
+  };
+
+  const findSentenceBounds = (text, startIndex, endIndex) => {
+    const isBoundary = (idx) => {
+      const ch = text[idx];
+      return ch === '.' || ch === '!' || ch === '?';
+    };
+
+    let prev = -1;
+    for (let i = startIndex - 1; i >= 0; i -= 1) {
+      if (isBoundary(i)) { prev = i; break; }
+    }
+
+    let next = text.length;
+    for (let i = endIndex; i < text.length; i += 1) {
+      if (isBoundary(i)) { next = i + 1; break; }
+    }
+
+    return { prev, next };
+  };
+
+  const segmentSentences = (text) => {
+    if (!text) return [];
+    if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+      try {
+        const segmenter = new Intl.Segmenter('en', { granularity: 'sentence' });
+        const segments = [];
+        for (const segment of segmenter.segment(text)) {
+          const trimmed = segment.segment.trim();
+          if (!trimmed) continue;
+          segments.push({
+            text: trimmed,
+            start: segment.index,
+            end: segment.index + segment.segment.length
+          });
+        }
+        return segments;
+      } catch (err) {
+        console.error(err);
+      }
+    }
+    return [];
+  };
+
+  const extractSentenceContext = (raw, highlightText) => {
+    const target = (highlightText || '').replace(/\s+/g, ' ').trim();
+    if (!raw) return { before: '', current: target, after: '' };
+
+    const rawClean = raw.replace(/\s+/g, ' ').trim();
+    if (!target) return { before: '', current: clampText(rawClean), after: '' };
+
+    const { normalized: rawNorm, map } = normalizeForMatch(rawClean);
+    const { normalized: targetNorm } = normalizeForMatch(target);
+    let matchIndex = rawNorm.indexOf(targetNorm);
+
+    if (matchIndex < 0 && targetNorm.length) {
+      const words = targetNorm.split(' ').filter(Boolean);
+      if (words.length >= 3) {
+        const probe = words.slice(0, 4).join(' ');
+        matchIndex = rawNorm.indexOf(probe);
+      }
+    }
+
+    if (matchIndex < 0) {
+      return { before: '', current: clampText(rawClean), after: '' };
+    }
+
+    const startOriginal = map[matchIndex] ?? 0;
+    const endOriginal = map[Math.min(matchIndex + targetNorm.length - 1, map.length - 1)] ?? startOriginal;
+
+    const segments = segmentSentences(rawClean);
+    if (segments.length) {
+      const idx = segments.findIndex((seg) => seg.start <= startOriginal && seg.end >= endOriginal);
+      const currentSeg = segments[idx >= 0 ? idx : 0];
+      const beforeSeg = idx > 0 ? segments[idx - 1] : null;
+      const afterSeg = idx >= 0 && idx + 1 < segments.length ? segments[idx + 1] : null;
+      return {
+        before: clampText(beforeSeg?.text || ''),
+        current: clampText(currentSeg?.text || target),
+        after: clampText(afterSeg?.text || '')
+      };
+    }
+
+    const { prev, next } = findSentenceBounds(rawClean, startOriginal, endOriginal);
+    const current = rawClean.slice(prev + 1, next).trim();
+
+    const { prev: prevPrev } = findSentenceBounds(rawClean, Math.max(prev, 0), Math.max(prev, 0));
+    const before = prev >= 0 ? rawClean.slice(prevPrev + 1, prev + 1).trim() : '';
+
+    const { next: nextNext } = findSentenceBounds(rawClean, next + 1, next + 1);
+    const after = next < rawClean.length ? rawClean.slice(next, nextNext).trim() : '';
+
+    return {
+      before: clampText(before),
+      current: clampText(current || target),
+      after: clampText(after)
+    };
+  };
+
+  const hexToRgba = (hex, alpha = 0.35) => {
+    if (!hex) return `rgba(250, 204, 21, ${alpha})`;
+    const clean = hex.replace('#', '').trim();
+    if (clean.length === 3) {
+      const r = parseInt(clean[0] + clean[0], 16);
+      const g = parseInt(clean[1] + clean[1], 16);
+      const b = parseInt(clean[2] + clean[2], 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+    if (clean.length === 6) {
+      const r = parseInt(clean.slice(0, 2), 16);
+      const g = parseInt(clean.slice(2, 4), 16);
+      const b = parseInt(clean.slice(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+    return `rgba(250, 204, 21, ${alpha})`;
+  };
+
+  const buildHighlightContext = async (cfiRange, highlightText) => {
+    try {
+      if (!rendition?.book) return { before: '', current: highlightText, after: '' };
+      if (rendition.book?.ready) await rendition.book.ready;
+      const range = await rendition.book.getRange(cfiRange);
+      if (!range) return { before: '', current: highlightText, after: '' };
+      const node = range.commonAncestorContainer?.nodeType === 3
+        ? range.commonAncestorContainer.parentElement
+        : range.commonAncestorContainer;
+      const block = node?.closest?.('p, li, blockquote') || node?.closest?.('div') || node;
+      const raw = block?.textContent || '';
+      return extractSentenceContext(raw, highlightText);
+    } catch (err) {
+      console.error(err);
+      return { before: '', current: highlightText, after: '' };
+    }
+  };
+
+  const exportHighlightsPdf = async () => {
+    const targets = selectedHighlights.length
+      ? highlights.filter((h) => selectedHighlights.includes(h.cfiRange))
+      : highlights;
+    if (!targets.length || isExportingHighlights) return;
+    setIsExportingHighlights(true);
+    try {
+      const exportRoot = document.createElement('div');
+      exportRoot.style.position = 'fixed';
+      exportRoot.style.left = '-10000px';
+      exportRoot.style.top = '0';
+      exportRoot.style.width = '720px';
+      exportRoot.style.padding = '24px';
+      document.body.appendChild(exportRoot);
+
+      const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 36;
+      const gap = 18;
+      const availableWidth = pageWidth - margin * 2;
+      let cursorY = margin;
+
+      for (let i = 0; i < targets.length; i += 1) {
+        const h = targets[i];
+        exportRoot.innerHTML = '';
+
+        const card = document.createElement('div');
+        card.style.background = '#0f172a';
+        card.style.border = '1px solid #1e293b';
+        card.style.borderRadius = '16px';
+        card.style.padding = '24px';
+        card.style.color = '#e2e8f0';
+        card.style.fontFamily = "'Source Serif 4', Georgia, serif";
+        card.style.boxShadow = '0 16px 40px rgba(15, 23, 42, 0.4)';
+
+        const header = document.createElement('div');
+        header.style.display = 'flex';
+        header.style.alignItems = 'center';
+        header.style.justifyContent = 'space-between';
+        header.style.marginBottom = '16px';
+        header.style.fontFamily = "'Fira Sans', Arial, sans-serif";
+        header.style.textTransform = 'uppercase';
+        header.style.letterSpacing = '0.12em';
+        header.style.fontSize = '10px';
+        header.style.color = '#94a3b8';
+        header.textContent = `${book?.title || 'Highlights'} · Highlight ${i + 1} of ${targets.length}`;
+
+        let chapterLabel = '';
+        let locationLabel = '';
+        try {
+          if (rendition?.book?.spine?.get) {
+            const spineItem = rendition.book.spine.get(h.cfiRange);
+            const href = spineItem?.href || '';
+            const match = toc.find(t => t.href && href && href.includes(t.href));
+            if (match?.label) chapterLabel = match.label;
+          }
+          const locations = rendition?.book?.locations;
+          if (locations?.locationFromCfi) {
+            const loc = locations.locationFromCfi(h.cfiRange);
+            if (Number.isFinite(loc)) {
+              const total = typeof locations.total === 'number'
+                ? locations.total
+                : (typeof locations.length === 'function' ? locations.length() : null);
+              locationLabel = total ? `Page ${loc + 1} / ${total}` : `Page ${loc + 1}`;
+            }
+          }
+        } catch (err) {
+          console.error(err);
+        }
+
+        const meta = document.createElement('div');
+        meta.style.marginTop = '6px';
+        meta.style.fontFamily = "'Fira Sans', Arial, sans-serif";
+        meta.style.fontSize = '11px';
+        meta.style.color = '#94a3b8';
+        meta.textContent = [chapterLabel, locationLabel].filter(Boolean).join(' · ');
+
+        const main = document.createElement('div');
+        main.style.margin = '14px 0';
+        main.style.fontSize = '16px';
+        main.style.lineHeight = '1.7';
+        main.style.fontWeight = '600';
+        main.style.whiteSpace = 'normal';
+        main.style.wordBreak = 'break-word';
+        main.style.overflowWrap = 'anywhere';
+
+        const target = (h.text || '').replace(/\s+/g, ' ').trim();
+        if (target) {
+          const spanMatch = document.createElement('span');
+          spanMatch.textContent = target;
+          spanMatch.style.background = hexToRgba(h.color, 0.55);
+          spanMatch.style.color = '#0b1220';
+          spanMatch.style.padding = '2px 6px 5px';
+          spanMatch.style.borderRadius = '6px';
+          spanMatch.style.lineHeight = '1.8';
+          spanMatch.style.boxDecorationBreak = 'clone';
+          spanMatch.style.webkitBoxDecorationBreak = 'clone';
+          spanMatch.style.backgroundClip = 'padding-box';
+          main.append(spanMatch);
+        } else {
+          main.textContent = '';
+        }
+
+        if (h.note) {
+          const note = document.createElement('div');
+          note.style.marginTop = '16px';
+          note.style.paddingTop = '12px';
+          note.style.borderTop = '1px solid rgba(148, 163, 184, 0.35)';
+          note.style.fontFamily = "'Fira Sans', Arial, sans-serif";
+          note.style.fontSize = '13px';
+          note.style.color = '#cbd5f5';
+          note.style.fontStyle = 'italic';
+          note.textContent = h.note;
+          card.append(header, meta, main, note);
+        } else {
+          card.append(header, meta, main);
+        }
+        exportRoot.appendChild(card);
+
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const canvas = await html2canvas(card, { scale: 2, backgroundColor: null });
+        const imgData = canvas.toDataURL('image/png');
+
+        const ratio = canvas.height / canvas.width;
+        let imgWidth = availableWidth;
+        let imgHeight = imgWidth * ratio;
+        if (imgHeight > pageHeight - margin * 2) {
+          imgHeight = pageHeight - margin * 2;
+          imgWidth = imgHeight / ratio;
+        }
+        if (cursorY + imgHeight > pageHeight - margin) {
+          pdf.addPage();
+          cursorY = margin;
+        }
+        const x = (pageWidth - imgWidth) / 2;
+        pdf.addImage(imgData, 'PNG', x, cursorY, imgWidth, imgHeight);
+        cursorY += imgHeight + gap;
+      }
+
+      const suffix = selectedHighlights.length ? 'selected' : 'highlights';
+      pdf.save(`${book?.title || 'highlights'}-${suffix}.pdf`);
+      document.body.removeChild(exportRoot);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsExportingHighlights(false);
+    }
+  };
 
   const formatDuration = (seconds) => {
     if (!Number.isFinite(seconds) || seconds <= 0) return '';
@@ -295,6 +716,7 @@ export default function Reader() {
   const closeDictionary = () => {
     cancelDictionaryLookup();
     setShowDictionary(false);
+    setDictionaryAnchor(null);
   };
 
   const cancelTranslation = () => {
@@ -312,6 +734,7 @@ export default function Reader() {
   const closeTranslation = () => {
     cancelTranslation();
     setShowTranslation(false);
+    setTranslationAnchor(null);
   };
 
   const lookupDictionary = async (term) => {
@@ -433,6 +856,11 @@ export default function Reader() {
     const wordCount = trimmed.split(/\s+/).length;
     const clean = sanitizeDictionaryTerm(trimmed);
     if (!clean) return;
+    if (selection?.pos) {
+      setDictionaryAnchor({ ...selection.pos });
+    }
+    setShowTranslation(false);
+    setTranslationAnchor(null);
     setShowDictionary(true);
     setDictionaryQuery(clean);
     if (wordCount === 1) {
@@ -446,6 +874,11 @@ export default function Reader() {
   const openTranslationForText = (text) => {
     const trimmed = (text || '').trim();
     if (!trimmed) return;
+    if (selection?.pos) {
+      setTranslationAnchor({ ...selection.pos });
+    }
+    setShowDictionary(false);
+    setDictionaryAnchor(null);
     setShowTranslation(true);
     setTranslationQuery(trimmed);
     setTranslationResult("");
@@ -453,23 +886,87 @@ export default function Reader() {
     translateText(trimmed, targetLanguage, sourceLanguage);
   };
 
-  const handleSelection = (text, cfiRange, pos, isExisting = false) => {
+  const getContextPanelStyle = (anchor) => {
+    const padding = 12;
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1200;
+    const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
+    const width = Math.min(420, Math.max(280, viewportWidth - padding * 2));
+    const maxHeight = Math.min(520, Math.max(260, Math.floor(viewportHeight * 0.72)));
+
+    const safeAnchorX = anchor?.x ?? viewportWidth / 2;
+    const safeAnchorY = anchor?.y ?? viewportHeight / 2;
+
+    let left = safeAnchorX + 8;
+    let top = safeAnchorY + 8;
+
+    if (left + width > viewportWidth - padding) {
+      left = viewportWidth - width - padding;
+    }
+    if (left < padding) left = padding;
+
+    if (top + maxHeight > viewportHeight - padding) {
+      top = Math.max(padding, safeAnchorY - maxHeight - 8);
+    }
+    if (top < padding) top = padding;
+
+    return { left, top, width, maxHeight };
+  };
+
+  const getChapterLabel = (loc) => {
+    if (!loc?.start) return 'Bookmark';
+    const match = toc.find(t => t.href && loc.start.href && t.href.includes(loc.start.href));
+    if (match?.label) return match.label;
+    if (typeof loc.start.index === 'number') return `Section ${loc.start.index + 1}`;
+    return 'Bookmark';
+  };
+
+  const addBookmarkAtLocation = async () => {
+    const currentBook = bookRef.current;
+    if (!currentBook || !rendition) return;
+    try {
+      const loc = rendition.currentLocation();
+      if (!loc?.start?.cfi) return;
+
+      const viewer = rendition.getContents()[0];
+      const pageText = viewer?.document?.body?.innerText || '';
+      const snippet = pageText.trim().slice(0, 140);
+      const label = getChapterLabel(loc);
+
+      const newBookmark = {
+        cfi: loc.start.cfi,
+        href: loc.start.href || '',
+        label,
+        text: snippet,
+        createdAt: new Date().toISOString()
+      };
+
+      const updated = await saveBookmark(currentBook.id, newBookmark);
+      if (updated) {
+        setBookmarks(updated);
+        setBook({ ...currentBook, bookmarks: updated });
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const removeBookmark = async (cfi) => {
+    const currentBook = bookRef.current;
+    if (!currentBook || !cfi) return;
+    try {
+      const updated = await deleteBookmark(currentBook.id, cfi);
+      if (updated) {
+        setBookmarks(updated);
+        setBook({ ...currentBook, bookmarks: updated });
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleSelection = useCallback((text, cfiRange, pos, isExisting = false) => {
     const trimmed = (text || '').trim();
     if (!trimmed) return;
-    if (!isExisting && rendition) {
-      try {
-        if (tempSelectionRef.current) {
-          rendition.annotations.remove('temp-selection');
-          tempSelectionRef.current = null;
-        }
-        rendition.annotations.add('highlight', cfiRange, {}, null, 'temp-selection', {
-          fill: '#fde68a', 'fill-opacity': '0.6', 'mix-blend-mode': 'multiply'
-        });
-        tempSelectionRef.current = cfiRange;
-      } catch (err) {
-        console.error(err);
-      }
-    }
     setSelection({
       text: trimmed,
       cfiRange,
@@ -477,15 +974,32 @@ export default function Reader() {
       isExisting
     });
     setSelectionMode(isExisting ? 'delete' : 'actions');
+  }, []);
+
+  const jumpToCfi = (cfi) => {
+    if (!cfi) return;
+    if (rendition) {
+      try {
+        rendition.display(cfi);
+      } catch (err) {
+        console.error(err);
+        setJumpTarget(cfi);
+      }
+    } else {
+      setJumpTarget(cfi);
+    }
+    setTimeout(() => setJumpTarget(null), 0);
   };
 
   const clearSelection = () => {
     setSelection(null);
     setSelectionMode('actions');
-    if (rendition && tempSelectionRef.current) {
+    if (rendition) {
       try {
-        rendition.annotations.remove('temp-selection');
-        tempSelectionRef.current = null;
+        const contentsList = rendition.getContents?.() || [];
+        contentsList.forEach((content) => {
+          content?.window?.getSelection?.()?.removeAllRanges?.();
+        });
       } catch (err) {
         console.error(err);
       }
@@ -531,18 +1045,38 @@ export default function Reader() {
     }
   };
 
+  const openNoteEditor = (highlight) => {
+    setEditingHighlight(highlight);
+    setNoteDraft(highlight?.note || '');
+  };
+
+  const closeNoteEditor = () => {
+    setEditingHighlight(null);
+    setNoteDraft('');
+  };
+
+  const saveHighlightNote = async () => {
+    const currentBook = bookRef.current;
+    if (!currentBook || !editingHighlight?.cfiRange) return;
+    try {
+      const updated = await updateHighlightNote(currentBook.id, editingHighlight.cfiRange, noteDraft.trim());
+      if (updated) {
+        setHighlights(updated);
+        setBook({ ...currentBook, highlights: updated });
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      closeNoteEditor();
+    }
+  };
+
   const handleLocationChange = (loc) => {
     if (!loc?.start || !bookId) return;
     lastActiveRef.current = Date.now();
     const nextProgress = Math.min(Math.max(Math.floor((loc.percentage || 0) * 100), 0), 100);
     updateBookProgress(bookId, loc.start.cfi, loc.percentage || 0);
     setProgressPct(nextProgress);
-    setBook((prev) => prev ? {
-      ...prev,
-      progress: nextProgress,
-      lastLocation: loc.start.cfi,
-      lastRead: new Date().toISOString()
-    } : prev);
 
     // Automatically summarise each new "screen" in the background.  If the
     // current CFI differs from the last summarised one and no background
@@ -579,7 +1113,7 @@ export default function Reader() {
         const updatedGlobal = memory ? `${memory}\n\n${result.text}` : result.text;
         const updatedBook = await saveChapterSummary(currentBook.id, chapterHref, result.text, updatedGlobal);
         if (updatedBook) {
-          setBook(updatedBook);
+          mergeBookUpdate(updatedBook);
         }
       } else if (result.error) {
         console.error('Chapter summary failed:', result.error);
@@ -656,7 +1190,7 @@ export default function Reader() {
         if (seed.text) {
           effectiveMemory = seed.text;
           const updatedBook = await savePageSummary(currentBook.id, `seed-${Date.now()}`, seed.text, seed.text);
-          if (updatedBook) setBook(updatedBook);
+          if (updatedBook) mergeBookUpdate(updatedBook);
         } else if (seed.error) {
           setStoryError(aiUnavailableMessage);
         }
@@ -704,7 +1238,7 @@ export default function Reader() {
         const updatedGlobal = memory ? `${memory}\n\n${result.text}` : result.text;
         const updatedBook = await savePageSummary(currentBook.id, cfi, result.text, updatedGlobal);
         if (updatedBook) {
-          setBook(updatedBook);
+          mergeBookUpdate(updatedBook);
         }
       } else if (result.error) {
         console.error('Background summary failed:', result.error);
@@ -765,7 +1299,7 @@ export default function Reader() {
       }
 
       if (updatedBook) {
-        setBook(updatedBook);
+        mergeBookUpdate(updatedBook);
         setStoryRecap(memory);
       }
     } catch (err) {
@@ -777,15 +1311,76 @@ export default function Reader() {
   };
 
   useEffect(() => {
-    const loadBook = async () => { if (bookId) setBook(await getBook(bookId)); };
+    const loadBook = async () => {
+      if (!bookId) return;
+      const loaded = await getBook(bookId);
+      mergeBookUpdate(loaded);
+    };
     loadBook();
+  }, [bookId, mergeBookUpdate]);
+
+  useEffect(() => {
+    if (!bookId) return;
+    markBookStarted(bookId).catch((err) => {
+      console.error(err);
+    });
   }, [bookId]);
 
   useEffect(() => {
-    if (book?.highlights) {
-      setHighlights(book.highlights);
+    initialPanelAppliedRef.current = false;
+  }, [bookId, panelParam]);
+
+  useEffect(() => {
+    if (!book?.id || initialPanelAppliedRef.current) return;
+    if (panelParam === 'highlights') {
+      setShowHighlightsPanel(true);
+      setShowBookmarksPanel(false);
+    } else if (panelParam === 'bookmarks') {
+      setShowBookmarksPanel(true);
+      setShowHighlightsPanel(false);
     }
-  }, [book]);
+    initialPanelAppliedRef.current = true;
+  }, [book?.id, panelParam]);
+
+  useEffect(() => {
+    if (!book?.id) return;
+    const hasBookSettings = !!(book.readerSettings && Object.keys(book.readerSettings).length);
+    const merged = hasBookSettings
+      ? { ...DEFAULT_READER_SETTINGS, ...book.readerSettings }
+      : { ...DEFAULT_READER_SETTINGS, ...(legacyReaderSettings || {}) };
+
+    setSettings((prev) => {
+      const prevJson = JSON.stringify(prev);
+      const nextJson = JSON.stringify(merged);
+      return prevJson === nextJson ? prev : merged;
+    });
+    settingsHydratedRef.current = true;
+  }, [book?.id, legacyReaderSettings]);
+
+  useEffect(() => {
+    const incoming = Array.isArray(book?.highlights) ? book.highlights : [];
+    setHighlights((prev) => (sameHighlights(prev, incoming) ? prev : incoming));
+  }, [book?.highlights]);
+
+  useEffect(() => {
+    if (!highlights.length) {
+      setSelectedHighlights([]);
+      selectionTouchedRef.current = false;
+      return;
+    }
+
+    if (!selectionTouchedRef.current) {
+      setSelectedHighlights(highlights.map((h) => h.cfiRange));
+      return;
+    }
+
+    setSelectedHighlights((prev) => prev.filter((cfi) => highlights.some((h) => h.cfiRange === cfi)));
+  }, [highlights]);
+
+  useEffect(() => {
+    const incoming = Array.isArray(book?.bookmarks) ? book.bookmarks : [];
+    setBookmarks((prev) => (sameBookmarks(prev, incoming) ? prev : incoming));
+  }, [book?.bookmarks]);
 
   useEffect(() => {
     if (typeof book?.progress === 'number') {
@@ -806,7 +1401,7 @@ export default function Reader() {
       try {
         isUpdatingStatsRef.current = true;
         const updated = await updateReadingStats(bookId, Math.floor(intervalMs / 1000));
-        if (updated) setBook(updated);
+        if (updated) mergeBookUpdate(updated);
       } catch (err) {
         console.error(err);
       } finally {
@@ -816,17 +1411,56 @@ export default function Reader() {
 
     const id = setInterval(tick, intervalMs);
     return () => clearInterval(id);
-  }, [bookId]);
+  }, [bookId, mergeBookUpdate]);
 
-  const [settings, setSettings] = useState(() => {
-    const saved = localStorage.getItem('reader-settings');
-    return saved ? JSON.parse(saved) : { fontSize: 100, theme: 'light', flow: 'paginated' };
-  });
+  useEffect(() => {
+    if (!bookId || !settingsHydratedRef.current) return;
+    const timeoutId = setTimeout(() => {
+      updateBookReaderSettings(bookId, settings).catch((err) => {
+        console.error(err);
+      });
+    }, 250);
+    return () => clearTimeout(timeoutId);
+  }, [bookId, settings]);
+
+  useEffect(() => {
+    const handleKey = (event) => {
+      if (!rendition) return;
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+      const target = event.target;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable)) {
+        return;
+      }
+
+      if (settings.flow === 'paginated') {
+        if (event.key === 'ArrowRight') {
+          event.preventDefault();
+          rendition.next();
+        } else if (event.key === 'ArrowLeft') {
+          event.preventDefault();
+          rendition.prev();
+        }
+      } else {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          const content = rendition.getContents()[0];
+          const win = content?.window;
+          if (!win) return;
+          const delta = Math.round(win.innerHeight * 0.85);
+          win.scrollBy({ top: event.key === 'ArrowDown' ? delta : -delta, left: 0, behavior: 'smooth' });
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKey, { passive: false });
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [rendition, settings.flow]);
 
   const phoneticText =
     dictionaryEntry?.phonetic ||
     dictionaryEntry?.phonetics?.find((p) => p.text)?.text ||
     "";
+  const isReaderDark = settings.theme === 'dark';
 
   if (!book) return <div className="p-10 text-center dark:bg-gray-900 dark:text-gray-400">Loading...</div>;
 
@@ -979,6 +1613,82 @@ export default function Reader() {
         </div>
       )}
 
+      {showFontMenu && (
+        <div className="fixed inset-0 z-[55]">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setShowFontMenu(false)}
+          />
+          <div
+            className={`absolute right-4 top-20 w-[92vw] max-w-sm rounded-3xl shadow-2xl p-5 ${
+              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Type size={18} className="text-gray-400" />
+                <div className="text-sm font-bold">Text Settings</div>
+              </div>
+              <button
+                onClick={() => setShowFontMenu(false)}
+                className="p-1 text-gray-400 hover:text-red-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4">
+              <div>
+                <div className="text-[10px] uppercase tracking-widest text-gray-400 mb-2">
+                  Text size
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setSettings(s => ({ ...s, fontSize: Math.max(80, s.fontSize - 5) }))}
+                    className="w-8 h-8 rounded-full border border-gray-200 dark:border-gray-700 text-sm font-bold"
+                  >
+                    -
+                  </button>
+                  <input
+                    type="range"
+                    min="80"
+                    max="160"
+                    step="5"
+                    value={settings.fontSize}
+                    onChange={(e) => setSettings(s => ({ ...s, fontSize: Number(e.target.value) }))}
+                    className="flex-1"
+                  />
+                  <button
+                    onClick={() => setSettings(s => ({ ...s, fontSize: Math.min(160, s.fontSize + 5) }))}
+                    className="w-8 h-8 rounded-full border border-gray-200 dark:border-gray-700 text-sm font-bold"
+                  >
+                    +
+                  </button>
+                  <div className="text-xs font-bold w-12 text-right">{settings.fontSize}%</div>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-[10px] uppercase tracking-widest text-gray-400 mb-2">
+                  Font
+                </div>
+                <select
+                  value={settings.fontFamily}
+                  onChange={(e) => setSettings(s => ({ ...s, fontFamily: e.target.value }))}
+                  className="w-full py-2 px-3 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-bold bg-transparent"
+                >
+                  {fontOptions.map((font) => (
+                    <option key={font.label} value={font.value}>
+                      {font.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showSearchMenu && (
         <div className="fixed inset-0 z-[55]">
           <div
@@ -1074,19 +1784,21 @@ export default function Reader() {
         </div>
       )}
 
-      {showDictionary && (
-        <div className="fixed inset-0 z-[55]">
+      {showDictionary && (() => {
+        const panelStyle = getContextPanelStyle(dictionaryAnchor || selection?.pos);
+        return (
+        <div className="fixed inset-0 z-[75]" onClick={closeDictionary}>
           <div
-            className="absolute inset-0 bg-black/40"
-            onClick={closeDictionary}
-          />
-          <div
-            className={`absolute left-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
-              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
+            className={`absolute rounded-3xl shadow-2xl p-5 flex flex-col ${
+              isReaderDark
+                ? 'bg-gray-800 border border-gray-700 text-gray-100'
+                : 'bg-white border border-gray-200 text-gray-900'
             }`}
+            style={panelStyle}
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center gap-2">
-              <BookOpenText size={18} className="text-gray-400" />
+              <BookOpenText size={18} className={isReaderDark ? 'text-gray-400' : 'text-gray-600'} />
               <input
                 type="text"
                 placeholder="Look up a word..."
@@ -1095,11 +1807,13 @@ export default function Reader() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') lookupDictionary(dictionaryQuery);
                 }}
-                className="flex-1 bg-transparent outline-none text-sm"
+                className={`flex-1 bg-transparent outline-none text-sm ${
+                  isReaderDark ? 'text-gray-100 placeholder:text-gray-400' : 'text-gray-900 placeholder:text-gray-500'
+                }`}
               />
               <button
                 onClick={closeDictionary}
-                className="p-1 text-gray-400 hover:text-red-500"
+                className={`p-1 hover:text-red-500 ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}
               >
                 <X size={18} />
               </button>
@@ -1114,15 +1828,17 @@ export default function Reader() {
               </button>
               <button
                 onClick={clearDictionary}
-                className="flex-1 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-bold"
+                className={`flex-1 py-2 rounded-xl text-xs font-bold ${
+                  isReaderDark ? 'border border-gray-700' : 'border border-gray-300 text-gray-900'
+                }`}
               >
                 Clear
               </button>
             </div>
 
-            <div className="mt-4 max-h-[45vh] overflow-y-auto pr-1 space-y-4">
+            <div className="mt-4 flex-1 min-h-0 overflow-y-auto pr-1 space-y-4">
               {isDefining && (
-                <div className="text-xs text-gray-500">Looking up definition...</div>
+                <div className={`text-xs ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}>Looking up definition...</div>
               )}
               {!isDefining && dictionaryError && (
                 <div className="text-xs text-red-500">{dictionaryError}</div>
@@ -1130,21 +1846,21 @@ export default function Reader() {
               {!isDefining && dictionaryEntry && (
                 <div className="space-y-3">
                   <div>
-                    <div className="text-lg font-bold text-gray-900 dark:text-gray-100">
+                    <div className={`text-lg font-bold ${isReaderDark ? 'text-gray-100' : 'text-gray-900'}`}>
                       {dictionaryEntry.word}
                     </div>
                     {phoneticText && (
-                      <div className="text-xs text-gray-500">{phoneticText}</div>
+                      <div className={`text-xs ${isReaderDark ? 'text-gray-300' : 'text-gray-700'}`}>{phoneticText}</div>
                     )}
                   </div>
 
                   {(dictionaryEntry.meanings || []).slice(0, 3).map((meaning, idx) => (
                     <div key={`${meaning.partOfSpeech}-${idx}`} className="space-y-2">
-                      <div className="text-xs uppercase tracking-widest text-gray-400">
+                      <div className={`text-xs uppercase tracking-widest ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}>
                         {meaning.partOfSpeech}
                       </div>
                       {(meaning.definitions || []).slice(0, 2).map((def, dIdx) => (
-                        <div key={`${idx}-${dIdx}`} className="text-sm text-gray-700 dark:text-gray-200">
+                        <div key={`${idx}-${dIdx}`} className={`text-sm ${isReaderDark ? 'text-gray-200' : 'text-gray-800'}`}>
                           - {def.definition}
                         </div>
                       ))}
@@ -1155,31 +1871,36 @@ export default function Reader() {
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
-      {showTranslation && (
-        <div className="fixed inset-0 z-[55]" data-testid="translation-panel">
+      {showTranslation && (() => {
+        const panelStyle = getContextPanelStyle(translationAnchor || selection?.pos);
+        return (
+        <div className="fixed inset-0 z-[75]" data-testid="translation-panel" onClick={closeTranslation}>
           <div
-            className="absolute inset-0 bg-black/40"
-            onClick={closeTranslation}
-          />
-          <div
-            className={`absolute right-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
-              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
+            className={`absolute rounded-3xl shadow-2xl p-5 flex flex-col ${
+              isReaderDark
+                ? 'bg-gray-800 border border-gray-700 text-gray-100'
+                : 'bg-white border border-gray-200 text-gray-900'
             }`}
+            style={panelStyle}
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center gap-2">
-              <Languages size={18} className="text-gray-400" />
+              <Languages size={18} className={isReaderDark ? 'text-gray-400' : 'text-gray-600'} />
               <textarea
                 rows={2}
                 placeholder="Translate this text..."
                 value={translationQuery}
                 onChange={(e) => setTranslationQuery(e.target.value)}
-                className="flex-1 bg-transparent outline-none text-sm resize-none"
+                className={`flex-1 bg-transparent outline-none text-sm resize-none ${
+                  isReaderDark ? 'text-gray-100 placeholder:text-gray-400' : 'text-gray-900 placeholder:text-gray-500'
+                }`}
               />
               <button
                 onClick={closeTranslation}
-                className="p-1 text-gray-400 hover:text-red-500"
+                className={`p-1 hover:text-red-500 ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}
               >
                 <X size={18} />
               </button>
@@ -1193,7 +1914,11 @@ export default function Reader() {
                   setSourceLanguage(next);
                   if (translationQuery.trim()) translateText(translationQuery, targetLanguage, next);
                 }}
-                className="py-2 px-3 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-bold bg-transparent"
+                className={`py-2 px-3 rounded-xl text-xs font-bold ${
+                  isReaderDark
+                    ? 'border border-gray-700 bg-gray-800 text-gray-100'
+                    : 'border border-gray-300 bg-white text-gray-900'
+                }`}
               >
                 {sourceLanguageOptions.map((lang) => (
                   <option key={lang.code} value={lang.code}>
@@ -1208,7 +1933,11 @@ export default function Reader() {
                   setTargetLanguage(next);
                   if (translationQuery.trim()) translateText(translationQuery, next, sourceLanguage);
                 }}
-                className="py-2 px-3 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-bold bg-transparent"
+                className={`py-2 px-3 rounded-xl text-xs font-bold ${
+                  isReaderDark
+                    ? 'border border-gray-700 bg-gray-800 text-gray-100'
+                    : 'border border-gray-300 bg-white text-gray-900'
+                }`}
               >
                 {languageOptions.map((lang) => (
                   <option key={lang.code} value={lang.code}>
@@ -1227,35 +1956,40 @@ export default function Reader() {
               </button>
               <button
                 onClick={clearTranslation}
-                className="py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-bold"
+                className={`py-2 rounded-xl text-xs font-bold ${
+                  isReaderDark ? 'border border-gray-700' : 'border border-gray-300 text-gray-900'
+                }`}
               >
                 Clear
               </button>
             </div>
 
-            <div className="mt-2 text-[10px] uppercase tracking-widest text-gray-400">
+            <div className={`mt-2 text-[10px] uppercase tracking-widest ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}>
               Provider: {translateProviderLabel}{SUPPORTS_AUTO_DETECT ? '' : ' · select source language'}
             </div>
 
-            <div className="mt-4 max-h-[45vh] overflow-y-auto pr-1 space-y-3">
+            <div className="mt-4 flex-1 min-h-0 overflow-y-auto pr-1 space-y-3">
               {isTranslating && (
-                <div className="text-xs text-gray-500">Translating...</div>
+                <div className={`text-xs ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}>Translating...</div>
               )}
               {!isTranslating && translationError && (
                 <div className="text-xs text-red-500">{translationError}</div>
               )}
               {!isTranslating && translationResult && (
-                <div className="p-3 rounded-2xl bg-gray-50 dark:bg-gray-900/40 text-sm text-gray-700 dark:text-gray-200 whitespace-pre-wrap">
+                <div className={`p-3 rounded-2xl text-sm whitespace-pre-wrap ${
+                  isReaderDark ? 'bg-gray-900/40 text-gray-200' : 'bg-gray-100 text-gray-900'
+                }`}>
                   {translationResult}
                 </div>
               )}
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {showHighlightsPanel && (
-        <div className="fixed inset-0 z-[55]">
+        <div className="fixed inset-0 z-[55]" data-testid="highlights-panel">
           <div
             className="absolute inset-0 bg-black/40"
             onClick={() => setShowHighlightsPanel(false)}
@@ -1280,6 +2014,39 @@ export default function Reader() {
 
             <div className="mt-3 text-[11px] text-gray-500">
               {highlights.length} highlight{highlights.length === 1 ? '' : 's'}
+              <button
+                onClick={exportHighlightsPdf}
+                disabled={!selectedHighlights.length || isExportingHighlights}
+                className="ml-3 px-3 py-1 rounded-full bg-blue-600 text-white text-[10px] font-bold disabled:opacity-50"
+              >
+                {isExportingHighlights ? 'Exporting...' : 'Export Selected'}
+              </button>
+            </div>
+
+            <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500">
+              <span>
+                {selectedHighlights.length} selected
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    selectionTouchedRef.current = true;
+                    setSelectedHighlights(highlights.map((h) => h.cfiRange));
+                  }}
+                  className="text-[10px] font-bold text-blue-500"
+                >
+                  Select all
+                </button>
+                <button
+                  onClick={() => {
+                    selectionTouchedRef.current = true;
+                    setSelectedHighlights([]);
+                  }}
+                  className="text-[10px] font-bold text-gray-400 hover:text-gray-600"
+                >
+                  Clear
+                </button>
+              </div>
             </div>
 
             <div className="mt-4 max-h-[55vh] overflow-y-auto pr-1 space-y-3">
@@ -1291,10 +2058,29 @@ export default function Reader() {
                   key={`${h.cfiRange}-${idx}`}
                   className="p-3 rounded-2xl border border-transparent hover:border-gray-200 dark:hover:border-gray-700 transition"
                 >
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-start gap-2">
                     <button
                       onClick={() => {
-                        setJumpTarget(h.cfiRange);
+                        selectionTouchedRef.current = true;
+                        setSelectedHighlights((prev) => prev.includes(h.cfiRange)
+                          ? prev.filter((cfi) => cfi !== h.cfiRange)
+                          : [...prev, h.cfiRange]
+                        );
+                      }}
+                      className={`mt-1 w-4 h-4 rounded border flex items-center justify-center ${
+                        selectedHighlights.includes(h.cfiRange)
+                          ? 'bg-blue-600 border-blue-600'
+                          : 'border-gray-300 dark:border-gray-600'
+                      }`}
+                      title="Select highlight"
+                    >
+                      {selectedHighlights.includes(h.cfiRange) && (
+                        <span className="w-2 h-2 bg-white rounded-sm" />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => {
+                        jumpToCfi(h.cfiRange);
                         setShowHighlightsPanel(false);
                       }}
                       className="text-left flex-1"
@@ -1305,15 +2091,30 @@ export default function Reader() {
                       <div className="text-sm text-gray-700 dark:text-gray-200 line-clamp-3">
                         {h.text}
                       </div>
-                    </button>
-                    <button
-                      onClick={() => removeHighlight(h.cfiRange)}
-                      className="text-xs text-red-500 hover:text-red-600"
-                    >
-                      Delete
+                      {h.note && (
+                        <div className="mt-2 text-xs text-gray-500 italic line-clamp-2">
+                          {h.note}
+                        </div>
+                      )}
                     </button>
                   </div>
-                  <div className="mt-2 h-1.5 rounded-full" style={{ background: h.color }} />
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <div className="h-1.5 rounded-full flex-1" style={{ background: h.color }} />
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => openNoteEditor(h)}
+                        className="text-xs text-blue-500 hover:text-blue-600"
+                      >
+                        {h.note ? 'Edit note' : 'Add note'}
+                      </button>
+                      <button
+                        onClick={() => removeHighlight(h.cfiRange)}
+                        className="text-xs text-red-500 hover:text-red-600"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1321,7 +2122,131 @@ export default function Reader() {
         </div>
       )}
 
-      {selection && selection.pos && (() => {
+      {editingHighlight && (
+        <div className="fixed inset-0 z-[70]">
+          <div
+            className="absolute inset-0 bg-black/50"
+            onClick={closeNoteEditor}
+          />
+          <div
+            className={`absolute left-1/2 top-24 -translate-x-1/2 w-[92vw] max-w-lg rounded-3xl shadow-2xl p-6 ${
+              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-bold">Highlight note</div>
+              <button
+                onClick={closeNoteEditor}
+                className="p-1 text-gray-400 hover:text-red-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="mt-3 text-xs text-gray-500 line-clamp-3">
+              {editingHighlight.text}
+            </div>
+            <textarea
+              rows={4}
+              value={noteDraft}
+              onChange={(e) => setNoteDraft(e.target.value)}
+              placeholder="Write your note..."
+              className="mt-4 w-full rounded-2xl border border-gray-200 dark:border-gray-700 bg-transparent p-3 text-sm"
+            />
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                onClick={closeNoteEditor}
+                className="px-4 py-2 rounded-full text-xs font-bold border border-gray-200 dark:border-gray-700"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveHighlightNote}
+                className="px-4 py-2 rounded-full text-xs font-bold bg-blue-600 text-white"
+              >
+                Save note
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showBookmarksPanel && (
+        <div className="fixed inset-0 z-[55]" data-testid="bookmarks-panel">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setShowBookmarksPanel(false)}
+          />
+          <div
+            className={`absolute right-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
+              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Bookmark size={18} className="text-gray-400" />
+                <div className="text-sm font-bold">Bookmarks</div>
+              </div>
+              <button
+                onClick={() => setShowBookmarksPanel(false)}
+                className="p-1 text-gray-400 hover:text-red-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-3 flex items-center justify-between text-[11px] text-gray-500">
+              <span>
+                {bookmarks.length} bookmark{bookmarks.length === 1 ? '' : 's'}
+              </span>
+              <button
+                onClick={addBookmarkAtLocation}
+                className="px-3 py-1 rounded-full bg-blue-600 text-white text-[10px] font-bold"
+              >
+                Add Bookmark
+              </button>
+            </div>
+
+            <div className="mt-4 max-h-[55vh] overflow-y-auto pr-1 space-y-3">
+              {bookmarks.length === 0 && (
+                <div className="text-xs text-gray-500">No bookmarks yet.</div>
+              )}
+              {bookmarks.map((b, idx) => (
+                <div
+                  key={`${b.cfi}-${idx}`}
+                  className="p-3 rounded-2xl border border-transparent hover:border-gray-200 dark:hover:border-gray-700 transition"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <button
+                      onClick={() => {
+                        jumpToCfi(b.cfi);
+                        setShowBookmarksPanel(false);
+                      }}
+                      className="text-left flex-1"
+                    >
+                      <div className="text-[10px] uppercase tracking-widest text-gray-400 mb-1">
+                        {b.label || `Bookmark ${idx + 1}`}
+                      </div>
+                      {b.text && (
+                        <div className="text-sm text-gray-700 dark:text-gray-200 line-clamp-2">
+                          {b.text}
+                        </div>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => removeBookmark(b.cfi)}
+                      className="text-xs text-red-500 hover:text-red-600"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selection && selection.pos && !showDictionary && !showTranslation && (() => {
         const padding = 12;
         const rawX = selection.pos.x;
         const rawY = selection.pos.y;
@@ -1454,18 +2379,18 @@ export default function Reader() {
             <SearchIcon size={18} />
           </button>
           <button
-            onClick={() => setShowDictionary((s) => !s)}
-            className={`p-2 rounded-full transition ${showDictionary ? 'text-blue-600 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`}
-            title="Dictionary"
-          >
-            <BookOpenText size={18} />
-          </button>
-          <button
             onClick={() => setShowHighlightsPanel((s) => !s)}
             className={`p-2 rounded-full transition ${showHighlightsPanel ? 'text-blue-600 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`}
             title="Highlights"
           >
             <Highlighter size={18} />
+          </button>
+          <button
+            onClick={() => setShowBookmarksPanel((s) => !s)}
+            className={`p-2 rounded-full transition ${showBookmarksPanel ? 'text-blue-600 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`}
+            title="Bookmarks"
+          >
+            <Bookmark size={18} />
           </button>
           <div className="w-px h-6 bg-gray-200 dark:bg-gray-700 mx-1" />
           <button onClick={() => setSettings(s => ({...s, theme: s.theme === 'light' ? 'dark' : 'light'}))} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">{settings.theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}</button>
@@ -1487,7 +2412,7 @@ export default function Reader() {
           onChapterEnd={handleChapterEnd}
           searchResults={searchResults}
           highlights={highlights}
-          onSelection={(text, cfiRange, pos, isExisting) => handleSelection(text, cfiRange, pos, isExisting)}
+          onSelection={handleSelection}
         />
       </div>
     </div>

@@ -18,6 +18,13 @@ export default function BookView({
   const renditionRef = useRef(null);
   const bookRef = useRef(null);
   const lastChapterRef = useRef(null); // Track chapter changes
+  const onSelectionRef = useRef(onSelection);
+  const appliedHighlightsRef = useRef(new Map());
+  const appliedSearchRef = useRef(new Set());
+
+  useEffect(() => {
+    onSelectionRef.current = onSelection;
+  }, [onSelection]);
 
   const applyTheme = (rendition, theme) => {
     if (!rendition) return;
@@ -43,26 +50,6 @@ export default function BookView({
   }, [tocJump]);
 
   useEffect(() => {
-    if (!renditionRef.current) return;
-    renditionRef.current.annotations.remove('search-hl');
-    searchResults.forEach(result => {
-      renditionRef.current.annotations.add('highlight', result.cfi, {}, null, 'search-hl', {
-        fill: '#facc15', 'fill-opacity': '0.4', 'mix-blend-mode': 'multiply'
-      });
-    });
-  }, [searchResults]);
-
-  useEffect(() => {
-    if (!renditionRef.current) return;
-    renditionRef.current.annotations.remove('hl');
-    highlights.forEach(h => {
-      renditionRef.current.annotations.add('highlight', h.cfiRange, {}, (e) => {
-        if (onSelection) onSelection(h.text, h.cfiRange, { x: e.clientX, y: e.clientY }, true);
-      }, 'hl', { fill: h.color, 'fill-opacity': '0.3', 'mix-blend-mode': 'multiply' });
-    });
-  }, [highlights]);
-
-  useEffect(() => {
     if (!bookData) return;
     const book = ePub(bookData);
     bookRef.current = book;
@@ -78,18 +65,14 @@ export default function BookView({
       manager: settings.flow === 'scrolled' ? 'continuous' : 'default',
     });
     renditionRef.current = rendition;
+    appliedHighlightsRef.current = new Map();
+    appliedSearchRef.current = new Set();
 
     if (onRenditionReady) onRenditionReady(rendition);
 
     applyTheme(rendition, settings.theme);
 
     rendition.display(initialLocation || undefined).then(() => {
-      highlights.forEach(h => {
-        rendition.annotations.add('highlight', h.cfiRange, {}, (e) => {
-          if (onSelection) onSelection(h.text, h.cfiRange, { x: e.clientX, y: e.clientY }, true);
-        }, 'hl', { fill: h.color, 'fill-opacity': '0.3', 'mix-blend-mode': 'multiply' });
-      });
-
       book.locations.generate(1024).then(() => {
         const updateProgress = async () => {
             const loc = rendition.currentLocation();
@@ -131,7 +114,7 @@ export default function BookView({
       Promise.resolve(range).then((resolvedRange) => {
         if (!resolvedRange) return;
         const text = resolvedRange.toString();
-        if (text && onSelection) {
+        if (text && onSelectionRef.current) {
           const rects = resolvedRange.getClientRects();
           const rect = rects.length ? rects[rects.length - 1] : resolvedRange.getBoundingClientRect();
           let x = rect.right;
@@ -142,7 +125,7 @@ export default function BookView({
             x += frameRect.left;
             y += frameRect.top;
           }
-          onSelection(text, cfiRange, { x, y }, false);
+          onSelectionRef.current(text, cfiRange, { x, y }, false);
         }
       });
     });
@@ -153,6 +136,91 @@ export default function BookView({
   useEffect(() => {
     if (renditionRef.current) applyTheme(renditionRef.current, settings.theme);
   }, [settings.theme, settings.fontSize]);
+
+  useEffect(() => {
+    if (!renditionRef.current) return;
+    try {
+      if (settings.fontFamily && settings.fontFamily !== 'publisher') {
+        renditionRef.current.themes.override('font-family', settings.fontFamily);
+      } else {
+        renditionRef.current.themes.override('font-family', 'inherit');
+      }
+    } catch (err) {
+      console.error('Font override failed', err);
+    }
+  }, [settings.fontFamily]);
+
+  useEffect(() => {
+    if (!renditionRef.current) return;
+    const timer = setTimeout(() => {
+      if (!renditionRef.current) return;
+      const rendition = renditionRef.current;
+      const nextSet = new Set();
+      searchResults.forEach((result) => {
+        if (!result?.cfi) return;
+        nextSet.add(result.cfi);
+        if (!appliedSearchRef.current.has(result.cfi)) {
+          try {
+            rendition.annotations.add('highlight', result.cfi, {}, null, 'search-hl', {
+              fill: '#facc15',
+              'fill-opacity': '0.4',
+              'mix-blend-mode': 'normal'
+            });
+          } catch (err) {
+            console.error('Search highlight failed', err);
+          }
+        }
+      });
+      appliedSearchRef.current = new Set([...appliedSearchRef.current, ...nextSet]);
+    }, 40);
+    return () => clearTimeout(timer);
+  }, [bookData, searchResults, settings.fontSize, settings.fontFamily, settings.flow, settings.theme]);
+
+  useEffect(() => {
+    if (!renditionRef.current) return;
+    const timer = setTimeout(() => {
+      if (!renditionRef.current) return;
+      const rendition = renditionRef.current;
+      const nextMap = new Map();
+      highlights.forEach((h) => {
+        if (!h?.cfiRange || !h?.color) return;
+        nextMap.set(h.cfiRange, h.color);
+        const prevColor = appliedHighlightsRef.current.get(h.cfiRange);
+        if (prevColor !== h.color) {
+          if (prevColor) {
+            try {
+              rendition.annotations.remove(h.cfiRange, 'highlight');
+            } catch (err) {
+              console.error('Highlight cleanup failed', err);
+            }
+          }
+          try {
+            rendition.annotations.add('highlight', h.cfiRange, {}, (e) => {
+              if (onSelectionRef.current) onSelectionRef.current(h.text, h.cfiRange, { x: e.clientX, y: e.clientY }, true);
+            }, 'hl', {
+              fill: h.color,
+              'fill-opacity': '0.35',
+              'mix-blend-mode': 'normal'
+            });
+          } catch (err) {
+            console.error('Highlight render failed', err);
+          }
+        }
+      });
+      appliedHighlightsRef.current.forEach((_, cfi) => {
+        if (!nextMap.has(cfi)) {
+          try {
+            rendition.annotations.remove(cfi, 'highlight');
+          } catch (err) {
+            console.error('Highlight cleanup failed', err);
+          }
+        }
+      });
+      appliedHighlightsRef.current = nextMap;
+    }, 40);
+    return () => clearTimeout(timer);
+  }, [bookData, highlights, settings.fontSize, settings.fontFamily, settings.flow, settings.theme]);
+
 
   const prevPage = () => renditionRef.current?.prev();
   const nextPage = () => renditionRef.current?.next();
