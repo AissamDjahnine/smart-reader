@@ -897,6 +897,17 @@ export default function Home() {
     return filterOptions.find((f) => f.value === activeFilter)?.label || "All books";
   };
 
+  const resetLibraryFilters = () => {
+    setSearchQuery("");
+    setActiveFilter("all");
+    setSortBy("last-read-desc");
+  };
+
+  const hasActiveLibraryFilters =
+    Boolean(searchQuery.trim()) ||
+    activeFilter !== "all" ||
+    sortBy !== "last-read-desc";
+
   return (
     <div className="min-h-screen bg-gray-50 p-6 md:p-12 text-gray-900 font-sans">
       <div className="max-w-6xl mx-auto">
@@ -1040,79 +1051,97 @@ export default function Home() {
         )}
 
         {/* Search, Filter and Sort Bar */}
-        <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_220px_280px_120px] gap-3 mb-3">
-          <div className="relative flex-1">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
-            <input 
-              type="text"
-              placeholder="Search books, highlights, notes, bookmarks..."
-              data-testid="library-search"
-              className="w-full pl-12 pr-4 py-3 bg-white border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-          </div>
+        <div
+          data-testid="library-toolbar-sticky"
+          className="sticky top-3 z-20 mb-3 rounded-2xl bg-gray-50/95 pb-2 backdrop-blur supports-[backdrop-filter]:bg-gray-50/80"
+        >
+          <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_220px_280px_auto] gap-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+              <input 
+                type="text"
+                placeholder="Search books, highlights, notes, bookmarks..."
+                data-testid="library-search"
+                className="w-full pl-12 pr-4 py-3 bg-white border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
 
-          <div className="relative">
-            <Filter className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-            <select
-              data-testid="library-filter"
-              value={activeFilter}
-              onChange={(e) => setActiveFilter(e.target.value)}
-              className="w-full pl-11 pr-4 py-3 bg-white border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm text-sm font-semibold text-gray-700"
-            >
-              {filterOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
+            <div className="relative">
+              <Filter className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+              <select
+                data-testid="library-filter"
+                value={activeFilter}
+                onChange={(e) => setActiveFilter(e.target.value)}
+                className="w-full pl-11 pr-4 py-3 bg-white border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm text-sm font-semibold text-gray-700"
+              >
+                {filterOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-          <div className="relative">
-            <ArrowUpDown className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-            <select
-              data-testid="library-sort"
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-              className="w-full pl-11 pr-4 py-3 bg-white border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm text-sm font-semibold text-gray-700"
-            >
-              {sortOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
+            <div className="relative">
+              <ArrowUpDown className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+              <select
+                data-testid="library-sort"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="w-full pl-11 pr-4 py-3 bg-white border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm text-sm font-semibold text-gray-700"
+              >
+                {sortOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-          <div
-            className="flex items-center bg-white p-1 border border-gray-200 rounded-2xl shadow-sm"
-            data-testid="library-view-toggle"
-          >
-            <button
-              type="button"
-              data-testid="library-view-grid"
-              aria-pressed={viewMode === "grid"}
-              onClick={() => setViewMode("grid")}
-              className={`flex-1 py-2 rounded-xl transition-colors flex items-center justify-center ${
-                viewMode === "grid" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
-              }`}
-              title="Grid view"
-            >
-              <LayoutGrid size={16} />
-            </button>
-            <button
-              type="button"
-              data-testid="library-view-list"
-              aria-pressed={viewMode === "list"}
-              onClick={() => setViewMode("list")}
-              className={`flex-1 py-2 rounded-xl transition-colors flex items-center justify-center ${
-                viewMode === "list" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
-              }`}
-              title="List view"
-            >
-              <List size={16} />
-            </button>
+            <div className="flex items-center justify-end gap-2">
+              <div
+                className="w-[120px] flex items-center bg-white p-1 border border-gray-200 rounded-2xl shadow-sm"
+                data-testid="library-view-toggle"
+              >
+                <button
+                  type="button"
+                  data-testid="library-view-grid"
+                  aria-pressed={viewMode === "grid"}
+                  onClick={() => setViewMode("grid")}
+                  className={`flex-1 py-2 rounded-xl transition-colors flex items-center justify-center ${
+                    viewMode === "grid" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
+                  }`}
+                  title="Grid view"
+                >
+                  <LayoutGrid size={16} />
+                </button>
+                <button
+                  type="button"
+                  data-testid="library-view-list"
+                  aria-pressed={viewMode === "list"}
+                  onClick={() => setViewMode("list")}
+                  className={`flex-1 py-2 rounded-xl transition-colors flex items-center justify-center ${
+                    viewMode === "list" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
+                  }`}
+                  title="List view"
+                >
+                  <List size={16} />
+                </button>
+              </div>
+
+              {hasActiveLibraryFilters && (
+                <button
+                  type="button"
+                  data-testid="library-retry-button"
+                  onClick={resetLibraryFilters}
+                  className="inline-flex h-11 items-center rounded-2xl border border-blue-200 bg-blue-50 px-3 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                >
+                  Retry
+                </button>
+              )}
+            </div>
           </div>
         </div>
         {globalSearchQuery && !isTrashView && (
@@ -1271,12 +1300,13 @@ export default function Home() {
             <p className="text-gray-500 text-lg">
               {isTrashView ? "Trash is empty." : "No books found matching your criteria."}
             </p>
-            {(searchQuery || activeFilter !== "all") && (
+            {hasActiveLibraryFilters && (
               <button 
-                onClick={() => { setSearchQuery(""); setActiveFilter("all"); }}
+                data-testid="library-empty-retry-button"
+                onClick={resetLibraryFilters}
                 className="mt-4 text-blue-600 font-bold hover:underline"
               >
-                Clear all filters
+                Retry
               </button>
             )}
           </div>

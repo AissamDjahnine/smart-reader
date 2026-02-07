@@ -36,6 +36,41 @@ test('library sort and filter controls work with favorites', async ({ page }) =>
   await expect(bookLink).toBeVisible();
 });
 
+test('library toolbar is sticky and retry resets search filter and sort', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  const toolbar = page.getByTestId('library-toolbar-sticky');
+  await expect(toolbar).toBeVisible();
+  const toolbarPosition = await toolbar.evaluate((el) => getComputedStyle(el).position);
+  expect(toolbarPosition).toBe('sticky');
+
+  const searchInput = page.getByTestId('library-search');
+  const filterSelect = page.getByTestId('library-filter');
+  const sortSelect = page.getByTestId('library-sort');
+
+  await searchInput.fill('no-match-token-xyz');
+  await filterSelect.selectOption('favorites');
+  await sortSelect.selectOption('title-asc');
+  await expect(page.getByTestId('library-retry-button')).toBeVisible();
+  await expect(page.getByText('No books found matching your criteria.')).toBeVisible();
+
+  await page.getByTestId('library-retry-button').click();
+  await expect(searchInput).toHaveValue('');
+  await expect(filterSelect).toHaveValue('all');
+  await expect(sortSelect).toHaveValue('last-read-desc');
+  await expect(page.getByTestId('library-retry-button')).toHaveCount(0);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+});
+
 test('library card shows language and estimated pages metadata', async ({ page }) => {
   await page.addInitScript(() => {
     indexedDB.deleteDatabase('SmartReaderLib');
