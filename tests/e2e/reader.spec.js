@@ -196,3 +196,18 @@ test('sepia mode toggles warm reading background', async ({ page }) => {
   await page.getByTestId('sepia-toggle').click();
   await expect.poll(getBodyBg).toBe(initialBg);
 });
+
+test('menu button opens chapter contents and chapter selection closes panel', async ({ page }) => {
+  await openFixtureBook(page);
+
+  await page.getByRole('button', { name: /Open chapters/i }).click();
+  const panel = page.getByTestId('chapters-panel');
+  await expect(panel).toBeVisible();
+
+  await expect
+    .poll(async () => panel.getByTestId('toc-item').count(), { timeout: 15000 })
+    .toBeGreaterThan(0);
+
+  await panel.getByTestId('toc-item').first().click();
+  await expect(page.getByTestId('chapters-panel')).toHaveCount(0);
+});

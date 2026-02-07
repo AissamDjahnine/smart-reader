@@ -71,7 +71,6 @@ export default function Reader() {
   const [isStoryRecapping, setIsStoryRecapping] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [isDefining, setIsDefining] = useState(false);
-  const [sidebarTab, setSidebarTab] = useState('chapters');
   const [toc, setToc] = useState([]);
   const [jumpTarget, setJumpTarget] = useState(null);
   const [rendition, setRendition] = useState(null);
@@ -121,6 +120,7 @@ export default function Reader() {
   const [selection, setSelection] = useState(null);
   const [selectionMode, setSelectionMode] = useState('actions');
   const [progressPct, setProgressPct] = useState(0);
+  const [currentHref, setCurrentHref] = useState('');
   const [legacyReaderSettings] = useState(() => {
     const saved = localStorage.getItem('reader-settings');
     if (!saved) return null;
@@ -1171,6 +1171,7 @@ export default function Reader() {
     const nextProgress = Math.min(Math.max(Math.floor((loc.percentage || 0) * 100), 0), 100);
     queueProgressPersist(loc.start.cfi, loc.percentage || 0);
     setProgressPct(nextProgress);
+    setCurrentHref(loc.start.href || '');
 
     // Automatically summarise each new "screen" in the background.  If the
     // current CFI differs from the last summarised one and no background
@@ -1181,6 +1182,39 @@ export default function Reader() {
       lastSummaryCfiRef.current = currentCfi;
       summariseBackground(currentCfi);
     }
+  };
+
+  const flattenTocItems = (items, depth = 0, acc = []) => {
+    if (!Array.isArray(items)) return acc;
+    items.forEach((item) => {
+      if (!item) return;
+      const href = typeof item.href === 'string' ? item.href : '';
+      const labelBase = typeof item.label === 'string' ? item.label : '';
+      const label = labelBase.trim() || `Section ${acc.length + 1}`;
+      if (href) {
+        acc.push({ href, label, depth });
+      }
+      if (Array.isArray(item.subitems) && item.subitems.length) {
+        flattenTocItems(item.subitems, depth + 1, acc);
+      }
+    });
+    return acc;
+  };
+
+  const tocItems = flattenTocItems(toc);
+
+  const normalizeHref = (href = '') => href.split('#')[0];
+  const isTocItemActive = (href) => {
+    const active = normalizeHref(currentHref);
+    const target = normalizeHref(href);
+    if (!active || !target) return false;
+    return active.includes(target) || target.includes(active);
+  };
+
+  const handleTocSelect = (href) => {
+    if (!href) return;
+    setShowSidebar(false);
+    jumpToCfi(href);
   };
 
   // NOTE: Intermediate summaries were previously generated after a fixed number
@@ -2452,10 +2486,75 @@ export default function Reader() {
         );
       })()}
 
+      {showSidebar && (
+        <div className="fixed inset-0 z-[65]" data-testid="chapters-panel">
+          <button
+            onClick={() => setShowSidebar(false)}
+            className="absolute inset-0 bg-black/40"
+            aria-label="Close chapters"
+          />
+          <aside
+            className={`absolute left-0 top-0 h-full w-[88vw] max-w-sm shadow-2xl border-r ${
+              settings.theme === 'dark'
+                ? 'bg-gray-900 border-gray-700 text-gray-100'
+                : 'bg-white border-gray-200 text-gray-900'
+            }`}
+          >
+            <div className="h-full flex flex-col">
+              <div className={`px-4 py-3 border-b flex items-center justify-between gap-2 ${settings.theme === 'dark' ? 'border-gray-700' : 'border-gray-200'}`}>
+                <div className="flex items-center gap-2">
+                  <BookOpenText size={18} className="text-blue-500" />
+                  <h3 className="text-sm font-bold">Contents</h3>
+                </div>
+                <button
+                  onClick={() => setShowSidebar(false)}
+                  className={`p-1 rounded-full ${settings.theme === 'dark' ? 'hover:bg-gray-800' : 'hover:bg-gray-100'}`}
+                  aria-label="Close contents"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="px-2 py-2 overflow-y-auto flex-1 space-y-1">
+                {tocItems.length === 0 ? (
+                  <div className={`px-3 py-2 text-xs ${settings.theme === 'dark' ? 'text-gray-400' : 'text-gray-500'}`}>
+                    Chapters are still loading...
+                  </div>
+                ) : (
+                  tocItems.map((item, idx) => (
+                    <button
+                      key={`${item.href}-${idx}`}
+                      onClick={() => handleTocSelect(item.href)}
+                      data-testid="toc-item"
+                      className={`w-full text-left rounded-xl py-2 pr-2 text-sm transition ${
+                        isTocItemActive(item.href)
+                          ? 'bg-blue-600 text-white'
+                          : settings.theme === 'dark'
+                            ? 'text-gray-200 hover:bg-gray-800'
+                            : 'text-gray-700 hover:bg-gray-100'
+                      }`}
+                      style={{ paddingLeft: `${12 + item.depth * 14}px` }}
+                    >
+                      {item.label}
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          </aside>
+        </div>
+      )}
+
       {/* TOP BAR */}
       <div className={`flex items-center justify-between p-3 border-b shadow-sm z-20 ${settings.theme === 'dark' ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-800'}`}>
         <div className="flex items-center gap-2">
-          <button onClick={() => setShowSidebar(true)} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition"><Menu size={20} /></button>
+          <button
+            onClick={() => setShowSidebar(true)}
+            className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition"
+            aria-label="Open chapters"
+          >
+            <Menu size={20} />
+          </button>
           <Link to="/" className="hover:opacity-70 p-1"><ChevronLeft size={24} /></Link>
           <div className="flex flex-col">
             <h2 className="font-bold truncate text-sm max-w-[120px]">{book.title}</h2>
