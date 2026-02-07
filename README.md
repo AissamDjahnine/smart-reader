@@ -22,6 +22,7 @@ Smart Reader is built around real reading behavior:
 - Clean cover-based library (grid or list)
 - Smart metadata (author, language, estimated pages, genre when available)
 - Search, filter, and sort to find the right book fast
+- Quick filter count chips (`To read`, `In progress`, `Finished`, `Favorites`) with one-click filtering
 - Manual `TO READ` tagging (create your personal "read next" queue)
 - Favorites and quick actions (`Resume`, `Highlights`, `Bookmarks`)
 - Continue Reading rail with progress and session context
