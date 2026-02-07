@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { addBook, getAllBooks, deleteBook, toggleFavorite, markBookStarted, backfillBookMetadata, moveBookToTrash, restoreBookFromTrash, purgeExpiredTrashBooks } from '../services/db'; 
+import ePub from 'epubjs';
 import { Plus, Book as BookIcon, User, Calendar, Trash2, Clock, Search, Heart, Filter, ArrowUpDown, LayoutGrid, List, Flame, RotateCcw, ArrowLeft } from 'lucide-react';
 
 const STARTED_BOOK_IDS_KEY = 'library-started-book-ids';
@@ -36,6 +37,90 @@ const formatGenreLabel = (value) => {
   return value.trim();
 };
 
+const compactWhitespace = (value) => (value || "").toString().replace(/\s+/g, " ").trim();
+
+const buildSnippet = (value, query) => {
+  const source = compactWhitespace(value);
+  if (!source) return "";
+  const needle = compactWhitespace(query).toLowerCase();
+  if (!needle) return source.slice(0, 120);
+
+  const haystack = source.toLowerCase();
+  const index = haystack.indexOf(needle);
+  if (index < 0) return source.slice(0, 120);
+
+  const radius = 56;
+  const start = Math.max(0, index - radius);
+  const end = Math.min(source.length, index + needle.length + radius);
+  const prefix = start > 0 ? "..." : "";
+  const suffix = end < source.length ? "..." : "";
+  return `${prefix}${source.slice(start, end)}${suffix}`;
+};
+
+const normalizeHref = (href = "") => href.split("#")[0];
+
+const flattenToc = (items, acc = []) => {
+  if (!Array.isArray(items)) return acc;
+  items.forEach((item) => {
+    if (!item) return;
+    const href = typeof item.href === "string" ? item.href : "";
+    const label = typeof item.label === "string" ? item.label.trim() : "";
+    if (href && label) {
+      acc.push({ href, label });
+    }
+    if (Array.isArray(item.subitems) && item.subitems.length) {
+      flattenToc(item.subitems, acc);
+    }
+  });
+  return acc;
+};
+
+const searchBookContent = async (book, query, maxMatches = 4) => {
+  if (!book?.data || !query) return [];
+  const epub = ePub(book.data);
+  const matches = [];
+  let tocEntries = [];
+
+  try {
+    await epub.ready;
+    if (epub?.loaded?.navigation) {
+      const nav = await epub.loaded.navigation;
+      tocEntries = flattenToc(nav?.toc || []);
+    }
+
+    const spineItems = epub?.spine?.spineItems || [];
+    for (const section of spineItems) {
+      if (!section || section.linear === "no" || section.linear === false) continue;
+      try {
+        await section.load(epub.load.bind(epub));
+        const sectionMatches = typeof section.find === "function" ? (section.find(query) || []) : [];
+        for (const match of sectionMatches) {
+          matches.push({
+            cfi: match?.cfi || "",
+            excerpt: match?.excerpt || "",
+            chapterLabel:
+              tocEntries.find((entry) => {
+                const sectionHref = normalizeHref(section.href || "");
+                const tocHref = normalizeHref(entry.href || "");
+                return sectionHref && tocHref && (sectionHref.includes(tocHref) || tocHref.includes(sectionHref));
+              })?.label || ""
+          });
+          if (matches.length >= maxMatches) break;
+        }
+        if (matches.length >= maxMatches) break;
+      } finally {
+        section.unload();
+      }
+    }
+  } catch (err) {
+    console.error(err);
+  } finally {
+    epub.destroy();
+  }
+
+  return matches;
+};
+
 export default function Home() {
   const navigate = useNavigate();
   const [books, setBooks] = useState([]);
@@ -49,12 +134,56 @@ export default function Home() {
     if (typeof window === "undefined") return "grid";
     return window.localStorage.getItem("library-view-mode") === "list" ? "list" : "grid";
   });
+  const [contentSearchMatches, setContentSearchMatches] = useState({});
+  const [isContentSearching, setIsContentSearching] = useState(false);
+  const contentSearchTokenRef = useRef(0);
 
   useEffect(() => { loadLibrary(); }, []);
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("library-view-mode", viewMode);
   }, [viewMode]);
+
+  useEffect(() => {
+    const query = searchQuery.trim().toLowerCase();
+    const shouldSearchContent = query.length >= 2 && activeFilter !== "trash";
+
+    if (!shouldSearchContent) {
+      setContentSearchMatches({});
+      setIsContentSearching(false);
+      contentSearchTokenRef.current += 1;
+      return;
+    }
+
+    const token = contentSearchTokenRef.current + 1;
+    contentSearchTokenRef.current = token;
+    setIsContentSearching(true);
+    setContentSearchMatches({});
+
+    const timeoutId = setTimeout(async () => {
+      const targetBooks = books.filter((book) => !book.isDeleted && book?.data);
+      const nextMatches = {};
+
+      for (const book of targetBooks) {
+        if (contentSearchTokenRef.current !== token) return;
+        const matches = await searchBookContent(book, query, 4);
+        if (contentSearchTokenRef.current !== token) return;
+        if (matches.length) nextMatches[book.id] = matches;
+      }
+
+      if (contentSearchTokenRef.current === token) {
+        setContentSearchMatches(nextMatches);
+        setIsContentSearching(false);
+      }
+    }, 220);
+
+    return () => {
+      clearTimeout(timeoutId);
+      if (contentSearchTokenRef.current === token) {
+        setIsContentSearching(false);
+      }
+    };
+  }, [books, searchQuery, activeFilter]);
 
   const loadLibrary = async () => {
     await purgeExpiredTrashBooks(TRASH_RETENTION_DAYS);
@@ -105,9 +234,10 @@ export default function Home() {
     });
   };
 
-  const buildReaderPath = (id, panel = '') => {
+  const buildReaderPath = (id, panel = '', options = {}) => {
     const params = new URLSearchParams({ id });
     if (panel) params.set('panel', panel);
+    if (options.cfi) params.set('cfi', options.cfi);
     return `/read?${params.toString()}`;
   };
 
@@ -116,6 +246,14 @@ export default function Home() {
     e.stopPropagation();
     handleOpenBook(id);
     navigate(buildReaderPath(id, panel));
+  };
+
+  const handleGlobalResultOpen = (e, result) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!result?.bookId) return;
+    handleOpenBook(result.bookId);
+    navigate(buildReaderPath(result.bookId, result.panel || "", { cfi: result.cfi || "" }));
   };
 
   const handleDeleteBook = async (e, id) => {
@@ -199,6 +337,38 @@ export default function Home() {
   };
   const startedBookIds = readStartedBookIds();
 
+  const bookMatchesLibrarySearch = (book, query) => {
+    if (!query) return true;
+    const normalizedQuery = normalizeString(query.trim());
+    if (!normalizedQuery) return true;
+
+    const metadataFields = [
+      book.title,
+      book.author,
+      formatLanguageLabel(book.language),
+      formatGenreLabel(book.genre)
+    ];
+    if (metadataFields.some((field) => normalizeString(field).includes(normalizedQuery))) {
+      return true;
+    }
+
+    const highlights = Array.isArray(book.highlights) ? book.highlights : [];
+    if (highlights.some((h) => normalizeString(h?.text).includes(normalizedQuery) || normalizeString(h?.note).includes(normalizedQuery))) {
+      return true;
+    }
+
+    const bookmarks = Array.isArray(book.bookmarks) ? book.bookmarks : [];
+    if (bookmarks.some((b) => normalizeString(b?.label).includes(normalizedQuery) || normalizeString(b?.text).includes(normalizedQuery))) {
+      return true;
+    }
+
+    if (Array.isArray(contentSearchMatches[book.id]) && contentSearchMatches[book.id].length > 0) {
+      return true;
+    }
+
+    return false;
+  };
+
   const getReadingStreak = (libraryBooks) => {
     const dayKeys = new Set(
       libraryBooks
@@ -246,9 +416,7 @@ export default function Home() {
   const sortedBooks = [...books]
     .filter((book) => {
       const query = searchQuery.trim().toLowerCase();
-      const matchesSearch = !query
-        || normalizeString(book.title).includes(query)
-        || normalizeString(book.author).includes(query);
+      const matchesSearch = !query || bookMatchesLibrarySearch(book, query);
 
       const highlightCount = Array.isArray(book.highlights) ? book.highlights.length : 0;
       const noteCount = Array.isArray(book.highlights)
@@ -282,6 +450,118 @@ export default function Home() {
       if (sortBy === "author-desc") return normalizeString(right.author).localeCompare(normalizeString(left.author));
       return normalizeString(left.title).localeCompare(normalizeString(right.title));
     });
+
+  const globalSearchQuery = searchQuery.trim().toLowerCase();
+  const globalSearchGroups = (() => {
+    if (!globalSearchQuery) return [];
+    const nextGroups = {
+      books: [],
+      highlights: [],
+      notes: [],
+      bookmarks: [],
+      content: []
+    };
+
+    books.forEach((book) => {
+      if (book.isDeleted) return;
+
+      const metadataFields = [
+        book.title,
+        book.author,
+        formatLanguageLabel(book.language),
+        formatGenreLabel(book.genre)
+      ];
+      if (metadataFields.some((field) => normalizeString(field).includes(globalSearchQuery))) {
+        nextGroups.books.push({
+          id: `${book.id}-book`,
+          bookId: book.id,
+          panel: "",
+          cfi: "",
+          title: book.title,
+          subtitle: book.author,
+          snippet: `Book match: ${book.title} by ${book.author}`
+        });
+      }
+
+      const highlights = Array.isArray(book.highlights) ? book.highlights : [];
+      highlights.forEach((highlight, index) => {
+        const textValue = compactWhitespace(highlight?.text);
+        if (normalizeString(textValue).includes(globalSearchQuery)) {
+          nextGroups.highlights.push({
+            id: `${book.id}-highlight-${highlight?.cfiRange || index}`,
+            bookId: book.id,
+            panel: "highlights",
+            cfi: highlight?.cfiRange || "",
+            title: book.title,
+            subtitle: book.author,
+            snippet: buildSnippet(textValue, globalSearchQuery)
+          });
+        }
+
+        const noteValue = compactWhitespace(highlight?.note);
+        if (normalizeString(noteValue).includes(globalSearchQuery)) {
+          nextGroups.notes.push({
+            id: `${book.id}-note-${highlight?.cfiRange || index}`,
+            bookId: book.id,
+            panel: "highlights",
+            cfi: highlight?.cfiRange || "",
+            title: book.title,
+            subtitle: book.author,
+            snippet: buildSnippet(noteValue, globalSearchQuery)
+          });
+        }
+      });
+
+      const bookmarks = Array.isArray(book.bookmarks) ? book.bookmarks : [];
+      bookmarks.forEach((bookmark, index) => {
+        const labelValue = compactWhitespace(bookmark?.label);
+        const textValue = compactWhitespace(bookmark?.text);
+        const hasMatch =
+          normalizeString(labelValue).includes(globalSearchQuery) ||
+          normalizeString(textValue).includes(globalSearchQuery);
+        if (!hasMatch) return;
+
+        nextGroups.bookmarks.push({
+          id: `${book.id}-bookmark-${bookmark?.cfi || index}`,
+          bookId: book.id,
+          panel: "bookmarks",
+          cfi: bookmark?.cfi || "",
+          title: book.title,
+          subtitle: book.author,
+          snippet: buildSnippet(textValue || labelValue, globalSearchQuery)
+        });
+      });
+
+      const contentMatches = Array.isArray(contentSearchMatches[book.id]) ? contentSearchMatches[book.id] : [];
+      contentMatches.forEach((match, index) => {
+        nextGroups.content.push({
+          id: `${book.id}-content-${match?.cfi || index}`,
+          bookId: book.id,
+          panel: "",
+          cfi: match?.cfi || "",
+          title: book.title,
+          subtitle: [book.author, match?.chapterLabel].filter(Boolean).join(" · "),
+          snippet: buildSnippet(match?.excerpt || "", globalSearchQuery)
+        });
+      });
+    });
+
+    const descriptors = [
+      { key: "books", label: "Books" },
+      { key: "highlights", label: "Highlights" },
+      { key: "notes", label: "Notes" },
+      { key: "bookmarks", label: "Bookmarks" },
+      { key: "content", label: "Book content" }
+    ];
+
+    return descriptors
+      .map((descriptor) => ({
+        ...descriptor,
+        items: nextGroups[descriptor.key].slice(0, 8)
+      }))
+      .filter((group) => group.items.length > 0);
+  })();
+  const globalSearchTotal = globalSearchGroups.reduce((total, group) => total + group.items.length, 0);
 
   const continueReadingBooks = [...books]
     .filter((book) => {
@@ -559,7 +839,7 @@ export default function Home() {
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
             <input 
               type="text"
-              placeholder="Search by title or author..."
+              placeholder="Search books, highlights, notes, bookmarks..."
               data-testid="library-search"
               className="w-full pl-12 pr-4 py-3 bg-white border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
               value={searchQuery}
@@ -629,6 +909,60 @@ export default function Home() {
             </button>
           </div>
         </div>
+        {globalSearchQuery && !isTrashView && (
+          <section
+            data-testid="global-search-panel"
+            className="mb-4 rounded-2xl border border-blue-100 bg-blue-50/60 p-4"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-sm font-bold text-blue-900">Global Search Results</h2>
+              <span className="text-xs font-semibold text-blue-700">
+                {globalSearchTotal} match{globalSearchTotal === 1 ? "" : "es"}
+              </span>
+            </div>
+            {isContentSearching && (
+              <p data-testid="global-search-scanning" className="mt-2 text-[11px] font-semibold text-blue-800/80">
+                Scanning book text...
+              </p>
+            )}
+
+            {globalSearchTotal === 0 ? (
+              <p data-testid="global-search-empty" className="mt-2 text-xs text-blue-800/80">
+                No matches found in books, highlights, notes, or bookmarks.
+              </p>
+            ) : (
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                {globalSearchGroups.map((group) => (
+                  <div
+                    key={group.key}
+                    data-testid={`global-search-group-${group.key}`}
+                    className="rounded-xl border border-blue-100 bg-white p-3"
+                  >
+                    <div className="mb-2 text-[11px] uppercase tracking-[0.16em] font-bold text-blue-700">
+                      {group.label}
+                    </div>
+                    <div className="space-y-2">
+                      {group.items.map((item) => (
+                        <button
+                          key={item.id}
+                          data-testid={`global-search-result-${group.key}`}
+                          onClick={(e) => handleGlobalResultOpen(e, item)}
+                          className="w-full text-left rounded-lg border border-transparent hover:border-blue-200 hover:bg-blue-50 px-2 py-2 transition"
+                        >
+                          <div className="text-xs font-bold text-gray-900 line-clamp-1">{item.title}</div>
+                          <div className="text-[11px] text-gray-500 line-clamp-1">{item.subtitle}</div>
+                          {item.snippet && (
+                            <div className="mt-1 text-[11px] text-gray-700 line-clamp-2">{item.snippet}</div>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
         <div className="mb-8 text-xs text-gray-500 flex items-center gap-2">
           <span className="font-semibold text-gray-600">Active:</span>
           <span className="px-2 py-1 rounded-full bg-gray-100 border border-gray-200">

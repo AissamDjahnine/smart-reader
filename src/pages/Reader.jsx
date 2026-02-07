@@ -9,7 +9,7 @@ import jsPDF from 'jspdf';
 import { 
   Moon, Sun, BookOpen, Scroll, Type, 
   ChevronLeft, Menu, X,
-  Search as SearchIcon, ChevronUp, ChevronDown, Sparkles, Wand2, User,
+  Search as SearchIcon, Sparkles, Wand2, User,
   BookOpenText, Highlighter, Languages, Bookmark
 } from 'lucide-react';
 
@@ -56,6 +56,7 @@ export default function Reader() {
   const [searchParams] = useSearchParams();
   const bookId = searchParams.get('id');
   const panelParam = searchParams.get('panel');
+  const cfiParam = searchParams.get('cfi');
   const [book, setBook] = useState(null);
   const bookRef = useRef(null);
   
@@ -135,6 +136,7 @@ export default function Reader() {
   const settingsHydratedRef = useRef(false);
   const [settings, setSettings] = useState(DEFAULT_READER_SETTINGS);
   const initialPanelAppliedRef = useRef(false);
+  const initialJumpAppliedRef = useRef(false);
   const progressPersistRef = useRef({
     timer: null,
     lastWriteTs: 0,
@@ -762,16 +764,24 @@ export default function Reader() {
         if (searchTokenRef.current !== token) return;
         if (!section) continue;
         if (section.linear === "no" || section.linear === false) continue;
-        await section.load(book.load.bind(book));
-        const matches = section.search(term) || [];
-        matches.forEach((match) => {
-          results.push({
-            ...match,
-            href: section.href,
-            spineIndex: section.index
+        try {
+          await section.load(book.load.bind(book));
+          let matches = [];
+          if (typeof section.find === 'function') {
+            matches = section.find(term) || [];
+          } else if (typeof section.search === 'function') {
+            matches = section.search(term) || [];
+          }
+          matches.forEach((match) => {
+            results.push({
+              ...match,
+              href: section.href,
+              spineIndex: section.index
+            });
           });
-        });
-        section.unload();
+        } finally {
+          section.unload();
+        }
       }
 
       if (searchTokenRef.current !== token) return;
@@ -829,6 +839,16 @@ export default function Reader() {
     cancelTranslation();
     setShowTranslation(false);
     setTranslationAnchor(null);
+  };
+
+  const handleSearchInputKeyDown = (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    if (searchResults.length > 0) {
+      goToNextResult();
+    } else {
+      runSearch(searchQuery);
+    }
   };
 
   const lookupDictionary = async (term) => {
@@ -1456,7 +1476,8 @@ export default function Reader() {
 
   useEffect(() => {
     initialPanelAppliedRef.current = false;
-  }, [bookId, panelParam]);
+    initialJumpAppliedRef.current = false;
+  }, [bookId, panelParam, cfiParam]);
 
   useEffect(() => {
     if (!book?.id || initialPanelAppliedRef.current) return;
@@ -1469,6 +1490,12 @@ export default function Reader() {
     }
     initialPanelAppliedRef.current = true;
   }, [book?.id, panelParam]);
+
+  useEffect(() => {
+    if (!book?.id || !cfiParam || initialJumpAppliedRef.current) return;
+    jumpToCfi(cfiParam);
+    initialJumpAppliedRef.current = true;
+  }, [book?.id, cfiParam]);
 
   useEffect(() => {
     if (!book?.id) return;
@@ -1590,6 +1617,7 @@ export default function Reader() {
     "";
   const isReaderDark = settings.theme === 'dark';
   const isReaderSepia = settings.theme === 'sepia';
+  const activeSearchCfi = activeSearchIndex >= 0 ? (searchResults[activeSearchIndex]?.cfi || null) : null;
   const toggleDarkTheme = () => {
     setSettings((s) => ({ ...s, theme: s.theme === 'dark' ? 'light' : 'dark' }));
   };
@@ -1837,47 +1865,66 @@ export default function Reader() {
           />
           <div
             className={`absolute right-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
-              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
+              isReaderDark ? 'bg-gray-800 border border-gray-700 text-gray-100' : 'bg-white border border-gray-200 text-gray-900'
             }`}
           >
             <div className="flex items-center gap-2">
-              <SearchIcon size={18} className="text-gray-400" />
+              <SearchIcon size={18} className={isReaderDark ? 'text-gray-400' : 'text-gray-600'} />
               <input
                 type="text"
                 placeholder="Search inside this book..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') runSearch(searchQuery);
-                }}
-                className="flex-1 bg-transparent outline-none text-sm"
+                onKeyDown={handleSearchInputKeyDown}
+                className={`flex-1 bg-transparent outline-none text-sm font-semibold ${
+                  isReaderDark ? 'text-gray-100 placeholder:text-gray-400' : 'text-black placeholder:text-gray-500'
+                }`}
               />
               <button
                 onClick={closeSearchMenu}
-                className="p-1 text-gray-400 hover:text-red-500"
+                className={`p-1 hover:text-red-500 ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}
               >
                 <X size={18} />
               </button>
             </div>
 
-            <div className="mt-3 flex items-center justify-between text-[11px] text-gray-500">
+            <div className={`mt-3 flex items-center justify-between text-[11px] font-semibold ${isReaderDark ? 'text-gray-300' : 'text-gray-800'}`}>
               <span>
-                {isSearching ? 'Searching...' : `${searchResults.length} result${searchResults.length === 1 ? '' : 's'}`}
+                {isSearching
+                  ? 'Searching...'
+                  : searchResults.length
+                    ? `${activeSearchIndex + 1 > 0 ? activeSearchIndex + 1 : 1}/${searchResults.length}`
+                    : '0 results'}
+              </span>
+              <span className="sr-only" data-testid="search-progress">
+                {searchResults.length
+                  ? `${activeSearchIndex + 1 > 0 ? activeSearchIndex + 1 : 1}/${searchResults.length}`
+                  : '0/0'}
               </span>
               <div className="flex items-center gap-1">
                 <button
                   onClick={goToPrevResult}
                   disabled={!searchResults.length}
-                  className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40"
+                  className={`px-2 py-1 rounded-full border disabled:opacity-40 ${
+                    isReaderDark
+                      ? 'border-gray-700 hover:bg-gray-700'
+                      : 'border-gray-300 hover:bg-gray-100'
+                  }`}
+                  title="Previous result"
                 >
-                  <ChevronUp size={14} />
+                  <span className="text-xs font-bold">&lt;</span>
                 </button>
                 <button
                   onClick={goToNextResult}
                   disabled={!searchResults.length}
-                  className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40"
+                  className={`px-2 py-1 rounded-full border disabled:opacity-40 ${
+                    isReaderDark
+                      ? 'border-gray-700 hover:bg-gray-700'
+                      : 'border-gray-300 hover:bg-gray-100'
+                  }`}
+                  title="Next result"
                 >
-                  <ChevronDown size={14} />
+                  <span className="text-xs font-bold">&gt;</span>
                 </button>
               </div>
             </div>
@@ -1891,7 +1938,11 @@ export default function Reader() {
               </button>
               <button
                 onClick={clearSearch}
-                className="flex-1 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-bold"
+                className={`flex-1 py-2 rounded-xl text-xs font-bold ${
+                  isReaderDark
+                    ? 'border border-gray-700 text-gray-100'
+                    : 'border border-gray-300 text-gray-900'
+                }`}
               >
                 Clear
               </button>
@@ -1899,7 +1950,7 @@ export default function Reader() {
 
             <div className="mt-4 max-h-[45vh] overflow-y-auto pr-1 space-y-2">
               {!isSearching && searchQuery && searchResults.length === 0 && (
-                <div className="text-xs text-gray-500">No matches found.</div>
+                <div className={`text-xs ${isReaderDark ? 'text-gray-400' : 'text-gray-700'}`}>No matches found.</div>
               )}
               {searchResults.map((result, idx) => (
                 <button
@@ -1907,14 +1958,18 @@ export default function Reader() {
                   onClick={() => goToSearchIndex(idx)}
                   className={`w-full text-left p-3 rounded-2xl border transition ${
                     activeSearchIndex === idx
-                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/30'
-                      : 'border-transparent hover:border-gray-200 dark:hover:border-gray-700'
+                      ? isReaderDark
+                        ? 'border-yellow-400 bg-yellow-900/30'
+                        : 'border-yellow-500 bg-yellow-50'
+                      : isReaderDark
+                        ? 'border-transparent hover:border-gray-700'
+                        : 'border-transparent hover:border-gray-200'
                   }`}
                 >
-                  <div className="text-[10px] uppercase tracking-widest text-gray-400 mb-1">
+                  <div className={`text-[10px] uppercase tracking-widest mb-1 font-bold ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}>
                     Result {idx + 1}
                   </div>
-                  <div className="text-sm text-gray-700 dark:text-gray-200">
+                  <div className={`text-sm font-medium ${isReaderDark ? 'text-gray-100' : 'text-black'}`}>
                     {result.excerpt}
                   </div>
                 </button>
@@ -2626,6 +2681,7 @@ export default function Reader() {
           onRenditionReady={setRendition}
           onChapterEnd={handleChapterEnd}
           searchResults={searchResults}
+          activeSearchCfi={activeSearchCfi}
           highlights={highlights}
           onSelection={handleSelection}
         />

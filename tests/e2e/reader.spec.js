@@ -49,15 +49,34 @@ test('search clear removes in-book search markers', async ({ page }) => {
   const searchInput = page.getByPlaceholder('Search inside this book...');
   await searchInput.fill('wizard');
   await searchInput.press('Enter');
-  await expect(page.getByText(/results?/)).toBeVisible();
-
-  const frame = page.frameLocator('iframe');
-  await expect
-    .poll(async () => frame.locator('.search-hl').count(), { timeout: 20000 })
-    .toBeGreaterThanOrEqual(0);
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 15000 }).toMatch(/1\/\d+/);
 
   await page.getByRole('button', { name: 'Clear' }).click();
-  await expect.poll(async () => frame.locator('.search-hl').count(), { timeout: 10000 }).toBe(0);
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 10000 }).toBe('0/0');
+});
+
+test('search sets first result active and Enter cycles through results', async ({ page }) => {
+  await openFixtureBook(page);
+
+  await page.getByTitle('Search').click();
+  const searchInput = page.getByPlaceholder('Search inside this book...');
+  await expect(searchInput).toHaveCSS('color', 'rgb(0, 0, 0)');
+  await searchInput.fill('wizard');
+  await searchInput.press('Enter');
+
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 15000 }).toMatch(/1\/\d+/);
+  await expect(page.getByRole('button', { name: /Result 1/i }).first()).toHaveClass(/border-yellow/);
+
+  const firstProgress = await page.getByTestId('search-progress').textContent();
+  const total = Number((firstProgress || '0/0').split('/')[1] || 0);
+  expect(total).toBeGreaterThanOrEqual(1);
+
+  await page.getByTitle('Next result').click();
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 10000 }).not.toBe(firstProgress);
+
+  const progressBeforeEnter = await page.getByTestId('search-progress').textContent();
+  await searchInput.press('Enter');
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 10000 }).not.toBe(progressBeforeEnter);
 });
 
 test('dictionary ignores stale responses', async ({ page }) => {

@@ -14,6 +14,7 @@ export default function BookView({
   highlights = [],
   onRenditionReady,
   searchResults = [],
+  activeSearchCfi = null,
   onChapterEnd // NEW: Callback for AI summarization
 }) {
   const viewerRef = useRef(null);
@@ -22,7 +23,7 @@ export default function BookView({
   const lastChapterRef = useRef(null); // Track chapter changes
   const onSelectionRef = useRef(onSelection);
   const appliedHighlightsRef = useRef(new Map());
-  const appliedSearchRef = useRef(new Set());
+  const appliedSearchRef = useRef(new Map());
 
   useEffect(() => {
     onSelectionRef.current = onSelection;
@@ -88,7 +89,7 @@ export default function BookView({
     });
     renditionRef.current = rendition;
     appliedHighlightsRef.current = new Map();
-    appliedSearchRef.current = new Set();
+    appliedSearchRef.current = new Map();
 
     if (onRenditionReady) onRenditionReady(rendition);
 
@@ -177,17 +178,31 @@ export default function BookView({
     const timer = setTimeout(() => {
       if (!renditionRef.current) return;
       const rendition = renditionRef.current;
-      const annotationType = 'underline';
-      const nextSet = new Set();
+      const annotationType = 'highlight';
+      const nextMap = new Map();
       searchResults.forEach((result) => {
         if (!result?.cfi) return;
-        nextSet.add(result.cfi);
-        if (!appliedSearchRef.current.has(result.cfi)) {
+        const cfi = result.cfi;
+        const variant = cfi === activeSearchCfi ? 'active' : 'normal';
+        if (!nextMap.has(cfi) || variant === 'active') {
+          nextMap.set(cfi, variant);
+        }
+      });
+
+      nextMap.forEach((variant, cfi) => {
+        const prevVariant = appliedSearchRef.current.get(cfi);
+        if (prevVariant !== variant) {
+          if (prevVariant) {
+            try {
+              rendition.annotations.remove(cfi, annotationType);
+            } catch (err) {
+              console.error('Search highlight cleanup failed', err);
+            }
+          }
           try {
-            rendition.annotations.add(annotationType, result.cfi, {}, null, 'search-hl', {
-              stroke: '#facc15',
-              'stroke-opacity': '0.95',
-              'stroke-width': '2.5',
+            rendition.annotations.add(annotationType, cfi, {}, null, variant === 'active' ? 'search-hl-active' : 'search-hl', {
+              fill: '#facc15',
+              'fill-opacity': variant === 'active' ? '0.85' : '0.28',
               'mix-blend-mode': 'normal'
             });
           } catch (err) {
@@ -195,18 +210,20 @@ export default function BookView({
           }
         }
       });
-      appliedSearchRef.current.forEach((cfi) => {
-        if (nextSet.has(cfi)) return;
+
+      appliedSearchRef.current.forEach((_, cfi) => {
+        if (nextMap.has(cfi)) return;
         try {
           rendition.annotations.remove(cfi, annotationType);
         } catch (err) {
           console.error('Search highlight cleanup failed', err);
         }
       });
-      appliedSearchRef.current = nextSet;
+
+      appliedSearchRef.current = nextMap;
     }, 40);
     return () => clearTimeout(timer);
-  }, [bookData, searchResults, settings.fontSize, settings.fontFamily, settings.flow, settings.theme]);
+  }, [bookData, searchResults, activeSearchCfi, settings.fontSize, settings.fontFamily, settings.flow, settings.theme]);
 
   useEffect(() => {
     if (!renditionRef.current) return;

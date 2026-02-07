@@ -285,3 +285,54 @@ test('library shows reading session timeline after active reading', async ({ pag
   await expect(sessionSummary).not.toContainText(/7d sessions/i);
   await expect(sessionSummary).not.toContainText(/\(0 days ago\)/i);
 });
+
+test('global search panel shows grouped results and opens book from result', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
+  const searchInput = page.getByTestId('library-search');
+
+  await searchInput.fill('no-match-token-xyz');
+  await expect(page.getByTestId('global-search-panel')).toBeVisible();
+  await expect(page.getByTestId('global-search-empty')).toBeVisible();
+
+  await searchInput.fill('test book');
+  await expect(page.getByTestId('global-search-group-books')).toBeVisible();
+  await expect(page.getByTestId('global-search-result-books').first()).toBeVisible();
+
+  await page.getByTestId('global-search-result-books').first().click();
+  await expect(page).toHaveURL(/\/read\?id=/);
+  await expect(page.getByRole('button', { name: /Explain Page/i })).toBeVisible();
+});
+
+test('global search includes in-book content matches', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  const searchInput = page.getByTestId('library-search');
+  await searchInput.fill('valley');
+
+  await expect
+    .poll(async () => page.getByTestId('global-search-group-content').count(), { timeout: 25000 })
+    .toBeGreaterThan(0);
+  await expect(page.getByTestId('global-search-result-content').first()).toBeVisible();
+
+  await page.getByTestId('global-search-result-content').first().click();
+  await expect(page).toHaveURL(/\/read\?id=/);
+  await expect(page).toHaveURL(/cfi=/);
+  await expect(page.getByRole('button', { name: /Explain Page/i })).toBeVisible();
+});
