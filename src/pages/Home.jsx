@@ -37,8 +37,6 @@ import {
   RotateCcw,
   ArrowLeft,
   FileText,
-  Highlighter,
-  CircleUserRound,
   Moon,
   Sun,
   Languages,
@@ -47,6 +45,8 @@ import {
   Check,
   X
 } from 'lucide-react';
+import LibraryAccountSection from './library/LibraryAccountSection';
+import { LibraryWorkspaceSidebar, LibraryWorkspaceMobileNav } from './library/LibraryWorkspaceNav';
 
 const STARTED_BOOK_IDS_KEY = 'library-started-book-ids';
 const TRASH_RETENTION_DAYS = 30;
@@ -1412,150 +1412,23 @@ export default function Home() {
   const canShowResetFilters = hasActiveLibraryFilters && !isCollectionView;
   const isDarkLibraryTheme = libraryTheme === "dark";
   const isAccountSection = librarySection === "account";
-  const sidebarButtonBase = "flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition";
-  const sidebarButtonIdle = isDarkLibraryTheme
-    ? "border-slate-700 bg-slate-900 text-slate-200 hover:border-blue-500 hover:text-blue-300"
-    : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700";
-  const sidebarButtonActive = isDarkLibraryTheme
-    ? "border-blue-500 bg-blue-950 text-blue-200"
-    : "border-blue-200 bg-blue-50 text-blue-700";
 
   return (
     <div className={`min-h-screen p-6 md:p-12 font-sans ${isDarkLibraryTheme ? "bg-slate-950 text-slate-100" : "bg-gray-50 text-gray-900"}`}>
       <div className="mx-auto max-w-[1480px] md:grid md:grid-cols-[240px_minmax(0,1fr)] md:gap-8">
-        <aside
-          data-testid="library-sidebar"
-          className={`hidden md:block h-fit sticky top-6 rounded-3xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/80" : "border-gray-200 bg-white/90"}`}
-        >
-          <div className={`text-[11px] font-bold uppercase tracking-[0.2em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Workspace</div>
-          <nav className="mt-3 space-y-2">
-            <button
-              type="button"
-              data-testid="sidebar-my-library"
-              onClick={() => handleSidebarSectionSelect("library")}
-              className={`${sidebarButtonBase} ${librarySection === "library" ? sidebarButtonActive : sidebarButtonIdle}`}
-            >
-              <BookIcon size={16} />
-              <span>My Library</span>
-            </button>
-            <button
-              type="button"
-              data-testid="library-collections-trigger"
-              onClick={() => handleSidebarSectionSelect("collections")}
-              className={`${sidebarButtonBase} ${librarySection === "collections" ? sidebarButtonActive : sidebarButtonIdle}`}
-            >
-              <FolderClosed size={16} />
-              <span>My Collections</span>
-            </button>
-            <button
-              type="button"
-              data-testid="library-notes-center-toggle"
-              onClick={() => handleSidebarSectionSelect("notes")}
-              className={`${sidebarButtonBase} ${librarySection === "notes" ? sidebarButtonActive : sidebarButtonIdle}`}
-            >
-              <FileText size={16} />
-              <span>Notes Center</span>
-              <span className={`ml-auto inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold ${
-                librarySection === "notes"
-                  ? (isDarkLibraryTheme ? "bg-blue-900 text-blue-200" : "bg-blue-100 text-blue-700")
-                  : (isDarkLibraryTheme ? "bg-slate-700 text-slate-300" : "bg-gray-100 text-gray-600")
-              }`}>
-                {notesCenterEntries.length}
-              </span>
-            </button>
-            <button
-              type="button"
-              data-testid="library-highlights-center-toggle"
-              onClick={() => handleSidebarSectionSelect("highlights")}
-              className={`${sidebarButtonBase} ${librarySection === "highlights" ? sidebarButtonActive : sidebarButtonIdle}`}
-            >
-              <Highlighter size={16} />
-              <span>Highlights Center</span>
-              <span className={`ml-auto inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold ${
-                librarySection === "highlights"
-                  ? (isDarkLibraryTheme ? "bg-blue-900 text-blue-200" : "bg-blue-100 text-blue-700")
-                  : (isDarkLibraryTheme ? "bg-slate-700 text-slate-300" : "bg-gray-100 text-gray-600")
-              }`}>
-                {highlightsCenterEntries.length}
-              </span>
-            </button>
-            <button
-              type="button"
-              data-testid="library-account-trigger"
-              onClick={() => handleSidebarSectionSelect("account")}
-              className={`${sidebarButtonBase} ${librarySection === "account" ? sidebarButtonActive : sidebarButtonIdle}`}
-            >
-              <CircleUserRound size={16} />
-              <span>Account</span>
-            </button>
-          </nav>
-        </aside>
+        <LibraryWorkspaceSidebar
+          librarySection={librarySection}
+          isDarkLibraryTheme={isDarkLibraryTheme}
+          notesCount={notesCenterEntries.length}
+          highlightsCount={highlightsCenterEntries.length}
+          onSelectSection={handleSidebarSectionSelect}
+        />
 
         <div className="w-full min-w-0">
-        <div className="mb-4 md:hidden">
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            <button
-              type="button"
-              onClick={() => handleSidebarSectionSelect("library")}
-              className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold ${
-                librarySection === "library"
-                  ? "border-blue-200 bg-blue-50 text-blue-700"
-                  : "border-gray-200 bg-white text-gray-700"
-              }`}
-            >
-              <BookIcon size={13} />
-              <span>Library</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSidebarSectionSelect("collections")}
-              className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold ${
-                librarySection === "collections"
-                  ? "border-blue-200 bg-blue-50 text-blue-700"
-                  : "border-gray-200 bg-white text-gray-700"
-              }`}
-            >
-              <FolderClosed size={13} />
-              <span>Collections</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSidebarSectionSelect("notes")}
-              className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold ${
-                librarySection === "notes"
-                  ? "border-blue-200 bg-blue-50 text-blue-700"
-                  : "border-gray-200 bg-white text-gray-700"
-              }`}
-            >
-              <FileText size={13} />
-              <span>Notes</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSidebarSectionSelect("highlights")}
-              className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold ${
-                librarySection === "highlights"
-                  ? "border-blue-200 bg-blue-50 text-blue-700"
-                  : "border-gray-200 bg-white text-gray-700"
-              }`}
-            >
-              <Highlighter size={13} />
-              <span>Highlights</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSidebarSectionSelect("account")}
-              className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold ${
-                librarySection === "account"
-                  ? "border-blue-200 bg-blue-50 text-blue-700"
-                  : "border-gray-200 bg-white text-gray-700"
-              }`}
-            >
-              <CircleUserRound size={13} />
-              <span>Account</span>
-            </button>
-          </div>
-        </div>
+        <LibraryWorkspaceMobileNav
+          librarySection={librarySection}
+          onSelectSection={handleSidebarSectionSelect}
+        />
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10">
           <div>
             {isCollectionView && !isAccountSection && (
@@ -1702,115 +1575,13 @@ export default function Home() {
         </header>
 
         {isAccountSection && (
-          <section
-            data-testid="library-account-panel"
-            className={`mb-4 rounded-2xl border p-6 md:p-8 ${
-              isDarkLibraryTheme ? "border-slate-700 bg-slate-900/70" : "border-gray-200 bg-white"
-            }`}
-          >
-            <div className="mx-auto max-w-5xl">
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <label htmlFor="account-first-name" className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-200" : "text-slate-700"}`}>
-                    First name
-                  </label>
-                  <input
-                    id="account-first-name"
-                    data-testid="library-account-first-name"
-                    type="text"
-                    value={accountProfile.firstName}
-                    onChange={(event) => handleAccountFieldChange("firstName", event.target.value)}
-                    className={`mt-2 h-11 w-full rounded-lg border px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 ${
-                      isDarkLibraryTheme
-                        ? "border-slate-600 bg-slate-800 text-slate-100 placeholder:text-slate-500"
-                        : "border-gray-200 bg-white text-slate-800"
-                    }`}
-                    placeholder="Enter your first name"
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="account-email" className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-200" : "text-slate-700"}`}>
-                    Email address (not editable)
-                  </label>
-                  <input
-                    id="account-email"
-                    data-testid="library-account-email"
-                    type="email"
-                    value={accountProfile.email}
-                    readOnly
-                    disabled
-                    className={`mt-2 h-11 w-full cursor-not-allowed rounded-lg border px-3 text-sm ${
-                      isDarkLibraryTheme
-                        ? "border-slate-600 bg-slate-800/70 text-slate-300"
-                        : "border-gray-200 bg-gray-100 text-slate-700"
-                    }`}
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="account-preferred-language" className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-200" : "text-slate-700"}`}>
-                    Preferred language
-                  </label>
-                  <select
-                    id="account-preferred-language"
-                    data-testid="library-account-language"
-                    value={accountProfile.preferredLanguage}
-                    onChange={(event) => handleAccountFieldChange("preferredLanguage", event.target.value)}
-                    className={`mt-2 h-11 w-full rounded-lg border px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 ${
-                      isDarkLibraryTheme
-                        ? "border-slate-600 bg-slate-800 text-slate-100"
-                        : "border-gray-200 bg-white text-slate-800"
-                    }`}
-                  >
-                    <option value="en">English</option>
-                    <option value="fr">French</option>
-                    <option value="es">Spanish</option>
-                    <option value="ar">Arabic</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label htmlFor="account-email-notifications" className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-200" : "text-slate-700"}`}>
-                    Email notifications
-                  </label>
-                  <select
-                    id="account-email-notifications"
-                    data-testid="library-account-email-notifications"
-                    value={accountProfile.emailNotifications}
-                    onChange={(event) => handleAccountFieldChange("emailNotifications", event.target.value)}
-                    className={`mt-2 h-11 w-full rounded-lg border px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 ${
-                      isDarkLibraryTheme
-                        ? "border-slate-600 bg-slate-800 text-slate-100"
-                        : "border-gray-200 bg-white text-slate-800"
-                    }`}
-                  >
-                    <option value="yes">Yes</option>
-                    <option value="no">No</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="mt-5 flex items-center gap-3">
-                <button
-                  type="button"
-                  data-testid="library-account-save"
-                  onClick={handleSaveAccountProfile}
-                  className="inline-flex h-10 items-center rounded-lg bg-blue-600 px-4 text-sm font-bold text-white hover:bg-blue-700"
-                >
-                  Save changes
-                </button>
-                {accountSaveMessage && (
-                  <span
-                    data-testid="library-account-save-message"
-                    className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-emerald-300" : "text-emerald-700"}`}
-                  >
-                    {accountSaveMessage}
-                  </span>
-                )}
-              </div>
-            </div>
-          </section>
+          <LibraryAccountSection
+            isDarkLibraryTheme={isDarkLibraryTheme}
+            accountProfile={accountProfile}
+            accountSaveMessage={accountSaveMessage}
+            onFieldChange={handleAccountFieldChange}
+            onSave={handleSaveAccountProfile}
+          />
         )}
 
         {!isAccountSection && (
