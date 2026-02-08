@@ -142,6 +142,45 @@ test('dictionary ignores stale responses', async ({ page }) => {
   await expect(page.getByText('Definition for alpha')).toHaveCount(0);
 });
 
+test('dictionary ignores responses after panel is closed', async ({ page }) => {
+  await page.route('https://api.dictionaryapi.dev/api/v2/entries/en/**', async (route) => {
+    const url = route.request().url();
+    const word = decodeURIComponent(url.split('/').pop() || '').toLowerCase();
+    const payload = {
+      word,
+      phonetic: `/${word}/`,
+      meanings: [
+        { partOfSpeech: 'noun', definitions: [{ definition: `Definition for ${word}` }] }
+      ]
+    };
+
+    if (word === 'gamma') {
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([payload])
+    });
+  });
+
+  await openFixtureBook(page);
+  await selectTextInBook(page);
+  const toolbar = page.getByTestId('selection-toolbar');
+  await toolbar.getByRole('button', { name: 'Dictionary' }).click();
+
+  const dictInput = page.getByPlaceholder('Look up a word...');
+  await dictInput.fill('gamma');
+  await dictInput.press('Enter');
+
+  await dictInput.locator('..').getByRole('button').click();
+  await expect(page.getByPlaceholder('Look up a word...')).toHaveCount(0);
+
+  await page.waitForTimeout(1100);
+  await expect(page.getByText('Definition for gamma')).toHaveCount(0);
+});
+
 test('translation uses mymemory and shows result', async ({ page }) => {
   await page.route('https://api.mymemory.translated.net/get**', async (route) => {
     await route.fulfill({
