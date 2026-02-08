@@ -41,12 +41,12 @@ import {
   Sun,
   Languages,
   FolderClosed,
-  Pencil,
-  Check,
-  X
 } from 'lucide-react';
 import LibraryAccountSection from './library/LibraryAccountSection';
 import { LibraryWorkspaceSidebar, LibraryWorkspaceMobileNav } from './library/LibraryWorkspaceNav';
+import LibraryNotesCenterPanel from './library/LibraryNotesCenterPanel';
+import LibraryHighlightsCenterPanel from './library/LibraryHighlightsCenterPanel';
+import LibraryCollectionsModal from './library/LibraryCollectionsModal';
 
 const STARTED_BOOK_IDS_KEY = 'library-started-book-ids';
 const TRASH_RETENTION_DAYS = 30;
@@ -1696,374 +1696,71 @@ export default function Home() {
           </div>
         </div>
         {isNotesCenterOpen && !isTrashView && (
-          <section data-testid="notes-center-panel" className="mb-4 rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-bold text-blue-900">Notes Center</h2>
-                <p
-                  data-testid="notes-center-count"
-                  className="mt-1 text-xs text-blue-700/90"
-                >
-                  {notesCenterFilteredEntries.length} note{notesCenterFilteredEntries.length === 1 ? "" : "s"} shown
-                  {searchQuery.trim() ? ` for "${searchQuery.trim()}"` : ""}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={handleToggleNotesCenter}
-                className="text-xs font-semibold text-blue-700 hover:text-blue-900"
-              >
-                Close
-              </button>
-            </div>
-
-            {notesCenterFilteredEntries.length === 0 ? (
-              <div data-testid="notes-center-empty" className="mt-3 rounded-xl border border-blue-100 bg-white p-3 text-xs text-gray-600">
-                No notes found yet. Add notes on highlights in the Reader, then manage them here.
-              </div>
-            ) : (
-              <div className="mt-3 max-h-[56vh] space-y-3 overflow-y-auto pr-1">
-                {notesCenterFilteredEntries.map((entry) => (
-                  <article
-                    key={entry.id}
-                    data-testid="notes-center-item"
-                    className="rounded-xl border border-blue-100 bg-white p-3"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-bold text-gray-900">{entry.bookTitle}</div>
-                        <div className="text-xs text-gray-500">{entry.bookAuthor}</div>
-                      </div>
-                      <button
-                        type="button"
-                        data-testid="notes-center-open-reader"
-                        onClick={() => handleOpenNoteInReader(entry)}
-                        className="rounded-lg border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
-                      >
-                        Open in Reader
-                      </button>
-                    </div>
-
-                    {entry.highlightText && (
-                      <p className="mt-2 text-[11px] italic text-gray-500 line-clamp-2">
-                        "{entry.highlightText}"
-                      </p>
-                    )}
-
-                    {editingNoteId === entry.id ? (
-                      <div className="mt-2 space-y-2">
-                        <textarea
-                          data-testid="notes-center-textarea"
-                          className="w-full min-h-[88px] rounded-xl border border-gray-200 bg-white p-2 text-sm text-gray-800 outline-none focus:ring-2 focus:ring-blue-500"
-                          value={noteEditorValue}
-                          onChange={(event) => setNoteEditorValue(event.target.value)}
-                          placeholder="Write your note..."
-                        />
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            data-testid="notes-center-save"
-                            onClick={() => handleSaveNoteFromCenter(entry)}
-                            disabled={isSavingNote}
-                            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {isSavingNote ? "Saving..." : "Save note"}
-                          </button>
-                          <button
-                            type="button"
-                            data-testid="notes-center-cancel"
-                            onClick={handleCancelNoteEdit}
-                            className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mt-2">
-                        <p
-                          data-testid="notes-center-note-text"
-                          className="rounded-lg border border-gray-100 bg-gray-50 px-2 py-2 text-sm text-gray-800"
-                        >
-                          {entry.note}
-                        </p>
-                        <button
-                          type="button"
-                          data-testid="notes-center-edit"
-                          onClick={() => handleStartNoteEdit(entry)}
-                          className="mt-2 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
-                        >
-                          Edit note
-                        </button>
-                      </div>
-                    )}
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
+          <LibraryNotesCenterPanel
+            notesCenterFilteredEntries={notesCenterFilteredEntries}
+            searchQuery={searchQuery}
+            editingNoteId={editingNoteId}
+            noteEditorValue={noteEditorValue}
+            isSavingNote={isSavingNote}
+            onClose={handleToggleNotesCenter}
+            onOpenReader={handleOpenNoteInReader}
+            onStartEdit={handleStartNoteEdit}
+            onNoteEditorChange={setNoteEditorValue}
+            onSaveNote={handleSaveNoteFromCenter}
+            onCancelEdit={handleCancelNoteEdit}
+          />
         )}
 
         {isHighlightsCenterOpen && !isTrashView && (
-          <section data-testid="highlights-center-panel" className="mb-4 rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-bold text-indigo-900">Highlights Center</h2>
-                <p className="mt-1 text-xs text-indigo-700/90">
-                  {highlightsCenterFilteredEntries.length} highlight{highlightsCenterFilteredEntries.length === 1 ? "" : "s"} shown
-                  {searchQuery.trim() ? ` for "${searchQuery.trim()}"` : ""}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={handleToggleHighlightsCenter}
-                className="text-xs font-semibold text-indigo-700 hover:text-indigo-900"
-              >
-                Close
-              </button>
-            </div>
-
-            {highlightsCenterFilteredEntries.length === 0 ? (
-              <div data-testid="highlights-center-empty" className="mt-3 rounded-xl border border-indigo-100 bg-white p-3 text-xs text-gray-600">
-                No highlights found yet. Add highlights in the Reader, then manage them here.
-              </div>
-            ) : (
-              <div className="mt-3 max-h-[56vh] space-y-3 overflow-y-auto pr-1">
-                {highlightsCenterFilteredEntries.map((entry) => (
-                  <article key={entry.id} data-testid="highlights-center-item" className="rounded-xl border border-indigo-100 bg-white p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-bold text-gray-900">{entry.bookTitle}</div>
-                        <div className="text-xs text-gray-500">{entry.bookAuthor}</div>
-                      </div>
-                      <button
-                        type="button"
-                        data-testid="highlights-center-open-reader"
-                        onClick={() => handleOpenHighlightInReader(entry)}
-                        className="rounded-lg border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
-                      >
-                        Open in Reader
-                      </button>
-                    </div>
-
-                    <p className="mt-2 rounded-lg border border-gray-100 bg-gray-50 px-2 py-2 text-sm text-gray-800">
-                      {entry.text}
-                    </p>
-                    {entry.note && (
-                      <p className="mt-2 text-xs italic text-gray-500">
-                        Note: {entry.note}
-                      </p>
-                    )}
-                    <div className="mt-2 h-1.5 rounded-full" style={{ backgroundColor: entry.color }} />
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
+          <LibraryHighlightsCenterPanel
+            highlightsCenterFilteredEntries={highlightsCenterFilteredEntries}
+            searchQuery={searchQuery}
+            onClose={handleToggleHighlightsCenter}
+            onOpenReader={handleOpenHighlightInReader}
+          />
         )}
 
         {showCollectionsModal && !isTrashView && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-            <div
-              className="absolute inset-0 bg-black/35"
-              onClick={() => {
-                setShowCollectionsModal(false);
-                cancelCollectionRename();
-              }}
-            />
-            <section
-              data-testid="collections-modal"
-              className="relative w-full max-w-xl rounded-3xl border border-gray-200 bg-white p-5 shadow-2xl"
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-base font-bold text-gray-900">My Collections</h2>
-                  <p className="mt-1 text-xs text-gray-500">
-                    Organize your books into custom collections.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    data-testid="collection-add-toggle"
-                    onClick={() => {
-                      setCollectionError("");
-                      setShowCreateCollectionForm((current) => !current);
-                    }}
-                    className="inline-flex h-9 items-center gap-1 rounded-xl border border-blue-200 bg-blue-50 px-3 text-xs font-bold text-blue-700 hover:bg-blue-100"
-                  >
-                    <Plus size={14} />
-                    <span>{showCreateCollectionForm ? "Close" : "Add"}</span>
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="collections-modal-close"
-                    onClick={() => {
-                      setShowCollectionsModal(false);
-                      cancelCollectionRename();
-                      setShowCreateCollectionForm(false);
-                    }}
-                    className="p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-gray-800"
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
-              </div>
-
-              {showCreateCollectionForm && (
-                <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-3">
-                  <div className="text-xs font-semibold text-gray-700">Add a new collection</div>
-                  <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <input
-                      data-testid="collection-create-input"
-                      value={collectionNameDraft}
-                      onChange={(e) => setCollectionNameDraft(e.target.value)}
-                      placeholder="Collection name (e.g. Classics)"
-                      className="h-10 flex-1 rounded-xl border border-gray-200 bg-white px-3 text-sm text-gray-800 outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    <div className="flex items-center gap-2">
-                      {COLLECTION_COLOR_OPTIONS.map((color) => (
-                        <button
-                          key={`draft-${color}`}
-                          type="button"
-                          data-testid="collection-color-option"
-                          onClick={() => setCollectionColorDraft(color)}
-                          className={`h-6 w-6 rounded-full border-2 ${collectionColorDraft === color ? "border-gray-900" : "border-white"}`}
-                          style={{ backgroundColor: color }}
-                          title={color}
-                        />
-                      ))}
-                    </div>
-                    <button
-                      type="button"
-                      data-testid="collection-create-button"
-                      onClick={handleCreateCollection}
-                      className="h-10 rounded-xl bg-blue-600 px-4 text-sm font-bold text-white hover:bg-blue-700"
-                    >
-                      Create
-                    </button>
-                  </div>
-                  {collectionError && (
-                    <div className="mt-2 text-xs font-semibold text-red-600">{collectionError}</div>
-                  )}
-                </div>
-              )}
-
-              <div className="mt-4 max-h-[50vh] space-y-2 overflow-y-auto pr-1">
-                <button
-                  type="button"
-                  data-testid="collection-filter-all"
-                  onClick={() => {
-                    setCollectionFilter("all");
-                    setCollectionViewId("");
-                  }}
-                  className={`w-full rounded-xl border px-3 py-2 text-left text-xs font-semibold ${
-                    collectionFilter === "all" && !isCollectionView
-                      ? "border-blue-200 bg-blue-50 text-blue-700"
-                      : "border-gray-200 bg-white text-gray-600 hover:border-blue-200 hover:text-blue-700"
-                  }`}
-                >
-                  All collections
-                </button>
-                {collections.length === 0 && (
-                  <div className="rounded-2xl border border-dashed border-gray-200 p-4 text-sm text-gray-500">
-                    No collections yet. Click Add to create your first one.
-                  </div>
-                )}
-                {collections.map((collection) => {
-                  const linkedCount = books.filter((book) => Array.isArray(book.collectionIds) && book.collectionIds.includes(collection.id)).length;
-                  const isEditing = editingCollectionId === collection.id;
-                  return (
-                    <div
-                      key={collection.id}
-                      data-testid="collection-item"
-                      className="rounded-2xl border border-gray-200 bg-white p-3"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span
-                              className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
-                              style={{ backgroundColor: collection.color }}
-                            />
-                            {isEditing ? (
-                              <input
-                                data-testid="collection-rename-input"
-                                value={editingCollectionName}
-                                onChange={(e) => setEditingCollectionName(e.target.value)}
-                                className="h-8 flex-1 rounded-lg border border-gray-200 px-2 text-sm text-gray-800 outline-none focus:ring-2 focus:ring-blue-500"
-                              />
-                            ) : (
-                              <div data-testid="collection-item-name" className="truncate text-sm font-bold text-gray-900">
-                                {collection.name}
-                              </div>
-                            )}
-                          </div>
-                          <div className="mt-1 text-xs text-gray-500">
-                            {linkedCount} book{linkedCount === 1 ? "" : "s"}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          {isEditing ? (
-                            <>
-                              <button
-                                type="button"
-                                data-testid="collection-rename-save"
-                                onClick={handleSaveCollectionRename}
-                                className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-700"
-                              >
-                                <Check size={12} />
-                                Save
-                              </button>
-                              <button
-                                type="button"
-                                onClick={cancelCollectionRename}
-                                className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs font-bold text-gray-600"
-                              >
-                                Cancel
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                data-testid="collection-show-button"
-                                onClick={() => openCollectionView(collection.id)}
-                                className={`rounded-lg border px-2 py-1 text-xs font-bold ${
-                                  collectionViewId === collection.id
-                                    ? "border-blue-200 bg-blue-50 text-blue-700"
-                                    : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
-                                }`}
-                              >
-                                {collectionViewId === collection.id ? "Showing" : "Show"}
-                              </button>
-                              <button
-                                type="button"
-                                data-testid="collection-rename-button"
-                                onClick={() => startCollectionRename(collection)}
-                                className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs font-bold text-gray-700 hover:border-blue-200 hover:text-blue-700"
-                              >
-                                <Pencil size={12} />
-                                Rename
-                              </button>
-                              <button
-                                type="button"
-                                data-testid="collection-delete-button"
-                                onClick={() => handleDeleteCollection(collection.id)}
-                                className="rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs font-bold text-red-600 hover:bg-red-100"
-                              >
-                                Delete
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          </div>
+          <LibraryCollectionsModal
+            collectionError={collectionError}
+            showCreateCollectionForm={showCreateCollectionForm}
+            collectionNameDraft={collectionNameDraft}
+            collectionColorDraft={collectionColorDraft}
+            collectionColorOptions={COLLECTION_COLOR_OPTIONS}
+            collectionFilter={collectionFilter}
+            isCollectionView={isCollectionView}
+            collections={collections}
+            books={books}
+            editingCollectionId={editingCollectionId}
+            editingCollectionName={editingCollectionName}
+            collectionViewId={collectionViewId}
+            onBackdropClose={() => {
+              setShowCollectionsModal(false);
+              cancelCollectionRename();
+            }}
+            onToggleCreateForm={() => {
+              setCollectionError("");
+              setShowCreateCollectionForm((current) => !current);
+            }}
+            onClose={() => {
+              setShowCollectionsModal(false);
+              cancelCollectionRename();
+              setShowCreateCollectionForm(false);
+            }}
+            onCollectionNameChange={setCollectionNameDraft}
+            onCollectionColorChange={setCollectionColorDraft}
+            onCreateCollection={handleCreateCollection}
+            onSelectAllCollections={() => {
+              setCollectionFilter("all");
+              setCollectionViewId("");
+            }}
+            onCollectionRenameStart={startCollectionRename}
+            onCollectionRenameInputChange={setEditingCollectionName}
+            onCollectionRenameSave={handleSaveCollectionRename}
+            onCollectionRenameCancel={cancelCollectionRename}
+            onCollectionDelete={handleDeleteCollection}
+            onCollectionShow={openCollectionView}
+          />
         )}
         {globalSearchQuery && !isTrashView && (
           <div className={`mb-4 ${showGlobalSearchSplitColumns ? "grid grid-cols-1 lg:grid-cols-[minmax(0,1.65fr)_minmax(300px,0.95fr)] gap-4 items-start" : ""}`}>
