@@ -30,7 +30,7 @@ Smart Reader is built around real reading behavior:
 - Combine `Status` filtering with quick `Favorites` filtering when needed
 - One-click `Reset filters` action to return search/filter/sort to default
 - Manual `TO READ` tagging (create your personal "read next" queue)
-- Favorites and quick actions (`Resume`, `Highlights`, `Bookmarks`)
+- Favorites with cleaner, less cluttered library cards
 - Notes Center in Library with cross-book note browsing, inline editing, and jump-to-reader
 - Continue Reading rail with progress and session context
 - Trash with restore flow and retention handling
