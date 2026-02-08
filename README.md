@@ -22,6 +22,9 @@ Smart Reader is built around real reading behavior:
 - Clean cover-based library (grid or list)
 - Smart metadata (author, language, estimated pages, genre when available)
 - Search, filter, and sort to find the right book fast
+- Custom shelves (collections): create, rename, delete, and color-code your own reading buckets
+- Assign books to one or many shelves directly from each card
+- Filter library view by shelf to focus on one collection at a time
 - Sticky library toolbar (search, filters, sort, view mode always visible while scrolling)
 - Quick filter count chips (`To read`, `In progress`, `Finished`, `Favorites`) with one-click filtering
 - Combine `Status` filtering with quick `Favorites` filtering when needed
@@ -90,6 +93,7 @@ Open the app at the local Vite URL (usually `http://localhost:5173`).
 ## Main App Areas
 
 - `src/pages/Home.jsx` - Library, search, filters, sort, favorites, trash, and global search UI
+- `src/pages/Home.jsx` - Library, search, filters, shelves/collections, favorites, trash, and global search UI
 - `src/pages/Reader.jsx` - Reading experience, contextual tools, highlights, bookmarks, export, and search handoff
 - `src/components/BookView.jsx` - EPUB rendering and navigation engine
 - `src/services/db.js` - Local-first persistence layer
