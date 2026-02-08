@@ -23,20 +23,20 @@ test('library sort and filter controls work with favorites', async ({ page }) =>
   await sortSelect.selectOption('title-asc');
   await expect(sortSelect).toHaveValue('title-asc');
 
-  const favoritesFlag = page.getByTestId('library-flag-filter-favorites');
-  await favoritesFlag.click();
+  const favoritesQuickFilter = page.getByTestId('library-quick-filter-favorites');
+  await favoritesQuickFilter.click();
   await expect(page.getByText('No books found matching your criteria.')).toBeVisible();
-  await expect(favoritesFlag).toHaveAttribute('aria-pressed', 'true');
+  await expect(favoritesQuickFilter).toHaveAttribute('aria-pressed', 'true');
 
-  await favoritesFlag.click();
-  await expect(favoritesFlag).toHaveAttribute('aria-pressed', 'false');
+  await favoritesQuickFilter.click();
+  await expect(favoritesQuickFilter).toHaveAttribute('aria-pressed', 'false');
   await expect(bookLink).toBeVisible();
 
   await bookLink.hover();
   await bookLink.locator('button[title="Favorite"]').click({ force: true });
 
-  await favoritesFlag.click();
-  await expect(favoritesFlag).toHaveAttribute('aria-pressed', 'true');
+  await favoritesQuickFilter.click();
+  await expect(favoritesQuickFilter).toHaveAttribute('aria-pressed', 'true');
   await expect(bookLink).toBeVisible();
 });
 
@@ -60,11 +60,11 @@ test('library toolbar is sticky and reset button clears search status and flag f
   const searchInput = page.getByTestId('library-search');
   const filterSelect = page.getByTestId('library-filter');
   const sortSelect = page.getByTestId('library-sort');
-  const favoritesFlag = page.getByTestId('library-flag-filter-favorites');
+  const favoritesQuickFilter = page.getByTestId('library-quick-filter-favorites');
 
   await searchInput.fill('no-match-token-xyz');
   await filterSelect.selectOption('in-progress');
-  await favoritesFlag.click();
+  await favoritesQuickFilter.click();
   await sortSelect.selectOption('title-asc');
   await expect(page.getByTestId('library-reset-filters-button')).toBeVisible();
   await expect(page.getByText('No books found matching your criteria.')).toBeVisible();
@@ -73,7 +73,7 @@ test('library toolbar is sticky and reset button clears search status and flag f
   await expect(searchInput).toHaveValue('');
   await expect(filterSelect).toHaveValue('all');
   await expect(sortSelect).toHaveValue('last-read-desc');
-  await expect(favoritesFlag).toHaveAttribute('aria-pressed', 'false');
+  await expect(favoritesQuickFilter).toHaveAttribute('aria-pressed', 'false');
   await expect(page.getByTestId('library-reset-filters-button')).toHaveCount(0);
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
 });
@@ -126,7 +126,7 @@ test('library quick filter chips show counts and apply filters', async ({ page }
   await expect(page.getByTestId('library-quick-filter-favorites-count')).toHaveText('1');
 
   await page.getByTestId('library-quick-filter-favorites').click();
-  await expect(page.getByTestId('library-flag-filter-favorites')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('library-quick-filter-favorites')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByTestId('library-filter')).toHaveValue('all');
   await expect(bookLink).toBeVisible();
 
@@ -195,13 +195,100 @@ test('status and flag filters can be combined', async ({ page }) => {
   await bookLink.locator('button[title="Favorite"]').click({ force: true });
 
   const filterSelect = page.getByTestId('library-filter');
-  const favoritesFlag = page.getByTestId('library-flag-filter-favorites');
+  const favoritesQuickFilter = page.getByTestId('library-quick-filter-favorites');
   await filterSelect.selectOption('to-read');
-  await favoritesFlag.click();
+  await favoritesQuickFilter.click();
 
   await expect(filterSelect).toHaveValue('to-read');
-  await expect(favoritesFlag).toHaveAttribute('aria-pressed', 'true');
+  await expect(favoritesQuickFilter).toHaveAttribute('aria-pressed', 'true');
   await expect(bookLink).toBeVisible();
+});
+
+test('notes center edits note and syncs to reader highlights panel', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
+  await page.waitForTimeout(1200);
+
+  const seeded = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs') ? 'keyvaluepairs' : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didSeed = false;
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          const payload = row?.value && typeof row.value === 'object' ? row.value : row;
+          const isTargetBook = payload && payload.title === 'Test Book' && Object.prototype.hasOwnProperty.call(payload, 'data');
+          if (!didSeed && isTargetBook) {
+            const highlights = Array.isArray(payload.highlights) ? [...payload.highlights] : [];
+            const noteEntry = {
+              cfiRange: 'epubcfi(/6/2[seed-note]!/4/2/2,/4/2/10)',
+              text: 'Seeded highlight sentence',
+              color: 'yellow',
+              note: 'Initial note from reader'
+            };
+            const existingIndex = highlights.findIndex((item) => item?.cfiRange === noteEntry.cfiRange);
+            if (existingIndex >= 0) {
+              highlights[existingIndex] = { ...highlights[existingIndex], ...noteEntry };
+            } else {
+              highlights.push(noteEntry);
+            }
+            const nextPayload = { ...payload, highlights };
+            if (row?.value && typeof row.value === 'object') {
+              cursor.update({ ...row, value: nextPayload });
+            } else {
+              cursor.update(nextPayload);
+            }
+            didSeed = true;
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didSeed);
+        };
+      };
+    });
+  });
+  expect(seeded).toBeTruthy();
+  await page.reload();
+  await expect.poll(async () => page.getByText('Test Book').count(), { timeout: 15000 }).toBeGreaterThan(0);
+
+  await page.getByTestId('library-notes-center-toggle').click();
+  await expect(page.getByTestId('notes-center-panel')).toBeVisible();
+  await expect(page.getByTestId('notes-center-item').first()).toBeVisible();
+
+  await page.getByTestId('notes-center-edit').first().click();
+  await page.getByTestId('notes-center-textarea').first().fill('Updated note from Notes Center');
+  await page.getByTestId('notes-center-save').first().click();
+  await expect(page.getByText('Updated note from Notes Center')).toBeVisible();
+
+  await page.getByTestId('notes-center-open-reader').first().click();
+  await expect(page).toHaveURL(/panel=highlights/);
+  await expect(page.getByTestId('highlights-panel')).toBeVisible();
+  await expect(page.getByText('Updated note from Notes Center')).toBeVisible();
 });
 
 test('library view toggle persists after reload', async ({ page }) => {

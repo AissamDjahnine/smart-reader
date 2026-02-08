@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { addBook, getAllBooks, deleteBook, toggleFavorite, toggleToRead, markBookStarted, backfillBookMetadata, moveBookToTrash, restoreBookFromTrash, purgeExpiredTrashBooks } from '../services/db'; 
+import { addBook, getAllBooks, deleteBook, toggleFavorite, toggleToRead, markBookStarted, backfillBookMetadata, moveBookToTrash, restoreBookFromTrash, purgeExpiredTrashBooks, updateHighlightNote } from '../services/db'; 
 import ePub from 'epubjs';
-import { Plus, Book as BookIcon, User, Calendar, Trash2, Clock, Search, Heart, Tag, Filter, ArrowUpDown, LayoutGrid, List, Flame, RotateCcw, ArrowLeft } from 'lucide-react';
+import { Plus, Book as BookIcon, User, Calendar, Trash2, Clock, Search, Heart, Tag, Filter, ArrowUpDown, LayoutGrid, List, Flame, RotateCcw, ArrowLeft, FileText } from 'lucide-react';
 
 const STARTED_BOOK_IDS_KEY = 'library-started-book-ids';
 const TRASH_RETENTION_DAYS = 30;
@@ -139,6 +139,10 @@ export default function Home() {
     if (typeof window === "undefined") return "grid";
     return window.localStorage.getItem("library-view-mode") === "list" ? "list" : "grid";
   });
+  const [isNotesCenterOpen, setIsNotesCenterOpen] = useState(false);
+  const [editingNoteId, setEditingNoteId] = useState("");
+  const [noteEditorValue, setNoteEditorValue] = useState("");
+  const [isSavingNote, setIsSavingNote] = useState(false);
   const [contentSearchMatches, setContentSearchMatches] = useState({});
   const [isContentSearching, setIsContentSearching] = useState(false);
   const contentSearchTokenRef = useRef(0);
@@ -195,6 +199,14 @@ export default function Home() {
     if (!flagFilters.length) return;
     setFlagFilters([]);
   }, [statusFilter, flagFilters]);
+
+  useEffect(() => {
+    if (statusFilter !== "trash") return;
+    if (!isNotesCenterOpen) return;
+    setIsNotesCenterOpen(false);
+    setEditingNoteId("");
+    setNoteEditorValue("");
+  }, [statusFilter, isNotesCenterOpen]);
 
   const loadLibrary = async () => {
     await purgeExpiredTrashBooks(TRASH_RETENTION_DAYS);
@@ -310,6 +322,41 @@ export default function Home() {
     e.stopPropagation();
     await toggleToRead(id);
     loadLibrary();
+  };
+
+  const handleToggleNotesCenter = () => {
+    setIsNotesCenterOpen((current) => !current);
+    setEditingNoteId("");
+    setNoteEditorValue("");
+  };
+
+  const handleStartNoteEdit = (entry) => {
+    setEditingNoteId(entry.id);
+    setNoteEditorValue(entry.note || "");
+  };
+
+  const handleCancelNoteEdit = () => {
+    setEditingNoteId("");
+    setNoteEditorValue("");
+  };
+
+  const handleSaveNoteFromCenter = async (entry) => {
+    if (!entry?.bookId || !entry?.cfiRange) return;
+    setIsSavingNote(true);
+    try {
+      await updateHighlightNote(entry.bookId, entry.cfiRange, noteEditorValue.trim());
+      await loadLibrary();
+      setEditingNoteId("");
+      setNoteEditorValue("");
+    } finally {
+      setIsSavingNote(false);
+    }
+  };
+
+  const handleOpenNoteInReader = (entry) => {
+    if (!entry?.bookId) return;
+    handleOpenBook(entry.bookId);
+    navigate(buildReaderPath(entry.bookId, "highlights", { cfi: entry.cfiRange || "" }));
   };
 
   const handleFileUpload = async (event) => {
@@ -480,6 +527,33 @@ export default function Home() {
       count: activeBooks.filter((book) => Boolean(book.isFavorite)).length
     }
   ];
+  const notesCenterEntries = activeBooks
+    .flatMap((book) => {
+      const highlights = Array.isArray(book.highlights) ? book.highlights : [];
+      return highlights
+        .filter((highlight) => typeof highlight?.note === "string" && highlight.note.trim())
+        .map((highlight, index) => ({
+          id: `${book.id}::${highlight.cfiRange || `note-${index}`}`,
+          bookId: book.id,
+          cfiRange: highlight.cfiRange || "",
+          bookTitle: book.title,
+          bookAuthor: book.author,
+          highlightText: compactWhitespace(highlight.text || ""),
+          note: highlight.note.trim(),
+          lastRead: book.lastRead
+        }));
+    })
+    .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead));
+  const notesCenterFilteredEntries = notesCenterEntries.filter((entry) => {
+    const query = normalizeString(searchQuery.trim());
+    if (!query) return true;
+    return (
+      normalizeString(entry.bookTitle).includes(query) ||
+      normalizeString(entry.bookAuthor).includes(query) ||
+      normalizeString(entry.note).includes(query) ||
+      normalizeString(entry.highlightText).includes(query)
+    );
+  });
 
   const sortedBooks = [...books]
     .filter((book) => {
@@ -960,11 +1034,17 @@ export default function Home() {
             </div>
 
             <div data-testid="library-quick-filters" className="mt-3 flex flex-wrap gap-2">
-              {quickFilterStats.map((stat) => (
+              {quickFilterStats.map((stat) => {
+                const isQuickActive =
+                  stat.key === "favorites"
+                    ? isFlagFilterActive("favorites")
+                    : statusFilter === stat.key;
+                return (
                 <button
                   key={stat.key}
                   type="button"
                   data-testid={`library-quick-filter-${stat.key}`}
+                  aria-pressed={isQuickActive}
                   onClick={() => {
                     if (stat.key === "favorites") {
                       if (statusFilter === "trash") setStatusFilter("all");
@@ -974,9 +1054,7 @@ export default function Home() {
                     setStatusFilter(stat.key);
                   }}
                   className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
-                    (stat.key === "favorites"
-                      ? isFlagFilterActive("favorites")
-                      : statusFilter === stat.key)
+                    isQuickActive
                       ? "border-blue-200 bg-blue-50 text-blue-700"
                       : "border-gray-200 bg-white text-gray-600 hover:border-blue-200 hover:text-blue-700"
                   }`}
@@ -986,17 +1064,14 @@ export default function Home() {
                   <span
                     data-testid={`library-quick-filter-${stat.key}-count`}
                     className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold ${
-                      (stat.key === "favorites"
-                        ? isFlagFilterActive("favorites")
-                        : statusFilter === stat.key)
-                        ? "bg-blue-100 text-blue-700"
-                        : "bg-gray-100 text-gray-600"
+                      isQuickActive ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
                     }`}
                   >
                     {stat.count}
                   </span>
                 </button>
-              ))}
+                );
+              })}
             </div>
           </div>
 
@@ -1168,6 +1243,27 @@ export default function Home() {
                 </button>
               </div>
 
+              {!isTrashView && (
+                <button
+                  type="button"
+                  data-testid="library-notes-center-toggle"
+                  onClick={handleToggleNotesCenter}
+                  className={`inline-flex h-11 items-center gap-2 rounded-2xl border px-3 text-sm font-semibold transition ${
+                    isNotesCenterOpen
+                      ? "border-blue-200 bg-blue-50 text-blue-700"
+                      : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                  }`}
+                >
+                  <FileText size={15} />
+                  <span>Notes Center</span>
+                  <span className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold ${
+                    isNotesCenterOpen ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
+                  }`}>
+                    {notesCenterEntries.length}
+                  </span>
+                </button>
+              )}
+
               {hasActiveLibraryFilters && (
                 <button
                   type="button"
@@ -1183,31 +1279,115 @@ export default function Home() {
               )}
             </div>
           </div>
-          {!isTrashView && (
-            <div data-testid="library-flag-filters" className="mt-2 flex items-center gap-2 flex-wrap">
-              <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Flags</span>
-              {flagFilterOptions.map((option) => {
-                const isActive = isFlagFilterActive(option.value);
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    data-testid={`library-flag-filter-${option.value}`}
-                    aria-pressed={isActive}
-                    onClick={() => toggleFlagFilter(option.value)}
-                    className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
-                      isActive
-                        ? "border-blue-200 bg-blue-50 text-blue-700"
-                        : "border-gray-200 bg-white text-gray-600 hover:border-blue-200 hover:text-blue-700"
-                    }`}
-                  >
-                    {option.label}
-                  </button>
-                );
-              })}
-            </div>
-          )}
         </div>
+        {isNotesCenterOpen && !isTrashView && (
+          <section data-testid="notes-center-panel" className="mb-4 rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-bold text-blue-900">Notes Center</h2>
+                <p
+                  data-testid="notes-center-count"
+                  className="mt-1 text-xs text-blue-700/90"
+                >
+                  {notesCenterFilteredEntries.length} note{notesCenterFilteredEntries.length === 1 ? "" : "s"} shown
+                  {searchQuery.trim() ? ` for "${searchQuery.trim()}"` : ""}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleToggleNotesCenter}
+                className="text-xs font-semibold text-blue-700 hover:text-blue-900"
+              >
+                Close
+              </button>
+            </div>
+
+            {notesCenterFilteredEntries.length === 0 ? (
+              <div data-testid="notes-center-empty" className="mt-3 rounded-xl border border-blue-100 bg-white p-3 text-xs text-gray-600">
+                No notes found yet. Add notes on highlights in the Reader, then manage them here.
+              </div>
+            ) : (
+              <div className="mt-3 max-h-[56vh] space-y-3 overflow-y-auto pr-1">
+                {notesCenterFilteredEntries.map((entry) => (
+                  <article
+                    key={entry.id}
+                    data-testid="notes-center-item"
+                    className="rounded-xl border border-blue-100 bg-white p-3"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-bold text-gray-900">{entry.bookTitle}</div>
+                        <div className="text-xs text-gray-500">{entry.bookAuthor}</div>
+                      </div>
+                      <button
+                        type="button"
+                        data-testid="notes-center-open-reader"
+                        onClick={() => handleOpenNoteInReader(entry)}
+                        className="rounded-lg border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                      >
+                        Open in Reader
+                      </button>
+                    </div>
+
+                    {entry.highlightText && (
+                      <p className="mt-2 text-[11px] italic text-gray-500 line-clamp-2">
+                        "{entry.highlightText}"
+                      </p>
+                    )}
+
+                    {editingNoteId === entry.id ? (
+                      <div className="mt-2 space-y-2">
+                        <textarea
+                          data-testid="notes-center-textarea"
+                          className="w-full min-h-[88px] rounded-xl border border-gray-200 bg-white p-2 text-sm text-gray-800 outline-none focus:ring-2 focus:ring-blue-500"
+                          value={noteEditorValue}
+                          onChange={(event) => setNoteEditorValue(event.target.value)}
+                          placeholder="Write your note..."
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            data-testid="notes-center-save"
+                            onClick={() => handleSaveNoteFromCenter(entry)}
+                            disabled={isSavingNote}
+                            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {isSavingNote ? "Saving..." : "Save note"}
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="notes-center-cancel"
+                            onClick={handleCancelNoteEdit}
+                            className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-2">
+                        <p
+                          data-testid="notes-center-note-text"
+                          className="rounded-lg border border-gray-100 bg-gray-50 px-2 py-2 text-sm text-gray-800"
+                        >
+                          {entry.note}
+                        </p>
+                        <button
+                          type="button"
+                          data-testid="notes-center-edit"
+                          onClick={() => handleStartNoteEdit(entry)}
+                          className="mt-2 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                        >
+                          Edit note
+                        </button>
+                      </div>
+                    )}
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
         {globalSearchQuery && !isTrashView && (
           <div className={`mb-4 ${showGlobalSearchSplitColumns ? "grid grid-cols-1 lg:grid-cols-[minmax(0,1.65fr)_minmax(300px,0.95fr)] gap-4 items-start" : ""}`}>
           <section
