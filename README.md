@@ -21,6 +21,7 @@ Smart Reader is built around real reading behavior:
 - Upload EPUB books in seconds
 - Clean cover-based library (grid or list)
 - Smart metadata (author, language, estimated pages, genre when available)
+- Clean inline metadata rows on cards (lightweight language/pages display)
 - Search, filter, and sort to find the right book fast
 - Custom shelves (collections): create, rename, delete, and color-code your own reading buckets
 - Assign books to one or many shelves directly from each card
