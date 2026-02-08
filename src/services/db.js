@@ -5,6 +5,8 @@ const bookStore = localforage.createInstance({ name: "SmartReaderLib" });
 const mutationQueues = new Map();
 const BOOK_METADATA_VERSION = 1;
 const TRASH_RETENTION_DAYS = 30;
+const READING_SESSION_BREAK_MS = 10 * 60 * 1000;
+const MAX_READING_SESSIONS = 180;
 
 const runBookMutation = async (id, mutator) => {
   const previous = mutationQueues.get(id) || Promise.resolve();
@@ -129,9 +131,11 @@ export const addBook = async (file) => {
       fontFamily: 'publisher'
     },
     isFavorite: false,
+    isToRead: false,
     isDeleted: false,
     deletedAt: null,
     readingTime: 0,
+    readingSessions: [],
     lastRead: new Date().toISOString(),
     addedAt: new Date(),
     // AI Summarization Fields
@@ -244,8 +248,40 @@ export const updateBookReaderSettings = async (id, readerSettings) => {
 
 export const updateReadingStats = async (id, secondsToAdd) => {
   return runBookMutation(id, (book) => {
-    book.readingTime = (book.readingTime || 0) + secondsToAdd;
-    book.lastRead = new Date().toISOString();
+    const safeSeconds = Math.max(0, Number(secondsToAdd) || 0);
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const nowMs = now.getTime();
+
+    book.readingTime = (book.readingTime || 0) + safeSeconds;
+    book.lastRead = nowIso;
+
+    if (!Array.isArray(book.readingSessions)) {
+      book.readingSessions = [];
+    }
+
+    if (safeSeconds > 0) {
+      const sessions = [...book.readingSessions];
+      const lastSession = sessions[sessions.length - 1];
+      const lastEndMs = lastSession
+        ? new Date(lastSession.endAt || lastSession.startAt || 0).getTime()
+        : NaN;
+      const shouldExtendLast =
+        Number.isFinite(lastEndMs) && (nowMs - lastEndMs <= READING_SESSION_BREAK_MS);
+
+      if (shouldExtendLast) {
+        lastSession.endAt = nowIso;
+        lastSession.seconds = (Number(lastSession.seconds) || 0) + safeSeconds;
+      } else {
+        sessions.push({
+          startAt: nowIso,
+          endAt: nowIso,
+          seconds: safeSeconds
+        });
+      }
+
+      book.readingSessions = sessions.slice(-MAX_READING_SESSIONS);
+    }
     return book;
   });
 };
@@ -318,6 +354,13 @@ export const restoreBookFromTrash = async (id) => {
 export const toggleFavorite = async (id) => {
   return runBookMutation(id, (book) => {
     book.isFavorite = !book.isFavorite;
+    return book;
+  });
+};
+
+export const toggleToRead = async (id) => {
+  return runBookMutation(id, (book) => {
+    book.isToRead = !Boolean(book.isToRead);
     return book;
   });
 };

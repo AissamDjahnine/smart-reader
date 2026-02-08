@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { addBook, getAllBooks, deleteBook, toggleFavorite, markBookStarted, backfillBookMetadata, moveBookToTrash, restoreBookFromTrash, purgeExpiredTrashBooks } from '../services/db'; 
-import { Plus, Book as BookIcon, User, Calendar, Trash2, Clock, Search, Heart, Filter, ArrowUpDown, LayoutGrid, List, Flame, RotateCcw, ArrowLeft } from 'lucide-react';
+import { addBook, getAllBooks, deleteBook, toggleFavorite, toggleToRead, markBookStarted, backfillBookMetadata, moveBookToTrash, restoreBookFromTrash, purgeExpiredTrashBooks, updateHighlightNote } from '../services/db'; 
+import ePub from 'epubjs';
+import { Plus, Book as BookIcon, User, Calendar, Trash2, Clock, Search, Heart, Tag, Filter, ArrowUpDown, LayoutGrid, List, Flame, RotateCcw, ArrowLeft, FileText } from 'lucide-react';
 
 const STARTED_BOOK_IDS_KEY = 'library-started-book-ids';
 const TRASH_RETENTION_DAYS = 30;
@@ -36,6 +37,94 @@ const formatGenreLabel = (value) => {
   return value.trim();
 };
 
+const compactWhitespace = (value) => (value || "").toString().replace(/\s+/g, " ").trim();
+
+const buildSnippet = (value, query) => {
+  const source = compactWhitespace(value);
+  if (!source) return "";
+  const needle = compactWhitespace(query).toLowerCase();
+  if (!needle) return source.slice(0, 120);
+
+  const haystack = source.toLowerCase();
+  const index = haystack.indexOf(needle);
+  if (index < 0) return source.slice(0, 120);
+
+  const radius = 56;
+  const start = Math.max(0, index - radius);
+  const end = Math.min(source.length, index + needle.length + radius);
+  const prefix = start > 0 ? "..." : "";
+  const suffix = end < source.length ? "..." : "";
+  return `${prefix}${source.slice(start, end)}${suffix}`;
+};
+
+const normalizeHref = (href = "") => href.split("#")[0];
+
+const flattenToc = (items, acc = []) => {
+  if (!Array.isArray(items)) return acc;
+  items.forEach((item) => {
+    if (!item) return;
+    const href = typeof item.href === "string" ? item.href : "";
+    const label = typeof item.label === "string" ? item.label.trim() : "";
+    if (href && label) {
+      acc.push({ href, label });
+    }
+    if (Array.isArray(item.subitems) && item.subitems.length) {
+      flattenToc(item.subitems, acc);
+    }
+  });
+  return acc;
+};
+
+const searchBookContent = async (book, query, maxMatches = 30) => {
+  if (!book?.data || !query) return [];
+  const epub = ePub(book.data);
+  const matches = [];
+  let tocEntries = [];
+
+  try {
+    await epub.ready;
+    if (epub?.loaded?.navigation) {
+      const nav = await epub.loaded.navigation;
+      tocEntries = flattenToc(nav?.toc || []);
+    }
+
+    const spineItems = epub?.spine?.spineItems || [];
+    for (const section of spineItems) {
+      if (!section || section.linear === "no" || section.linear === false) continue;
+      try {
+        await section.load(epub.load.bind(epub));
+        const sectionMatches = typeof section.find === "function" ? (section.find(query) || []) : [];
+        for (const match of sectionMatches) {
+          matches.push({
+            cfi: match?.cfi || "",
+            excerpt: match?.excerpt || "",
+            chapterLabel:
+              tocEntries.find((entry) => {
+                const sectionHref = normalizeHref(section.href || "");
+                const tocHref = normalizeHref(entry.href || "");
+                return sectionHref && tocHref && (sectionHref.includes(tocHref) || tocHref.includes(sectionHref));
+              })?.label || ""
+          });
+          if (matches.length >= maxMatches) break;
+        }
+        if (matches.length >= maxMatches) break;
+      } finally {
+        section.unload();
+      }
+    }
+  } catch (err) {
+    console.error(err);
+  } finally {
+    epub.destroy();
+  }
+
+  return matches;
+};
+
+const CONTENT_SCROLL_HEIGHT_CLASS = "h-[42vh]";
+const CONTENT_PANEL_HEIGHT_CLASS = "h-[calc(42vh+3rem)]";
+const FOUND_BOOK_COVER_PADDING_CLASS = "p-4";
+
 export default function Home() {
   const navigate = useNavigate();
   const [books, setBooks] = useState([]);
@@ -43,18 +132,81 @@ export default function Home() {
   
   // Search, filter & sort states
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeFilter, setActiveFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [flagFilters, setFlagFilters] = useState([]);
   const [sortBy, setSortBy] = useState("last-read-desc");
   const [viewMode, setViewMode] = useState(() => {
     if (typeof window === "undefined") return "grid";
     return window.localStorage.getItem("library-view-mode") === "list" ? "list" : "grid";
   });
+  const [isNotesCenterOpen, setIsNotesCenterOpen] = useState(false);
+  const [editingNoteId, setEditingNoteId] = useState("");
+  const [noteEditorValue, setNoteEditorValue] = useState("");
+  const [isSavingNote, setIsSavingNote] = useState(false);
+  const [contentSearchMatches, setContentSearchMatches] = useState({});
+  const [isContentSearching, setIsContentSearching] = useState(false);
+  const contentSearchTokenRef = useRef(0);
 
   useEffect(() => { loadLibrary(); }, []);
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("library-view-mode", viewMode);
   }, [viewMode]);
+
+  useEffect(() => {
+    const query = searchQuery.trim().toLowerCase();
+    const shouldSearchContent = query.length >= 2 && statusFilter !== "trash";
+
+    if (!shouldSearchContent) {
+      setContentSearchMatches({});
+      setIsContentSearching(false);
+      contentSearchTokenRef.current += 1;
+      return;
+    }
+
+    const token = contentSearchTokenRef.current + 1;
+    contentSearchTokenRef.current = token;
+    setIsContentSearching(true);
+    setContentSearchMatches({});
+
+    const timeoutId = setTimeout(async () => {
+      const targetBooks = books.filter((book) => !book.isDeleted && book?.data);
+      const nextMatches = {};
+
+      for (const book of targetBooks) {
+        if (contentSearchTokenRef.current !== token) return;
+        const matches = await searchBookContent(book, query, 30);
+        if (contentSearchTokenRef.current !== token) return;
+        if (matches.length) nextMatches[book.id] = matches;
+      }
+
+      if (contentSearchTokenRef.current === token) {
+        setContentSearchMatches(nextMatches);
+        setIsContentSearching(false);
+      }
+    }, 220);
+
+    return () => {
+      clearTimeout(timeoutId);
+      if (contentSearchTokenRef.current === token) {
+        setIsContentSearching(false);
+      }
+    };
+  }, [books, searchQuery, statusFilter]);
+
+  useEffect(() => {
+    if (statusFilter !== "trash") return;
+    if (!flagFilters.length) return;
+    setFlagFilters([]);
+  }, [statusFilter, flagFilters]);
+
+  useEffect(() => {
+    if (statusFilter !== "trash") return;
+    if (!isNotesCenterOpen) return;
+    setIsNotesCenterOpen(false);
+    setEditingNoteId("");
+    setNoteEditorValue("");
+  }, [statusFilter, isNotesCenterOpen]);
 
   const loadLibrary = async () => {
     await purgeExpiredTrashBooks(TRASH_RETENTION_DAYS);
@@ -105,9 +257,12 @@ export default function Home() {
     });
   };
 
-  const buildReaderPath = (id, panel = '') => {
+  const buildReaderPath = (id, panel = '', options = {}) => {
     const params = new URLSearchParams({ id });
     if (panel) params.set('panel', panel);
+    if (options.cfi) params.set('cfi', options.cfi);
+    if (options.query) params.set('q', options.query);
+    if (options.openSearch) params.set('search', '1');
     return `/read?${params.toString()}`;
   };
 
@@ -116,6 +271,18 @@ export default function Home() {
     e.stopPropagation();
     handleOpenBook(id);
     navigate(buildReaderPath(id, panel));
+  };
+
+  const handleGlobalResultOpen = (e, result) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!result?.bookId) return;
+    handleOpenBook(result.bookId);
+    navigate(buildReaderPath(result.bookId, "", {
+      cfi: result.cfi || "",
+      query: result.query || "",
+      openSearch: !!result.query
+    }));
   };
 
   const handleDeleteBook = async (e, id) => {
@@ -150,6 +317,48 @@ export default function Home() {
     loadLibrary();
   };
 
+  const handleToggleToRead = async (e, id) => {
+    e.preventDefault();
+    e.stopPropagation();
+    await toggleToRead(id);
+    loadLibrary();
+  };
+
+  const handleToggleNotesCenter = () => {
+    setIsNotesCenterOpen((current) => !current);
+    setEditingNoteId("");
+    setNoteEditorValue("");
+  };
+
+  const handleStartNoteEdit = (entry) => {
+    setEditingNoteId(entry.id);
+    setNoteEditorValue(entry.note || "");
+  };
+
+  const handleCancelNoteEdit = () => {
+    setEditingNoteId("");
+    setNoteEditorValue("");
+  };
+
+  const handleSaveNoteFromCenter = async (entry) => {
+    if (!entry?.bookId || !entry?.cfiRange) return;
+    setIsSavingNote(true);
+    try {
+      await updateHighlightNote(entry.bookId, entry.cfiRange, noteEditorValue.trim());
+      await loadLibrary();
+      setEditingNoteId("");
+      setNoteEditorValue("");
+    } finally {
+      setIsSavingNote(false);
+    }
+  };
+
+  const handleOpenNoteInReader = (entry) => {
+    if (!entry?.bookId) return;
+    handleOpenBook(entry.bookId);
+    navigate(buildReaderPath(entry.bookId, "highlights", { cfi: entry.cfiRange || "" }));
+  };
+
   const handleFileUpload = async (event) => {
     const file = event.target.files[0];
     if (file && file.type === "application/epub+zip") {
@@ -160,14 +369,17 @@ export default function Home() {
     }
   };
 
-  const filterOptions = [
+  const statusFilterOptions = [
     { value: "all", label: "All books" },
-    { value: "favorites", label: "Favorites" },
+    { value: "to-read", label: "To read" },
     { value: "in-progress", label: "In progress" },
     { value: "finished", label: "Finished" },
-    { value: "has-highlights", label: "Has highlights" },
-    { value: "has-notes", label: "Has notes" },
     { value: "trash", label: "Trash" }
+  ];
+  const flagFilterOptions = [
+    { value: "favorites", label: "Favorites" },
+    { value: "has-highlights", label: "Has highlights" },
+    { value: "has-notes", label: "Has notes" }
   ];
 
   const sortOptions = [
@@ -198,14 +410,62 @@ export default function Home() {
     return `${year}-${month}-${day}`;
   };
   const startedBookIds = readStartedBookIds();
+  const isBookStarted = (book) => {
+    const progress = normalizeNumber(book?.progress);
+    return (
+      startedBookIds.has(book?.id) ||
+      Boolean(book?.hasStarted) ||
+      Boolean(book?.lastLocation) ||
+      progress > 0 ||
+      normalizeNumber(book?.readingTime) > 0
+    );
+  };
+  const isBookToRead = (book) => Boolean(book?.isToRead);
+  const isFlagFilterActive = (flag) => flagFilters.includes(flag);
+  const toggleFlagFilter = (flag) => {
+    setFlagFilters((current) =>
+      current.includes(flag) ? current.filter((item) => item !== flag) : [...current, flag]
+    );
+  };
+
+  const bookMatchesLibrarySearch = (book, query) => {
+    if (!query) return true;
+    const normalizedQuery = normalizeString(query.trim());
+    if (!normalizedQuery) return true;
+
+    const metadataFields = [
+      book.title,
+      book.author,
+      formatLanguageLabel(book.language),
+      formatGenreLabel(book.genre)
+    ];
+    if (metadataFields.some((field) => normalizeString(field).includes(normalizedQuery))) {
+      return true;
+    }
+
+    const highlights = Array.isArray(book.highlights) ? book.highlights : [];
+    if (highlights.some((h) => normalizeString(h?.text).includes(normalizedQuery) || normalizeString(h?.note).includes(normalizedQuery))) {
+      return true;
+    }
+
+    const bookmarks = Array.isArray(book.bookmarks) ? book.bookmarks : [];
+    if (bookmarks.some((b) => normalizeString(b?.label).includes(normalizedQuery) || normalizeString(b?.text).includes(normalizedQuery))) {
+      return true;
+    }
+
+    if (Array.isArray(contentSearchMatches[book.id]) && contentSearchMatches[book.id].length > 0) {
+      return true;
+    }
+
+    return false;
+  };
 
   const getReadingStreak = (libraryBooks) => {
     const dayKeys = new Set(
       libraryBooks
         .filter((book) => {
           if (book.isDeleted) return false;
-          const progress = normalizeNumber(book.progress);
-          return startedBookIds.has(book.id) || Boolean(book.hasStarted) || Boolean(book.lastLocation) || progress > 0 || normalizeNumber(book.readingTime) > 0;
+          return isBookStarted(book);
         })
         .map((book) => toLocalDateKey(book.lastRead))
         .filter(Boolean)
@@ -241,14 +501,64 @@ export default function Home() {
 
   const activeBooks = books.filter((book) => !book.isDeleted);
   const trashedBooksCount = books.length - activeBooks.length;
-  const isTrashView = activeFilter === "trash";
+  const isTrashView = statusFilter === "trash";
+  const quickFilterStats = [
+    {
+      key: "to-read",
+      label: "To read",
+      count: activeBooks.filter((book) => isBookToRead(book)).length
+    },
+    {
+      key: "in-progress",
+      label: "In progress",
+      count: activeBooks.filter((book) => {
+        const progress = normalizeNumber(book.progress);
+        return progress > 0 && progress < 100;
+      }).length
+    },
+    {
+      key: "finished",
+      label: "Finished",
+      count: activeBooks.filter((book) => normalizeNumber(book.progress) >= 100).length
+    },
+    {
+      key: "favorites",
+      label: "Favorites",
+      count: activeBooks.filter((book) => Boolean(book.isFavorite)).length
+    }
+  ];
+  const notesCenterEntries = activeBooks
+    .flatMap((book) => {
+      const highlights = Array.isArray(book.highlights) ? book.highlights : [];
+      return highlights
+        .filter((highlight) => typeof highlight?.note === "string" && highlight.note.trim())
+        .map((highlight, index) => ({
+          id: `${book.id}::${highlight.cfiRange || `note-${index}`}`,
+          bookId: book.id,
+          cfiRange: highlight.cfiRange || "",
+          bookTitle: book.title,
+          bookAuthor: book.author,
+          highlightText: compactWhitespace(highlight.text || ""),
+          note: highlight.note.trim(),
+          lastRead: book.lastRead
+        }));
+    })
+    .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead));
+  const notesCenterFilteredEntries = notesCenterEntries.filter((entry) => {
+    const query = normalizeString(searchQuery.trim());
+    if (!query) return true;
+    return (
+      normalizeString(entry.bookTitle).includes(query) ||
+      normalizeString(entry.bookAuthor).includes(query) ||
+      normalizeString(entry.note).includes(query) ||
+      normalizeString(entry.highlightText).includes(query)
+    );
+  });
 
   const sortedBooks = [...books]
     .filter((book) => {
       const query = searchQuery.trim().toLowerCase();
-      const matchesSearch = !query
-        || normalizeString(book.title).includes(query)
-        || normalizeString(book.author).includes(query);
+      const matchesSearch = !query || bookMatchesLibrarySearch(book, query);
 
       const highlightCount = Array.isArray(book.highlights) ? book.highlights.length : 0;
       const noteCount = Array.isArray(book.highlights)
@@ -257,18 +567,26 @@ export default function Home() {
       const progress = normalizeNumber(book.progress);
       const inTrash = Boolean(book.isDeleted);
 
-      const matchesFilter =
-        activeFilter === "trash" ? inTrash
+      const matchesStatus =
+        statusFilter === "trash" ? inTrash
         : inTrash ? false
-        : activeFilter === "all" ? true
-        : activeFilter === "favorites" ? !!book.isFavorite
-        : activeFilter === "in-progress" ? progress > 0 && progress < 100
-        : activeFilter === "finished" ? progress >= 100
-        : activeFilter === "has-highlights" ? highlightCount > 0
-        : activeFilter === "has-notes" ? noteCount > 0
+        : statusFilter === "all" ? true
+        : statusFilter === "to-read" ? isBookToRead(book)
+        : statusFilter === "in-progress" ? progress > 0 && progress < 100
+        : statusFilter === "finished" ? progress >= 100
         : true;
 
-      return matchesSearch && matchesFilter;
+      const matchesFlags =
+        statusFilter === "trash"
+          ? true
+          : flagFilters.every((flag) => {
+              if (flag === "favorites") return Boolean(book.isFavorite);
+              if (flag === "has-highlights") return highlightCount > 0;
+              if (flag === "has-notes") return noteCount > 0;
+              return true;
+            });
+
+      return matchesSearch && matchesStatus && matchesFlags;
     })
     .sort((left, right) => {
       if (sortBy === "last-read-desc") return normalizeTime(right.lastRead) - normalizeTime(left.lastRead);
@@ -283,17 +601,193 @@ export default function Home() {
       return normalizeString(left.title).localeCompare(normalizeString(right.title));
     });
 
+  const globalSearchQuery = searchQuery.trim().toLowerCase();
+  const globalSearchGroups = (() => {
+    if (!globalSearchQuery) return [];
+    const nextGroups = {
+      books: [],
+      highlights: [],
+      notes: [],
+      bookmarks: [],
+      content: []
+    };
+
+    books.forEach((book) => {
+      if (book.isDeleted) return;
+      const existingBookResultIds = new Set();
+
+      const metadataFields = [
+        book.title,
+        book.author,
+        formatLanguageLabel(book.language),
+        formatGenreLabel(book.genre)
+      ];
+      if (metadataFields.some((field) => normalizeString(field).includes(globalSearchQuery))) {
+        const resultId = `${book.id}-book`;
+        nextGroups.books.push({
+          id: resultId,
+          bookId: book.id,
+          panel: "",
+          cfi: "",
+          query: globalSearchQuery,
+          title: book.title,
+          subtitle: book.author,
+          snippet: `Book match: ${book.title} by ${book.author}`
+        });
+        existingBookResultIds.add(resultId);
+      }
+
+      const highlights = Array.isArray(book.highlights) ? book.highlights : [];
+      highlights.forEach((highlight, index) => {
+        const textValue = compactWhitespace(highlight?.text);
+        if (normalizeString(textValue).includes(globalSearchQuery)) {
+          nextGroups.highlights.push({
+            id: `${book.id}-highlight-${highlight?.cfiRange || index}`,
+            bookId: book.id,
+            panel: "highlights",
+            cfi: highlight?.cfiRange || "",
+            query: globalSearchQuery,
+            title: book.title,
+            subtitle: book.author,
+            snippet: buildSnippet(textValue, globalSearchQuery)
+          });
+        }
+
+        const noteValue = compactWhitespace(highlight?.note);
+        if (normalizeString(noteValue).includes(globalSearchQuery)) {
+          nextGroups.notes.push({
+            id: `${book.id}-note-${highlight?.cfiRange || index}`,
+            bookId: book.id,
+            panel: "highlights",
+            cfi: highlight?.cfiRange || "",
+            query: globalSearchQuery,
+            title: book.title,
+            subtitle: book.author,
+            snippet: buildSnippet(noteValue, globalSearchQuery)
+          });
+        }
+      });
+
+      const bookmarks = Array.isArray(book.bookmarks) ? book.bookmarks : [];
+      bookmarks.forEach((bookmark, index) => {
+        const labelValue = compactWhitespace(bookmark?.label);
+        const textValue = compactWhitespace(bookmark?.text);
+        const hasMatch =
+          normalizeString(labelValue).includes(globalSearchQuery) ||
+          normalizeString(textValue).includes(globalSearchQuery);
+        if (!hasMatch) return;
+
+        nextGroups.bookmarks.push({
+          id: `${book.id}-bookmark-${bookmark?.cfi || index}`,
+          bookId: book.id,
+          panel: "bookmarks",
+          cfi: bookmark?.cfi || "",
+          query: globalSearchQuery,
+          title: book.title,
+          subtitle: book.author,
+          snippet: buildSnippet(textValue || labelValue, globalSearchQuery)
+        });
+      });
+
+      const contentMatches = Array.isArray(contentSearchMatches[book.id]) ? contentSearchMatches[book.id] : [];
+      contentMatches.forEach((match, index) => {
+        nextGroups.content.push({
+          id: `${book.id}-content-${match?.cfi || index}`,
+          bookId: book.id,
+          panel: "",
+          cfi: match?.cfi || "",
+          query: globalSearchQuery,
+          title: book.title,
+          subtitle: [book.author, match?.chapterLabel].filter(Boolean).join(" · "),
+          snippet: buildSnippet(match?.excerpt || "", globalSearchQuery)
+        });
+      });
+
+      if (contentMatches.length > 0) {
+        const resultId = `${book.id}-book`;
+        const firstContentCfi = contentMatches[0]?.cfi || "";
+        if (!existingBookResultIds.has(resultId)) {
+          nextGroups.books.push({
+            id: resultId,
+            bookId: book.id,
+            panel: "",
+            cfi: firstContentCfi,
+            query: globalSearchQuery,
+            title: book.title,
+            subtitle: book.author,
+            snippet: `Found ${contentMatches.length} content match${contentMatches.length === 1 ? '' : 'es'}`
+          });
+          existingBookResultIds.add(resultId);
+        } else {
+          const existingIndex = nextGroups.books.findIndex((item) => item.id === resultId);
+          if (existingIndex >= 0 && !nextGroups.books[existingIndex].cfi) {
+            nextGroups.books[existingIndex] = {
+              ...nextGroups.books[existingIndex],
+              cfi: firstContentCfi
+            };
+          }
+        }
+      }
+    });
+
+    const descriptors = [
+      { key: "content", label: "Book content" },
+      { key: "books", label: "Books" },
+      { key: "highlights", label: "Highlights" },
+      { key: "notes", label: "Notes" },
+      { key: "bookmarks", label: "Bookmarks" }
+    ];
+
+    return descriptors
+      .map((descriptor) => ({
+        ...descriptor,
+        items: nextGroups[descriptor.key]
+      }))
+      .filter((group) => group.items.length > 0);
+  })();
+  const globalSearchBookGroup = globalSearchGroups.find((group) => group.key === "books");
+  const globalSearchBookItems = globalSearchBookGroup?.items || [];
+  const visibleGlobalSearchGroups = globalSearchGroups.filter((group) => group.key !== "books");
+  const globalContentGroup = visibleGlobalSearchGroups.find((group) => group.key === "content");
+  const globalOtherGroups = visibleGlobalSearchGroups.filter((group) => group.key !== "content");
+  const globalSearchTotal = visibleGlobalSearchGroups.reduce((total, group) => total + group.items.length, 0) + globalSearchBookItems.length;
+  const booksById = new Map(books.filter((book) => !book.isDeleted).map((book) => [book.id, book]));
+  const globalMatchedBooks = globalSearchBookItems
+    .map((item) => ({
+      ...item,
+      book: booksById.get(item.bookId)
+    }))
+    .filter((item) => Boolean(item.book));
+  const globalContentItemsByBook = (globalContentGroup?.items || []).reduce((acc, item) => {
+    if (!item?.bookId) return acc;
+    if (!acc[item.bookId]) acc[item.bookId] = [];
+    acc[item.bookId].push(item);
+    return acc;
+  }, {});
+  const globalMatchedBookPairs = globalMatchedBooks
+    .map((item) => ({
+      ...item,
+      contentItems: globalContentItemsByBook[item.bookId] || []
+    }))
+    .filter((item) => item.contentItems.length > 0);
+  const showGlobalSearchBooksColumn = Boolean(
+    globalSearchQuery &&
+    !isTrashView &&
+    (globalMatchedBookPairs.length || globalMatchedBooks.length)
+  );
+  const showGlobalSearchSplitColumns = showGlobalSearchBooksColumn && globalMatchedBookPairs.length === 0;
+
   const continueReadingBooks = [...books]
     .filter((book) => {
       if (book.isDeleted) return false;
       const progress = normalizeNumber(book.progress);
-      const hasStarted = startedBookIds.has(book.id) || Boolean(book.hasStarted) || Boolean(book.lastLocation) || progress > 0 || normalizeNumber(book.readingTime) > 0;
+      const hasStarted = isBookStarted(book);
       return hasStarted && progress < 100;
     })
     .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead))
     .slice(0, 8);
 
-  const showContinueReading = activeFilter === "all" && !searchQuery.trim() && continueReadingBooks.length > 0;
+  const showContinueReading = statusFilter === "all" && !searchQuery.trim() && continueReadingBooks.length > 0;
   const { streakCount, readToday } = getReadingStreak(books);
 
   const formatTime = (totalSeconds) => {
@@ -302,6 +796,25 @@ export default function Home() {
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     if (hours > 0) return `${hours}h ${minutes}m`;
     return `${minutes}m`;
+  };
+
+  const renderReadingStateBadge = (book, extraClasses = "") => (
+    <div className={`flex items-center gap-2 text-blue-500 text-xs font-semibold ${extraClasses}`}>
+      <Clock size={12} />
+      <span>{formatTime(book.readingTime)}</span>
+    </div>
+  );
+
+  const renderToReadTag = (book, extraClasses = "") => {
+    if (!isBookToRead(book)) return null;
+    return (
+      <span
+        data-testid="book-to-read-tag"
+        className={`inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-bold tracking-wide text-amber-700 ${extraClasses}`}
+      >
+        TO READ
+      </span>
+    );
   };
 
   const formatLastRead = (dateString) => {
@@ -325,6 +838,67 @@ export default function Home() {
     if (diffInDays === 1) return "Deleted yesterday";
     if (diffInDays < 7) return `Deleted ${diffInDays} days ago`;
     return `Deleted ${date.toLocaleDateString()}`;
+  };
+
+  const formatSessionDuration = (seconds) => {
+    const safeSeconds = Math.max(0, Number(seconds) || 0);
+    const minutes = Math.max(1, Math.round(safeSeconds / 60));
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    if (hours <= 0) return `${minutes} min`;
+    if (remainingMinutes === 0) return `${hours}h`;
+    return `${hours}h ${remainingMinutes} min`;
+  };
+
+  const getCalendarDayDiff = (dateString) => {
+    const date = new Date(dateString || 0);
+    if (!Number.isFinite(date.getTime())) return 0;
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const dateStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const diffMs = todayStart.getTime() - dateStart.getTime();
+    if (!Number.isFinite(diffMs) || diffMs <= 0) return 0;
+    return Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  };
+
+  const getSessionStats = (book) => {
+    const sessions = Array.isArray(book?.readingSessions) ? book.readingSessions : [];
+    if (!sessions.length) {
+      return { lastSessionSeconds: 0, lastSessionDaysAgo: 0 };
+    }
+
+    const latestSession = sessions[sessions.length - 1];
+    const lastSessionSeconds = Math.max(0, Number(latestSession?.seconds) || 0);
+    const lastSessionDate = latestSession?.endAt || latestSession?.startAt || "";
+    const lastSessionDaysAgo = getCalendarDayDiff(lastSessionDate);
+    return { lastSessionSeconds, lastSessionDaysAgo };
+  };
+
+  const renderSessionTimeline = (book, options = {}) => {
+    const { compact = false } = options;
+    const { lastSessionSeconds, lastSessionDaysAgo } = getSessionStats(book);
+    if (!lastSessionSeconds) return null;
+    const daysSuffix = lastSessionDaysAgo > 0
+      ? ` (${lastSessionDaysAgo} day${lastSessionDaysAgo === 1 ? "" : "s"} ago)`
+      : "";
+    const label = `Last session: ${formatSessionDuration(lastSessionSeconds)}${daysSuffix}`;
+
+    if (compact) {
+      return (
+        <div className="mt-1 text-[10px] font-semibold text-gray-500">
+          {label}
+        </div>
+      );
+    }
+
+    return (
+      <div
+        data-testid="book-session-summary"
+        className="mt-2 text-[10px] font-semibold text-gray-500"
+      >
+        <span data-testid="book-last-session">{label}</span>
+      </div>
+    );
   };
 
   const renderMetadataBadges = (book) => {
@@ -372,10 +946,65 @@ export default function Home() {
     );
   };
 
-  const getFilterLabel = () => {
-    if (activeFilter === "trash") return "Trash";
-    return filterOptions.find((f) => f.value === activeFilter)?.label || "All books";
+  const renderGlobalSearchBookCard = (item, options = {}) => {
+    const book = item.book;
+    if (!book) return null;
+    const { coverHeightClass = CONTENT_PANEL_HEIGHT_CLASS } = options;
+    return (
+      <Link
+        to={buildReaderPath(book.id, "", {
+          cfi: item.cfi || "",
+          query: globalSearchQuery,
+          openSearch: true
+        })}
+        key={`global-card-${book.id}`}
+        data-testid="global-search-found-book-card"
+        onClick={() => handleOpenBook(book.id)}
+        className={`group bg-white rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden border border-gray-100 block relative ${coverHeightClass}`}
+      >
+        <div data-testid="global-search-found-book-cover" className={`h-full bg-gray-100 ${FOUND_BOOK_COVER_PADDING_CLASS}`}>
+          <div className="relative h-full w-full rounded-xl overflow-hidden bg-white border border-gray-100">
+            {book.cover ? (
+              <img src={book.cover} alt={book.title} className="w-full h-full object-contain group-hover:scale-[1.01] transition-transform duration-500" />
+            ) : (
+              <div className="w-full h-full flex flex-col items-center justify-center text-gray-400 p-4 text-center">
+                <BookIcon size={40} className="mb-2 opacity-20" />
+                <span className="text-xs font-medium uppercase tracking-widest">{book.title}</span>
+              </div>
+            )}
+
+            <div className="absolute inset-x-0 bottom-0 border-t border-gray-200 bg-white/95 backdrop-blur-sm px-3 py-2">
+              <h3 data-testid="global-search-found-book-title" className="font-bold text-gray-900 text-xl leading-tight line-clamp-1 group-hover:text-blue-600 transition-colors">
+                {book.title}
+              </h3>
+              <div data-testid="global-search-found-book-author" className="mt-1 flex items-center gap-2 text-gray-600 text-sm">
+                <User size={14} />
+                <span className="truncate">{book.author}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Link>
+    );
   };
+
+  const getFilterLabel = () => {
+    if (statusFilter === "trash") return "Trash";
+    return statusFilterOptions.find((f) => f.value === statusFilter)?.label || "All books";
+  };
+
+  const resetLibraryFilters = () => {
+    setSearchQuery("");
+    setStatusFilter("all");
+    setFlagFilters([]);
+    setSortBy("last-read-desc");
+  };
+
+  const hasActiveLibraryFilters =
+    Boolean(searchQuery.trim()) ||
+    statusFilter !== "all" ||
+    flagFilters.length > 0 ||
+    sortBy !== "last-read-desc";
 
   return (
     <div className="min-h-screen bg-gray-50 p-6 md:p-12 text-gray-900 font-sans">
@@ -403,13 +1032,54 @@ export default function Home() {
               <Flame size={14} className={streakCount > 0 ? 'text-orange-500' : 'text-gray-400'} />
               <span>{streakCount > 0 ? `${streakCount}-day streak` : 'No streak yet'}</span>
             </div>
+
+            <div data-testid="library-quick-filters" className="mt-3 flex flex-wrap gap-2">
+              {quickFilterStats.map((stat) => {
+                const isQuickActive =
+                  stat.key === "favorites"
+                    ? isFlagFilterActive("favorites")
+                    : statusFilter === stat.key;
+                return (
+                <button
+                  key={stat.key}
+                  type="button"
+                  data-testid={`library-quick-filter-${stat.key}`}
+                  aria-pressed={isQuickActive}
+                  onClick={() => {
+                    if (stat.key === "favorites") {
+                      if (statusFilter === "trash") setStatusFilter("all");
+                      toggleFlagFilter("favorites");
+                      return;
+                    }
+                    setStatusFilter(stat.key);
+                  }}
+                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                    isQuickActive
+                      ? "border-blue-200 bg-blue-50 text-blue-700"
+                      : "border-gray-200 bg-white text-gray-600 hover:border-blue-200 hover:text-blue-700"
+                  }`}
+                  title={`Show ${stat.label.toLowerCase()} books`}
+                >
+                  <span>{stat.label}</span>
+                  <span
+                    data-testid={`library-quick-filter-${stat.key}-count`}
+                    className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold ${
+                      isQuickActive ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
+                    }`}
+                  >
+                    {stat.count}
+                  </span>
+                </button>
+                );
+              })}
+            </div>
           </div>
 
           <div className="flex items-center gap-3">
             <button
               type="button"
               data-testid="trash-toggle-button"
-              onClick={() => setActiveFilter((current) => (current === "trash" ? "all" : "trash"))}
+              onClick={() => setStatusFilter((current) => (current === "trash" ? "all" : "trash"))}
               className={`relative p-3 rounded-full border shadow-sm transition-all ${
                 isTrashView
                   ? "bg-amber-500 text-white border-amber-500"
@@ -443,7 +1113,7 @@ export default function Home() {
               </div>
               <button
                 type="button"
-                onClick={() => setActiveFilter("in-progress")}
+                onClick={() => setStatusFilter("in-progress")}
                 className="text-xs font-bold text-blue-600 hover:text-blue-700"
               >
                 View in-progress
@@ -476,6 +1146,7 @@ export default function Home() {
                       <div className="mt-2 text-[11px] text-blue-600 font-semibold">
                         {normalizeNumber(book.progress)}% · {formatTime(book.readingTime)}
                       </div>
+                      {renderSessionTimeline(book, { compact: true })}
                       <div className="mt-1 text-[10px] text-gray-400">{formatLastRead(book.lastRead)}</div>
                       <div className="mt-2 w-full bg-gray-100 h-1.5 rounded-full overflow-hidden">
                         <div
@@ -492,86 +1163,372 @@ export default function Home() {
         )}
 
         {/* Search, Filter and Sort Bar */}
-        <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_220px_280px_120px] gap-3 mb-3">
-          <div className="relative flex-1">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
-            <input 
-              type="text"
-              placeholder="Search by title or author..."
-              data-testid="library-search"
-              className="w-full pl-12 pr-4 py-3 bg-white border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-          </div>
+        <div
+          data-testid="library-toolbar-sticky"
+          className="sticky top-3 z-20 mb-3 rounded-2xl bg-gray-50/95 pb-2 backdrop-blur supports-[backdrop-filter]:bg-gray-50/80"
+        >
+          <div className="grid grid-cols-1 items-stretch gap-3 md:grid-cols-[minmax(0,1fr)_220px_280px_auto]">
+            <div className="relative flex-1">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+              <input 
+                type="text"
+                placeholder="Search books, highlights, notes, bookmarks..."
+                data-testid="library-search"
+                className="h-[52px] w-full rounded-2xl border border-gray-200 bg-white pl-12 pr-4 text-base focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
 
-          <div className="relative">
-            <Filter className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-            <select
-              data-testid="library-filter"
-              value={activeFilter}
-              onChange={(e) => setActiveFilter(e.target.value)}
-              className="w-full pl-11 pr-4 py-3 bg-white border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm text-sm font-semibold text-gray-700"
-            >
-              {filterOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
+            <div className="relative">
+              <Filter className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+              <select
+                data-testid="library-filter"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="h-[52px] w-full rounded-2xl border border-gray-200 bg-white pl-11 pr-4 text-sm font-semibold text-gray-700 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+              >
+                {statusFilterOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-          <div className="relative">
-            <ArrowUpDown className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-            <select
-              data-testid="library-sort"
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-              className="w-full pl-11 pr-4 py-3 bg-white border border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm text-sm font-semibold text-gray-700"
-            >
-              {sortOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
+            <div className="relative">
+              <ArrowUpDown className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+              <select
+                data-testid="library-sort"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="h-[52px] w-full rounded-2xl border border-gray-200 bg-white pl-11 pr-4 text-sm font-semibold text-gray-700 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+              >
+                {sortOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-          <div
-            className="flex items-center bg-white p-1 border border-gray-200 rounded-2xl shadow-sm"
-            data-testid="library-view-toggle"
-          >
-            <button
-              type="button"
-              data-testid="library-view-grid"
-              aria-pressed={viewMode === "grid"}
-              onClick={() => setViewMode("grid")}
-              className={`flex-1 py-2 rounded-xl transition-colors flex items-center justify-center ${
-                viewMode === "grid" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
-              }`}
-              title="Grid view"
-            >
-              <LayoutGrid size={16} />
-            </button>
-            <button
-              type="button"
-              data-testid="library-view-list"
-              aria-pressed={viewMode === "list"}
-              onClick={() => setViewMode("list")}
-              className={`flex-1 py-2 rounded-xl transition-colors flex items-center justify-center ${
-                viewMode === "list" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
-              }`}
-              title="List view"
-            >
-              <List size={16} />
-            </button>
+            <div className="flex items-stretch justify-end gap-2">
+              <div
+                className="flex h-[52px] w-[120px] items-center rounded-2xl border border-gray-200 bg-white p-1 shadow-sm"
+                data-testid="library-view-toggle"
+              >
+                <button
+                  type="button"
+                  data-testid="library-view-grid"
+                  aria-pressed={viewMode === "grid"}
+                  onClick={() => setViewMode("grid")}
+                  className={`flex h-full flex-1 items-center justify-center rounded-xl transition-colors ${
+                    viewMode === "grid" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
+                  }`}
+                  title="Grid view"
+                >
+                  <LayoutGrid size={16} />
+                </button>
+                <button
+                  type="button"
+                  data-testid="library-view-list"
+                  aria-pressed={viewMode === "list"}
+                  onClick={() => setViewMode("list")}
+                  className={`flex h-full flex-1 items-center justify-center rounded-xl transition-colors ${
+                    viewMode === "list" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
+                  }`}
+                  title="List view"
+                >
+                  <List size={16} />
+                </button>
+              </div>
+
+              {!isTrashView && (
+                <button
+                  type="button"
+                  data-testid="library-notes-center-toggle"
+                  onClick={handleToggleNotesCenter}
+                  className={`inline-flex h-[52px] items-center gap-2 rounded-2xl border px-3 text-sm font-semibold transition ${
+                    isNotesCenterOpen
+                      ? "border-blue-200 bg-blue-50 text-blue-700"
+                      : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                  }`}
+                >
+                  <FileText size={15} />
+                  <span>Notes Center</span>
+                  <span className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold ${
+                    isNotesCenterOpen ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
+                  }`}>
+                    {notesCenterEntries.length}
+                  </span>
+                </button>
+              )}
+
+              {hasActiveLibraryFilters && (
+                <button
+                  type="button"
+                  data-testid="library-reset-filters-button"
+                  onClick={resetLibraryFilters}
+                  className="inline-flex h-[52px] items-center gap-2 rounded-2xl border border-blue-200 bg-blue-50 px-3 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                  title="Reset filters"
+                  aria-label="Reset filters"
+                >
+                  <RotateCcw size={16} />
+                  <span>Reset filters</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>
-        <div className="mb-8 text-xs text-gray-500 flex items-center gap-2">
+        {isNotesCenterOpen && !isTrashView && (
+          <section data-testid="notes-center-panel" className="mb-4 rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-bold text-blue-900">Notes Center</h2>
+                <p
+                  data-testid="notes-center-count"
+                  className="mt-1 text-xs text-blue-700/90"
+                >
+                  {notesCenterFilteredEntries.length} note{notesCenterFilteredEntries.length === 1 ? "" : "s"} shown
+                  {searchQuery.trim() ? ` for "${searchQuery.trim()}"` : ""}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleToggleNotesCenter}
+                className="text-xs font-semibold text-blue-700 hover:text-blue-900"
+              >
+                Close
+              </button>
+            </div>
+
+            {notesCenterFilteredEntries.length === 0 ? (
+              <div data-testid="notes-center-empty" className="mt-3 rounded-xl border border-blue-100 bg-white p-3 text-xs text-gray-600">
+                No notes found yet. Add notes on highlights in the Reader, then manage them here.
+              </div>
+            ) : (
+              <div className="mt-3 max-h-[56vh] space-y-3 overflow-y-auto pr-1">
+                {notesCenterFilteredEntries.map((entry) => (
+                  <article
+                    key={entry.id}
+                    data-testid="notes-center-item"
+                    className="rounded-xl border border-blue-100 bg-white p-3"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-bold text-gray-900">{entry.bookTitle}</div>
+                        <div className="text-xs text-gray-500">{entry.bookAuthor}</div>
+                      </div>
+                      <button
+                        type="button"
+                        data-testid="notes-center-open-reader"
+                        onClick={() => handleOpenNoteInReader(entry)}
+                        className="rounded-lg border border-gray-200 px-2 py-1 text-[11px] font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                      >
+                        Open in Reader
+                      </button>
+                    </div>
+
+                    {entry.highlightText && (
+                      <p className="mt-2 text-[11px] italic text-gray-500 line-clamp-2">
+                        "{entry.highlightText}"
+                      </p>
+                    )}
+
+                    {editingNoteId === entry.id ? (
+                      <div className="mt-2 space-y-2">
+                        <textarea
+                          data-testid="notes-center-textarea"
+                          className="w-full min-h-[88px] rounded-xl border border-gray-200 bg-white p-2 text-sm text-gray-800 outline-none focus:ring-2 focus:ring-blue-500"
+                          value={noteEditorValue}
+                          onChange={(event) => setNoteEditorValue(event.target.value)}
+                          placeholder="Write your note..."
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            data-testid="notes-center-save"
+                            onClick={() => handleSaveNoteFromCenter(entry)}
+                            disabled={isSavingNote}
+                            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {isSavingNote ? "Saving..." : "Save note"}
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="notes-center-cancel"
+                            onClick={handleCancelNoteEdit}
+                            className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-2">
+                        <p
+                          data-testid="notes-center-note-text"
+                          className="rounded-lg border border-gray-100 bg-gray-50 px-2 py-2 text-sm text-gray-800"
+                        >
+                          {entry.note}
+                        </p>
+                        <button
+                          type="button"
+                          data-testid="notes-center-edit"
+                          onClick={() => handleStartNoteEdit(entry)}
+                          className="mt-2 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                        >
+                          Edit note
+                        </button>
+                      </div>
+                    )}
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+        {globalSearchQuery && !isTrashView && (
+          <div className={`mb-4 ${showGlobalSearchSplitColumns ? "grid grid-cols-1 lg:grid-cols-[minmax(0,1.65fr)_minmax(300px,0.95fr)] gap-4 items-start" : ""}`}>
+          <section
+            data-testid="global-search-panel"
+            className="rounded-2xl border border-blue-100 bg-blue-50/60 p-4"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-sm font-bold text-blue-900">Global Search Results</h2>
+              <span className="text-xs font-semibold text-blue-700">
+                {globalSearchTotal} match{globalSearchTotal === 1 ? "" : "es"}
+              </span>
+            </div>
+            {isContentSearching && (
+              <p data-testid="global-search-scanning" className="mt-2 text-[11px] font-semibold text-blue-800/80">
+                Scanning book text...
+              </p>
+            )}
+
+            {globalSearchTotal === 0 ? (
+              <p data-testid="global-search-empty" className="mt-2 text-xs text-blue-800/80">
+                No matches found in books, highlights, notes, or bookmarks.
+              </p>
+            ) : (
+              <div className="mt-3 space-y-3">
+                {globalMatchedBookPairs.length > 0 && (
+                  <div data-testid="global-search-found-books" className="space-y-3">
+                    {globalMatchedBookPairs.map((pair) => (
+                      <div
+                        key={`content-pair-${pair.bookId}`}
+                        data-testid="global-search-content-book-row"
+                        className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.65fr)_minmax(260px,0.95fr)] gap-3 items-start"
+                      >
+                        <div
+                          data-testid="global-search-group-content"
+                          className={`rounded-xl border border-blue-100 bg-white p-3 ${CONTENT_PANEL_HEIGHT_CLASS}`}
+                        >
+                          <div className="mb-2 text-[11px] uppercase tracking-[0.16em] font-bold text-blue-700">
+                            Book content · {pair.title}
+                          </div>
+                          <div
+                            data-testid="global-search-group-content-scroll"
+                            className={`space-y-2 ${CONTENT_SCROLL_HEIGHT_CLASS} overflow-y-auto pr-1 pb-2`}
+                          >
+                            {pair.contentItems.map((item) => (
+                              <button
+                                key={item.id}
+                                data-testid="global-search-result-content"
+                                onClick={(e) => handleGlobalResultOpen(e, item)}
+                                className="w-full text-left rounded-lg border border-transparent hover:border-blue-200 hover:bg-blue-50 px-2 py-2 transition"
+                              >
+                                <div className="text-xs font-bold text-gray-900 line-clamp-1">{item.title}</div>
+                                <div className="text-[11px] text-gray-500 line-clamp-1">{item.subtitle}</div>
+                                {item.snippet && (
+                                  <div className="mt-1 text-[11px] leading-[1.45] text-gray-700 line-clamp-2">{item.snippet}</div>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>{renderGlobalSearchBookCard(pair)}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {globalOtherGroups.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {globalOtherGroups.map((group) => (
+                      <div
+                        key={group.key}
+                        data-testid={`global-search-group-${group.key}`}
+                        className="rounded-xl border border-blue-100 bg-white p-3"
+                      >
+                        <div className="mb-2 text-[11px] uppercase tracking-[0.16em] font-bold text-blue-700">
+                          {group.label}
+                        </div>
+                        <div className="space-y-2">
+                          {group.items.map((item) => (
+                            <button
+                              key={item.id}
+                              data-testid={`global-search-result-${group.key}`}
+                              onClick={(e) => handleGlobalResultOpen(e, item)}
+                              className="w-full text-left rounded-lg border border-transparent hover:border-blue-200 hover:bg-blue-50 px-2 py-2 transition"
+                            >
+                              <div className="text-xs font-bold text-gray-900 line-clamp-1">{item.title}</div>
+                              <div className="text-[11px] text-gray-500 line-clamp-1">{item.subtitle}</div>
+                              {item.snippet && (
+                                <div className="mt-1 text-[11px] text-gray-700 line-clamp-2">{item.snippet}</div>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {globalMatchedBookPairs.length === 0 && globalOtherGroups.length === 0 && (
+                  <p className="text-xs text-blue-800/80">
+                    Book matches are shown on the right.
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
+          {showGlobalSearchSplitColumns && (
+            <aside
+              data-testid="global-search-found-books"
+              className="rounded-2xl border border-blue-100 bg-white p-4"
+            >
+              <div className="text-sm font-bold text-gray-900">Found books</div>
+              <p className="mt-1 text-xs text-gray-500">
+                {globalMatchedBooks.length} book{globalMatchedBooks.length === 1 ? "" : "s"} found
+              </p>
+              <div className="mt-3 max-h-[70vh] overflow-y-auto pr-1 space-y-4">
+                {globalMatchedBooks.map((item) => renderGlobalSearchBookCard(item))}
+              </div>
+            </aside>
+          )}
+          </div>
+        )}
+        <div className="mb-8 text-xs text-gray-500 flex flex-wrap items-center gap-2">
           <span className="font-semibold text-gray-600">Active:</span>
           <span className="px-2 py-1 rounded-full bg-gray-100 border border-gray-200">
             {getFilterLabel()}
           </span>
+          {flagFilters.map((flag) => {
+            const label = flagFilterOptions.find((item) => item.value === flag)?.label || flag;
+            return (
+              <button
+                key={`active-flag-${flag}`}
+                type="button"
+                data-testid={`active-flag-chip-${flag}`}
+                onClick={() => toggleFlagFilter(flag)}
+                className="px-2 py-1 rounded-full border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                title={`Remove ${label.toLowerCase()} filter`}
+              >
+                {label} x
+              </button>
+            );
+          })}
           <span className="px-2 py-1 rounded-full bg-gray-100 border border-gray-200">
             {sortOptions.find((s) => s.value === sortBy)?.label || "Last read (newest)"}
           </span>
@@ -587,7 +1544,7 @@ export default function Home() {
             <button
               type="button"
               data-testid="trash-back-button"
-              onClick={() => setActiveFilter("all")}
+              onClick={() => setStatusFilter("all")}
               className="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50"
             >
               <ArrowLeft size={14} />
@@ -596,18 +1553,22 @@ export default function Home() {
           </div>
         )}
 
-        {sortedBooks.length === 0 ? (
+        {!showGlobalSearchBooksColumn && (sortedBooks.length === 0 ? (
           <div className="bg-white border-2 border-dashed border-gray-200 rounded-3xl p-20 text-center shadow-sm">
             <BookIcon size={48} className="mx-auto text-gray-300 mb-4" />
             <p className="text-gray-500 text-lg">
               {isTrashView ? "Trash is empty." : "No books found matching your criteria."}
             </p>
-            {(searchQuery || activeFilter !== "all") && (
+            {hasActiveLibraryFilters && (
               <button 
-                onClick={() => { setSearchQuery(""); setActiveFilter("all"); }}
-                className="mt-4 text-blue-600 font-bold hover:underline"
+                data-testid="library-empty-reset-filters-button"
+                onClick={resetLibraryFilters}
+                className="mt-4 inline-flex h-10 items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-4 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                title="Reset filters"
+                aria-label="Reset filters"
               >
-                Clear all filters
+                <RotateCcw size={16} />
+                <span>Reset filters</span>
               </button>
             )}
           </div>
@@ -668,6 +1629,16 @@ export default function Home() {
                           >
                             <Trash2 size={16} />
                           </button>
+                          <button
+                            data-testid="book-toggle-to-read"
+                            onClick={(e) => handleToggleToRead(e, book.id)}
+                            className={`p-2 rounded-xl shadow-md transition-all active:scale-95 ${
+                              book.isToRead ? 'bg-amber-500 text-white' : 'bg-white text-gray-400 hover:text-amber-600'
+                            }`}
+                            title={book.isToRead ? "Remove To Read tag" : "Add To Read tag"}
+                          >
+                            <Tag size={16} />
+                          </button>
                           <button 
                             onClick={(e) => handleToggleFavorite(e, book.id)}
                             className={`p-2 rounded-xl shadow-md transition-all active:scale-95 ${
@@ -698,10 +1669,9 @@ export default function Home() {
 
                     {renderMetadataBadges(book)}
 
-                    <div className="flex items-center gap-2 text-blue-500 text-xs mt-2 font-semibold">
-                      <Clock size={12} />
-                      <span>{formatTime(book.readingTime)}</span>
-                    </div>
+                    {renderReadingStateBadge(book, "mt-2")}
+                    {renderToReadTag(book, "mt-2")}
+                    {renderSessionTimeline(book)}
 
                     <div className="mt-auto pt-4 flex justify-between items-center text-[10px] text-gray-400 font-medium">
                       {book.pubDate ? (
@@ -798,10 +1768,9 @@ export default function Home() {
 
                       {renderMetadataBadges(book)}
 
-                      <div className="mt-2 text-xs text-blue-500 font-semibold flex items-center gap-2">
-                        <Clock size={12} />
-                        <span>{formatTime(book.readingTime)}</span>
-                      </div>
+                      {renderReadingStateBadge(book, "mt-2")}
+                      {renderToReadTag(book, "mt-2")}
+                      {renderSessionTimeline(book)}
 
                       <div className="mt-2 text-[11px] text-gray-400 flex items-center justify-between gap-3">
                         <span>{inTrash ? formatDeletedAt(book.deletedAt) : formatLastRead(book.lastRead)}</span>
@@ -874,6 +1843,16 @@ export default function Home() {
                         ) : (
                           <>
                             <button
+                              data-testid="book-toggle-to-read"
+                              onClick={(e) => handleToggleToRead(e, book.id)}
+                              className={`p-2 rounded-xl shadow-sm transition-all active:scale-95 ${
+                                book.isToRead ? 'bg-amber-500 text-white' : 'bg-white border border-gray-200 text-gray-400 hover:text-amber-600'
+                              }`}
+                              title={book.isToRead ? "Remove To Read tag" : "Add To Read tag"}
+                            >
+                              <Tag size={16} />
+                            </button>
+                            <button
                               onClick={(e) => handleToggleFavorite(e, book.id)}
                               className={`p-2 rounded-xl shadow-sm transition-all active:scale-95 ${
                                 book.isFavorite ? 'bg-pink-500 text-white' : 'bg-white border border-gray-200 text-gray-400 hover:text-pink-500'
@@ -899,7 +1878,7 @@ export default function Home() {
               );
             })}
           </div>
-        )}
+        ))}
       </div>
     </div>
   );

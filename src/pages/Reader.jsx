@@ -9,7 +9,7 @@ import jsPDF from 'jspdf';
 import { 
   Moon, Sun, BookOpen, Scroll, Type, 
   ChevronLeft, Menu, X,
-  Search as SearchIcon, ChevronUp, ChevronDown, Sparkles, Wand2, User,
+  Search as SearchIcon, Sparkles, Wand2, User,
   BookOpenText, Highlighter, Languages, Bookmark
 } from 'lucide-react';
 
@@ -27,10 +27,37 @@ const DEFAULT_READER_SETTINGS = {
   fontFamily: 'publisher'
 };
 
+function OwlIcon({ size = 18, className = '' }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      width={size}
+      height={size}
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M4 18v-7a8 8 0 0 1 16 0v7" />
+      <circle cx="9" cy="12" r="1.4" />
+      <circle cx="15" cy="12" r="1.4" />
+      <path d="m11 15 1 1 1-1" />
+      <path d="m7 6-2 2" />
+      <path d="m17 6 2 2" />
+      <path d="M4 18h16" />
+    </svg>
+  );
+}
+
 export default function Reader() {
   const [searchParams] = useSearchParams();
   const bookId = searchParams.get('id');
   const panelParam = searchParams.get('panel');
+  const cfiParam = searchParams.get('cfi');
+  const searchTermParam = searchParams.get('q');
   const [book, setBook] = useState(null);
   const bookRef = useRef(null);
   
@@ -46,7 +73,6 @@ export default function Reader() {
   const [isStoryRecapping, setIsStoryRecapping] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [isDefining, setIsDefining] = useState(false);
-  const [sidebarTab, setSidebarTab] = useState('chapters');
   const [toc, setToc] = useState([]);
   const [jumpTarget, setJumpTarget] = useState(null);
   const [rendition, setRendition] = useState(null);
@@ -96,6 +122,7 @@ export default function Reader() {
   const [selection, setSelection] = useState(null);
   const [selectionMode, setSelectionMode] = useState('actions');
   const [progressPct, setProgressPct] = useState(0);
+  const [currentHref, setCurrentHref] = useState('');
   const [legacyReaderSettings] = useState(() => {
     const saved = localStorage.getItem('reader-settings');
     if (!saved) return null;
@@ -110,6 +137,15 @@ export default function Reader() {
   const settingsHydratedRef = useRef(false);
   const [settings, setSettings] = useState(DEFAULT_READER_SETTINGS);
   const initialPanelAppliedRef = useRef(false);
+  const initialJumpAppliedRef = useRef(false);
+  const initialSearchAppliedRef = useRef(false);
+  const progressPersistRef = useRef({
+    timer: null,
+    lastWriteTs: 0,
+    lastCfi: '',
+    lastPct: -1,
+    pending: null
+  });
 
   const aiUnavailableMessage = "AI features are not available now.";
 
@@ -150,6 +186,49 @@ export default function Reader() {
     });
   }, []);
 
+  const flushPersistedProgress = useCallback(() => {
+    const state = progressPersistRef.current;
+    if (!bookId || !state.pending) return;
+
+    const { cfi, percentage } = state.pending;
+    state.pending = null;
+    if (!cfi) return;
+
+    const normalized = Math.min(Math.max(Number(percentage) || 0, 0), 1);
+    if (state.lastCfi === cfi && state.lastPct === normalized) return;
+
+    state.lastCfi = cfi;
+    state.lastPct = normalized;
+    state.lastWriteTs = Date.now();
+
+    updateBookProgress(bookId, cfi, normalized).catch((err) => {
+      console.error(err);
+    });
+  }, [bookId]);
+
+  const queueProgressPersist = useCallback((cfi, percentage) => {
+    if (!bookId || !cfi) return;
+
+    const state = progressPersistRef.current;
+    state.pending = { cfi, percentage };
+
+    const throttleMs = 1200;
+    const elapsed = Date.now() - state.lastWriteTs;
+
+    if (elapsed >= throttleMs && !state.timer) {
+      flushPersistedProgress();
+      return;
+    }
+
+    if (!state.timer) {
+      const waitMs = Math.max(120, throttleMs - elapsed);
+      state.timer = setTimeout(() => {
+        state.timer = null;
+        flushPersistedProgress();
+      }, waitMs);
+    }
+  }, [bookId, flushPersistedProgress]);
+
   useEffect(() => {
     const markActive = () => {
       lastActiveRef.current = Date.now();
@@ -160,6 +239,25 @@ export default function Reader() {
       events.forEach((event) => window.removeEventListener(event, markActive));
     };
   }, []);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushPersistedProgress();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      const state = progressPersistRef.current;
+      if (state.timer) {
+        clearTimeout(state.timer);
+        state.timer = null;
+      }
+      flushPersistedProgress();
+    };
+  }, [flushPersistedProgress]);
 
   const getStoryMemory = (currentBook) => {
     if (!currentBook) return '';
@@ -625,11 +723,12 @@ export default function Reader() {
     setShowSearchMenu(false);
   };
 
-  const goToSearchIndex = (index) => {
-    if (!searchResults.length) return;
-    const clamped = Math.max(0, Math.min(index, searchResults.length - 1));
+  const goToSearchIndex = (index, overrideResults = null) => {
+    const sourceResults = Array.isArray(overrideResults) ? overrideResults : searchResults;
+    if (!sourceResults.length) return;
+    const clamped = Math.max(0, Math.min(index, sourceResults.length - 1));
     setActiveSearchIndex(clamped);
-    const target = searchResults[clamped];
+    const target = sourceResults[clamped];
     if (target?.cfi) setJumpTarget(target.cfi);
   };
 
@@ -645,7 +744,7 @@ export default function Reader() {
     goToSearchIndex(prev);
   };
 
-  const runSearch = async (query) => {
+  const runSearch = async (query, targetCfi = '') => {
     const term = query.trim();
     if (!rendition || !term) {
       clearSearch();
@@ -668,23 +767,37 @@ export default function Reader() {
         if (searchTokenRef.current !== token) return;
         if (!section) continue;
         if (section.linear === "no" || section.linear === false) continue;
-        await section.load(book.load.bind(book));
-        const matches = section.search(term) || [];
-        matches.forEach((match) => {
-          results.push({
-            ...match,
-            href: section.href,
-            spineIndex: section.index
+        try {
+          await section.load(book.load.bind(book));
+          let matches = [];
+          if (typeof section.find === 'function') {
+            matches = section.find(term) || [];
+          } else if (typeof section.search === 'function') {
+            matches = section.search(term) || [];
+          }
+          matches.forEach((match) => {
+            results.push({
+              ...match,
+              href: section.href,
+              spineIndex: section.index
+            });
           });
-        });
-        section.unload();
+        } finally {
+          section.unload();
+        }
       }
 
       if (searchTokenRef.current !== token) return;
       setSearchResults(results);
       if (results.length) {
-        setActiveSearchIndex(0);
-        if (results[0]?.cfi) setJumpTarget(results[0].cfi);
+        const targetIndex = targetCfi
+          ? results.findIndex((result) => {
+              const matchCfi = result?.cfi || '';
+              return matchCfi === targetCfi || matchCfi.includes(targetCfi) || targetCfi.includes(matchCfi);
+            })
+          : -1;
+        const initialIndex = targetIndex >= 0 ? targetIndex : 0;
+        goToSearchIndex(initialIndex, results);
       }
     } catch (err) {
       console.error(err);
@@ -735,6 +848,16 @@ export default function Reader() {
     cancelTranslation();
     setShowTranslation(false);
     setTranslationAnchor(null);
+  };
+
+  const handleSearchInputKeyDown = (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    if (searchResults.length > 0) {
+      goToNextResult();
+    } else {
+      runSearch(searchQuery);
+    }
   };
 
   const lookupDictionary = async (term) => {
@@ -924,17 +1047,20 @@ export default function Reader() {
     const currentBook = bookRef.current;
     if (!currentBook || !rendition) return;
     try {
-      const loc = rendition.currentLocation();
-      if (!loc?.start?.cfi) return;
+      const liveLocation = rendition.currentLocation?.() || rendition.location || null;
+      const liveStart = liveLocation?.start || {};
+      const fallbackCfi = typeof currentBook.lastLocation === 'string' ? currentBook.lastLocation : '';
+      const cfi = liveStart.cfi || fallbackCfi;
+      if (!cfi) return;
 
       const viewer = rendition.getContents()[0];
       const pageText = viewer?.document?.body?.innerText || '';
       const snippet = pageText.trim().slice(0, 140);
-      const label = getChapterLabel(loc);
+      const label = liveLocation?.start ? getChapterLabel(liveLocation) : 'Bookmark';
 
       const newBookmark = {
-        cfi: loc.start.cfi,
-        href: loc.start.href || '',
+        cfi,
+        href: liveStart.href || '',
         label,
         text: snippet,
         createdAt: new Date().toISOString()
@@ -966,7 +1092,11 @@ export default function Reader() {
 
   const handleSelection = useCallback((text, cfiRange, pos, isExisting = false) => {
     const trimmed = (text || '').trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      setSelection(null);
+      setSelectionMode('actions');
+      return;
+    }
     setSelection({
       text: trimmed,
       cfiRange,
@@ -1075,8 +1205,9 @@ export default function Reader() {
     if (!loc?.start || !bookId) return;
     lastActiveRef.current = Date.now();
     const nextProgress = Math.min(Math.max(Math.floor((loc.percentage || 0) * 100), 0), 100);
-    updateBookProgress(bookId, loc.start.cfi, loc.percentage || 0);
+    queueProgressPersist(loc.start.cfi, loc.percentage || 0);
     setProgressPct(nextProgress);
+    setCurrentHref(loc.start.href || '');
 
     // Automatically summarise each new "screen" in the background.  If the
     // current CFI differs from the last summarised one and no background
@@ -1087,6 +1218,39 @@ export default function Reader() {
       lastSummaryCfiRef.current = currentCfi;
       summariseBackground(currentCfi);
     }
+  };
+
+  const flattenTocItems = (items, depth = 0, acc = []) => {
+    if (!Array.isArray(items)) return acc;
+    items.forEach((item) => {
+      if (!item) return;
+      const href = typeof item.href === 'string' ? item.href : '';
+      const labelBase = typeof item.label === 'string' ? item.label : '';
+      const label = labelBase.trim() || `Section ${acc.length + 1}`;
+      if (href) {
+        acc.push({ href, label, depth });
+      }
+      if (Array.isArray(item.subitems) && item.subitems.length) {
+        flattenTocItems(item.subitems, depth + 1, acc);
+      }
+    });
+    return acc;
+  };
+
+  const tocItems = flattenTocItems(toc);
+
+  const normalizeHref = (href = '') => href.split('#')[0];
+  const isTocItemActive = (href) => {
+    const active = normalizeHref(currentHref);
+    const target = normalizeHref(href);
+    if (!active || !target) return false;
+    return active.includes(target) || target.includes(active);
+  };
+
+  const handleTocSelect = (href) => {
+    if (!href) return;
+    setShowSidebar(false);
+    jumpToCfi(href);
   };
 
   // NOTE: Intermediate summaries were previously generated after a fixed number
@@ -1328,7 +1492,9 @@ export default function Reader() {
 
   useEffect(() => {
     initialPanelAppliedRef.current = false;
-  }, [bookId, panelParam]);
+    initialJumpAppliedRef.current = false;
+    initialSearchAppliedRef.current = false;
+  }, [bookId, panelParam, cfiParam, searchTermParam]);
 
   useEffect(() => {
     if (!book?.id || initialPanelAppliedRef.current) return;
@@ -1341,6 +1507,25 @@ export default function Reader() {
     }
     initialPanelAppliedRef.current = true;
   }, [book?.id, panelParam]);
+
+  useEffect(() => {
+    if (!book?.id || !cfiParam || initialJumpAppliedRef.current) return;
+    jumpToCfi(cfiParam);
+    initialJumpAppliedRef.current = true;
+  }, [book?.id, cfiParam]);
+
+  useEffect(() => {
+    if (!book?.id || !rendition || initialSearchAppliedRef.current) return;
+    if (!searchTermParam) return;
+
+    const normalized = searchTermParam.trim();
+    if (!normalized) return;
+
+    setShowSearchMenu(true);
+    setSearchQuery(normalized);
+    runSearch(normalized, cfiParam || '');
+    initialSearchAppliedRef.current = true;
+  }, [book?.id, rendition, searchTermParam, cfiParam]);
 
   useEffect(() => {
     if (!book?.id) return;
@@ -1461,11 +1646,27 @@ export default function Reader() {
     dictionaryEntry?.phonetics?.find((p) => p.text)?.text ||
     "";
   const isReaderDark = settings.theme === 'dark';
+  const isReaderSepia = settings.theme === 'sepia';
+  const activeSearchCfi = activeSearchIndex >= 0 ? (searchResults[activeSearchIndex]?.cfi || null) : null;
+  const toolbarIconButtonBaseClass = 'p-2 rounded-full transition hover:bg-gray-100 dark:hover:bg-gray-700';
+  const toolbarUtilityInactiveClass = `${toolbarIconButtonBaseClass} text-inherit`;
+  const toolbarUtilityActiveClass = `${toolbarIconButtonBaseClass} text-blue-600 bg-blue-50 dark:bg-blue-900/30`;
+  const toggleDarkTheme = () => {
+    setSettings((s) => ({ ...s, theme: s.theme === 'dark' ? 'light' : 'dark' }));
+  };
+  const toggleSepiaTheme = () => {
+    setSettings((s) => ({ ...s, theme: s.theme === 'sepia' ? 'light' : 'sepia' }));
+  };
+  const readerThemeClass = isReaderDark
+    ? 'bg-gray-900 text-white'
+    : isReaderSepia
+      ? 'bg-amber-50 text-amber-950'
+      : 'bg-gray-100 text-gray-800';
 
   if (!book) return <div className="p-10 text-center dark:bg-gray-900 dark:text-gray-400">Loading...</div>;
 
   return (
-    <div className={`h-screen flex flex-col overflow-hidden transition-colors duration-200 ${settings.theme === 'dark' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-800'}`}>
+    <div className={`h-screen flex flex-col overflow-hidden transition-colors duration-200 ${readerThemeClass}`}>
       
       <style>{`
         @keyframes orbit {
@@ -1697,47 +1898,66 @@ export default function Reader() {
           />
           <div
             className={`absolute right-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
-              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
+              isReaderDark ? 'bg-gray-800 border border-gray-700 text-gray-100' : 'bg-white border border-gray-200 text-gray-900'
             }`}
           >
             <div className="flex items-center gap-2">
-              <SearchIcon size={18} className="text-gray-400" />
+              <SearchIcon size={18} className={isReaderDark ? 'text-gray-400' : 'text-gray-600'} />
               <input
                 type="text"
                 placeholder="Search inside this book..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') runSearch(searchQuery);
-                }}
-                className="flex-1 bg-transparent outline-none text-sm"
+                onKeyDown={handleSearchInputKeyDown}
+                className={`flex-1 bg-transparent outline-none text-sm font-semibold ${
+                  isReaderDark ? 'text-gray-100 placeholder:text-gray-400' : 'text-black placeholder:text-gray-500'
+                }`}
               />
               <button
                 onClick={closeSearchMenu}
-                className="p-1 text-gray-400 hover:text-red-500"
+                className={`p-1 hover:text-red-500 ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}
               >
                 <X size={18} />
               </button>
             </div>
 
-            <div className="mt-3 flex items-center justify-between text-[11px] text-gray-500">
+            <div className={`mt-3 flex items-center justify-between text-[11px] font-semibold ${isReaderDark ? 'text-gray-300' : 'text-gray-800'}`}>
               <span>
-                {isSearching ? 'Searching...' : `${searchResults.length} result${searchResults.length === 1 ? '' : 's'}`}
+                {isSearching
+                  ? 'Searching...'
+                  : searchResults.length
+                    ? `${activeSearchIndex + 1 > 0 ? activeSearchIndex + 1 : 1}/${searchResults.length}`
+                    : '0 results'}
+              </span>
+              <span className="sr-only" data-testid="search-progress">
+                {searchResults.length
+                  ? `${activeSearchIndex + 1 > 0 ? activeSearchIndex + 1 : 1}/${searchResults.length}`
+                  : '0/0'}
               </span>
               <div className="flex items-center gap-1">
                 <button
                   onClick={goToPrevResult}
                   disabled={!searchResults.length}
-                  className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40"
+                  className={`px-2 py-1 rounded-full border disabled:opacity-40 ${
+                    isReaderDark
+                      ? 'border-gray-700 hover:bg-gray-700'
+                      : 'border-gray-300 hover:bg-gray-100'
+                  }`}
+                  title="Previous result"
                 >
-                  <ChevronUp size={14} />
+                  <span className="text-xs font-bold">&lt;</span>
                 </button>
                 <button
                   onClick={goToNextResult}
                   disabled={!searchResults.length}
-                  className="p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40"
+                  className={`px-2 py-1 rounded-full border disabled:opacity-40 ${
+                    isReaderDark
+                      ? 'border-gray-700 hover:bg-gray-700'
+                      : 'border-gray-300 hover:bg-gray-100'
+                  }`}
+                  title="Next result"
                 >
-                  <ChevronDown size={14} />
+                  <span className="text-xs font-bold">&gt;</span>
                 </button>
               </div>
             </div>
@@ -1751,7 +1971,11 @@ export default function Reader() {
               </button>
               <button
                 onClick={clearSearch}
-                className="flex-1 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-bold"
+                className={`flex-1 py-2 rounded-xl text-xs font-bold ${
+                  isReaderDark
+                    ? 'border border-gray-700 text-gray-100'
+                    : 'border border-gray-300 text-gray-900'
+                }`}
               >
                 Clear
               </button>
@@ -1759,7 +1983,7 @@ export default function Reader() {
 
             <div className="mt-4 max-h-[45vh] overflow-y-auto pr-1 space-y-2">
               {!isSearching && searchQuery && searchResults.length === 0 && (
-                <div className="text-xs text-gray-500">No matches found.</div>
+                <div className={`text-xs ${isReaderDark ? 'text-gray-400' : 'text-gray-700'}`}>No matches found.</div>
               )}
               {searchResults.map((result, idx) => (
                 <button
@@ -1767,14 +1991,18 @@ export default function Reader() {
                   onClick={() => goToSearchIndex(idx)}
                   className={`w-full text-left p-3 rounded-2xl border transition ${
                     activeSearchIndex === idx
-                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/30'
-                      : 'border-transparent hover:border-gray-200 dark:hover:border-gray-700'
+                      ? isReaderDark
+                        ? 'border-yellow-400 bg-yellow-900/30'
+                        : 'border-yellow-500 bg-yellow-50'
+                      : isReaderDark
+                        ? 'border-transparent hover:border-gray-700'
+                        : 'border-transparent hover:border-gray-200'
                   }`}
                 >
-                  <div className="text-[10px] uppercase tracking-widest text-gray-400 mb-1">
+                  <div className={`text-[10px] uppercase tracking-widest mb-1 font-bold ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}>
                     Result {idx + 1}
                   </div>
-                  <div className="text-sm text-gray-700 dark:text-gray-200">
+                  <div className={`text-sm font-medium ${isReaderDark ? 'text-gray-100' : 'text-black'}`}>
                     {result.excerpt}
                   </div>
                 </button>
@@ -1996,23 +2224,23 @@ export default function Reader() {
           />
           <div
             className={`absolute right-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
-              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
+              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-200'
             }`}
           >
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <Highlighter size={18} className="text-gray-400" />
-                <div className="text-sm font-bold">Highlights</div>
+                <Highlighter size={18} className={isReaderDark ? 'text-gray-400' : 'text-gray-600'} />
+                <div className={`text-sm font-bold ${isReaderDark ? 'text-gray-100' : 'text-gray-900'}`}>Highlights</div>
               </div>
               <button
                 onClick={() => setShowHighlightsPanel(false)}
-                className="p-1 text-gray-400 hover:text-red-500"
+                className={`p-1 ${isReaderDark ? 'text-gray-400 hover:text-red-400' : 'text-gray-500 hover:text-red-500'}`}
               >
                 <X size={18} />
               </button>
             </div>
 
-            <div className="mt-3 text-[11px] text-gray-500">
+            <div className={`mt-3 text-[11px] ${isReaderDark ? 'text-gray-400' : 'text-gray-700'}`}>
               {highlights.length} highlight{highlights.length === 1 ? '' : 's'}
               <button
                 onClick={exportHighlightsPdf}
@@ -2023,7 +2251,7 @@ export default function Reader() {
               </button>
             </div>
 
-            <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500">
+            <div className={`mt-2 flex items-center justify-between text-[11px] ${isReaderDark ? 'text-gray-400' : 'text-gray-700'}`}>
               <span>
                 {selectedHighlights.length} selected
               </span>
@@ -2042,7 +2270,7 @@ export default function Reader() {
                     selectionTouchedRef.current = true;
                     setSelectedHighlights([]);
                   }}
-                  className="text-[10px] font-bold text-gray-400 hover:text-gray-600"
+                  className={`text-[10px] font-bold ${isReaderDark ? 'text-gray-400 hover:text-gray-200' : 'text-gray-600 hover:text-gray-900'}`}
                 >
                   Clear
                 </button>
@@ -2051,12 +2279,15 @@ export default function Reader() {
 
             <div className="mt-4 max-h-[55vh] overflow-y-auto pr-1 space-y-3">
               {highlights.length === 0 && (
-                <div className="text-xs text-gray-500">No highlights yet.</div>
+                <div className={`text-xs ${isReaderDark ? 'text-gray-400' : 'text-gray-700'}`}>No highlights yet.</div>
               )}
               {highlights.map((h, idx) => (
                 <div
                   key={`${h.cfiRange}-${idx}`}
-                  className="p-3 rounded-2xl border border-transparent hover:border-gray-200 dark:hover:border-gray-700 transition"
+                  className={`p-3 rounded-2xl border border-transparent transition ${
+                    isReaderDark ? 'hover:border-gray-700' : 'hover:border-gray-200'
+                  }`}
+                  data-testid="highlight-item"
                 >
                   <div className="flex items-start gap-2">
                     <button
@@ -2070,7 +2301,7 @@ export default function Reader() {
                       className={`mt-1 w-4 h-4 rounded border flex items-center justify-center ${
                         selectedHighlights.includes(h.cfiRange)
                           ? 'bg-blue-600 border-blue-600'
-                          : 'border-gray-300 dark:border-gray-600'
+                          : (isReaderDark ? 'border-gray-600' : 'border-gray-300')
                       }`}
                       title="Select highlight"
                     >
@@ -2085,14 +2316,23 @@ export default function Reader() {
                       }}
                       className="text-left flex-1"
                     >
-                      <div className="text-[10px] uppercase tracking-widest text-gray-400 mb-1">
+                      <div
+                        data-testid="highlight-item-label"
+                        className={`mb-1 text-[10px] uppercase tracking-widest ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}
+                      >
                         Highlight {idx + 1}
                       </div>
-                      <div className="text-sm text-gray-700 dark:text-gray-200 line-clamp-3">
+                      <div
+                        data-testid="highlight-item-text"
+                        className={`text-sm line-clamp-3 ${isReaderDark ? 'text-gray-200' : 'text-gray-800'}`}
+                      >
                         {h.text}
                       </div>
                       {h.note && (
-                        <div className="mt-2 text-xs text-gray-500 italic line-clamp-2">
+                        <div
+                          data-testid="highlight-item-note"
+                          className={`mt-2 text-xs italic line-clamp-2 ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}
+                        >
                           {h.note}
                         </div>
                       )}
@@ -2178,23 +2418,23 @@ export default function Reader() {
           />
           <div
             className={`absolute right-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
-              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
+              settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-200'
             }`}
           >
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <Bookmark size={18} className="text-gray-400" />
-                <div className="text-sm font-bold">Bookmarks</div>
+                <Bookmark size={18} className={isReaderDark ? 'text-gray-400' : 'text-gray-600'} />
+                <div className={`text-sm font-bold ${isReaderDark ? 'text-gray-100' : 'text-gray-900'}`}>Bookmarks</div>
               </div>
               <button
                 onClick={() => setShowBookmarksPanel(false)}
-                className="p-1 text-gray-400 hover:text-red-500"
+                className={`p-1 ${isReaderDark ? 'text-gray-400 hover:text-red-400' : 'text-gray-500 hover:text-red-500'}`}
               >
                 <X size={18} />
               </button>
             </div>
 
-            <div className="mt-3 flex items-center justify-between text-[11px] text-gray-500">
+            <div className={`mt-3 flex items-center justify-between text-[11px] ${isReaderDark ? 'text-gray-400' : 'text-gray-700'}`}>
               <span>
                 {bookmarks.length} bookmark{bookmarks.length === 1 ? '' : 's'}
               </span>
@@ -2208,12 +2448,15 @@ export default function Reader() {
 
             <div className="mt-4 max-h-[55vh] overflow-y-auto pr-1 space-y-3">
               {bookmarks.length === 0 && (
-                <div className="text-xs text-gray-500">No bookmarks yet.</div>
+                <div className={`text-xs ${isReaderDark ? 'text-gray-400' : 'text-gray-700'}`}>No bookmarks yet.</div>
               )}
               {bookmarks.map((b, idx) => (
                 <div
                   key={`${b.cfi}-${idx}`}
-                  className="p-3 rounded-2xl border border-transparent hover:border-gray-200 dark:hover:border-gray-700 transition"
+                  className={`p-3 rounded-2xl border border-transparent transition ${
+                    isReaderDark ? 'hover:border-gray-700' : 'hover:border-gray-200'
+                  }`}
+                  data-testid="bookmark-item"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <button
@@ -2223,11 +2466,17 @@ export default function Reader() {
                       }}
                       className="text-left flex-1"
                     >
-                      <div className="text-[10px] uppercase tracking-widest text-gray-400 mb-1">
+                      <div
+                        data-testid="bookmark-item-label"
+                        className={`mb-1 text-[10px] uppercase tracking-widest ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}
+                      >
                         {b.label || `Bookmark ${idx + 1}`}
                       </div>
                       {b.text && (
-                        <div className="text-sm text-gray-700 dark:text-gray-200 line-clamp-2">
+                        <div
+                          data-testid="bookmark-item-text"
+                          className={`text-sm line-clamp-2 ${isReaderDark ? 'text-gray-200' : 'text-gray-800'}`}
+                        >
                           {b.text}
                         </div>
                       )}
@@ -2346,10 +2595,75 @@ export default function Reader() {
         );
       })()}
 
+      {showSidebar && (
+        <div className="fixed inset-0 z-[65]" data-testid="chapters-panel">
+          <button
+            onClick={() => setShowSidebar(false)}
+            className="absolute inset-0 bg-black/40"
+            aria-label="Close chapters"
+          />
+          <aside
+            className={`absolute left-0 top-0 h-full w-[88vw] max-w-sm shadow-2xl border-r ${
+              settings.theme === 'dark'
+                ? 'bg-gray-900 border-gray-700 text-gray-100'
+                : 'bg-white border-gray-200 text-gray-900'
+            }`}
+          >
+            <div className="h-full flex flex-col">
+              <div className={`px-4 py-3 border-b flex items-center justify-between gap-2 ${settings.theme === 'dark' ? 'border-gray-700' : 'border-gray-200'}`}>
+                <div className="flex items-center gap-2">
+                  <BookOpenText size={18} className="text-blue-500" />
+                  <h3 className="text-sm font-bold">Contents</h3>
+                </div>
+                <button
+                  onClick={() => setShowSidebar(false)}
+                  className={`p-1 rounded-full ${settings.theme === 'dark' ? 'hover:bg-gray-800' : 'hover:bg-gray-100'}`}
+                  aria-label="Close contents"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="px-2 py-2 overflow-y-auto flex-1 space-y-1">
+                {tocItems.length === 0 ? (
+                  <div className={`px-3 py-2 text-xs ${settings.theme === 'dark' ? 'text-gray-400' : 'text-gray-500'}`}>
+                    Chapters are still loading...
+                  </div>
+                ) : (
+                  tocItems.map((item, idx) => (
+                    <button
+                      key={`${item.href}-${idx}`}
+                      onClick={() => handleTocSelect(item.href)}
+                      data-testid="toc-item"
+                      className={`w-full text-left rounded-xl py-2 pr-2 text-sm transition ${
+                        isTocItemActive(item.href)
+                          ? 'bg-blue-600 text-white'
+                          : settings.theme === 'dark'
+                            ? 'text-gray-200 hover:bg-gray-800'
+                            : 'text-gray-700 hover:bg-gray-100'
+                      }`}
+                      style={{ paddingLeft: `${12 + item.depth * 14}px` }}
+                    >
+                      {item.label}
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          </aside>
+        </div>
+      )}
+
       {/* TOP BAR */}
       <div className={`flex items-center justify-between p-3 border-b shadow-sm z-20 ${settings.theme === 'dark' ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-800'}`}>
         <div className="flex items-center gap-2">
-          <button onClick={() => setShowSidebar(true)} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition"><Menu size={20} /></button>
+          <button
+            onClick={() => setShowSidebar(true)}
+            className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition"
+            aria-label="Open chapters"
+          >
+            <Menu size={20} />
+          </button>
           <Link to="/" className="hover:opacity-70 p-1"><ChevronLeft size={24} /></Link>
           <div className="flex flex-col">
             <h2 className="font-bold truncate text-sm max-w-[120px]">{book.title}</h2>
@@ -2360,40 +2674,62 @@ export default function Reader() {
         </div>
         
         <div className="flex items-center gap-1 sm:gap-2">
-          <button onClick={handleManualPageSummary} className="p-2 px-3 rounded-full bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center gap-2 transition hover:scale-105 active:scale-95">
+          <button
+            type="button"
+            disabled
+            data-testid="ai-explain-disabled"
+            title="AI feature not available yet"
+            className="flex cursor-not-allowed items-center gap-2 rounded-full border border-orange-200 bg-orange-50 p-2 px-3 text-orange-700 opacity-90 dark:border-orange-800/40 dark:bg-orange-900/20 dark:text-orange-300"
+          >
             <Wand2 size={18} />
             <span className="text-[10px] font-black uppercase hidden lg:inline">Explain Page</span>
           </button>
           <button
-            onClick={handleStoryRecap}
-            className={`p-2 rounded-full transition flex items-center gap-2 px-3 ${isStoryRecapping ? 'animate-pulse text-yellow-500' : 'text-blue-500'}`}
+            type="button"
+            disabled
+            data-testid="ai-story-disabled"
+            title="AI feature not available yet"
+            className="flex cursor-not-allowed items-center gap-2 rounded-full border border-orange-200 bg-orange-50 p-2 px-3 text-orange-700 opacity-90 dark:border-orange-800/40 dark:bg-orange-900/20 dark:text-orange-300"
           >
             <Sparkles size={20} />
             <span className="hidden md:inline text-xs font-black uppercase">Story</span>
           </button>
           <button
             onClick={() => setShowSearchMenu((s) => !s)}
-            className={`p-2 rounded-full transition ${showSearchMenu ? 'text-blue-600 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`}
+            className={showSearchMenu ? toolbarUtilityActiveClass : toolbarUtilityInactiveClass}
             title="Search"
+            data-testid="reader-search-toggle"
           >
             <SearchIcon size={18} />
           </button>
           <button
             onClick={() => setShowHighlightsPanel((s) => !s)}
-            className={`p-2 rounded-full transition ${showHighlightsPanel ? 'text-blue-600 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`}
+            className={showHighlightsPanel ? toolbarUtilityActiveClass : toolbarUtilityInactiveClass}
             title="Highlights"
+            data-testid="reader-highlights-toggle"
           >
             <Highlighter size={18} />
           </button>
           <button
             onClick={() => setShowBookmarksPanel((s) => !s)}
-            className={`p-2 rounded-full transition ${showBookmarksPanel ? 'text-blue-600 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'}`}
+            className={showBookmarksPanel ? toolbarUtilityActiveClass : toolbarUtilityInactiveClass}
             title="Bookmarks"
+            data-testid="reader-bookmarks-toggle"
           >
             <Bookmark size={18} />
           </button>
           <div className="w-px h-6 bg-gray-200 dark:bg-gray-700 mx-1" />
-          <button onClick={() => setSettings(s => ({...s, theme: s.theme === 'light' ? 'dark' : 'light'}))} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">{settings.theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}</button>
+          <button onClick={toggleDarkTheme} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700" data-testid="theme-toggle">
+            {isReaderDark ? <Sun size={20} /> : <Moon size={20} />}
+          </button>
+          <button
+            onClick={toggleSepiaTheme}
+            className={`p-2 rounded-full transition hover:bg-gray-100 dark:hover:bg-gray-700 ${isReaderSepia ? 'text-amber-700 bg-amber-100 dark:bg-amber-900/30' : ''}`}
+            data-testid="sepia-toggle"
+            title={isReaderSepia ? 'Disable night reading mode' : 'Enable night reading mode'}
+          >
+            <OwlIcon size={20} />
+          </button>
           <button onClick={() => setSettings(s => ({...s, flow: s.flow === 'paginated' ? 'scrolled' : 'paginated'}))} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">{settings.flow === 'paginated' ? <Scroll size={20} /> : <BookOpen size={20} />}</button>
           <button onClick={() => setShowFontMenu(!showFontMenu)} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700"><Type size={20} /></button>
         </div>
@@ -2411,6 +2747,7 @@ export default function Reader() {
           onRenditionReady={setRendition}
           onChapterEnd={handleChapterEnd}
           searchResults={searchResults}
+          activeSearchCfi={activeSearchCfi}
           highlights={highlights}
           onSelection={handleSelection}
         />

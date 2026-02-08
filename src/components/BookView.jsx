@@ -1,6 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import ePub from 'epubjs';
 
+const EPUB_THEME_KEY = 'reader-theme';
+
 export default function BookView({ 
   bookData, 
   settings, 
@@ -12,6 +14,7 @@ export default function BookView({
   highlights = [],
   onRenditionReady,
   searchResults = [],
+  activeSearchCfi = null,
   onChapterEnd // NEW: Callback for AI summarization
 }) {
   const viewerRef = useRef(null);
@@ -20,7 +23,8 @@ export default function BookView({
   const lastChapterRef = useRef(null); // Track chapter changes
   const onSelectionRef = useRef(onSelection);
   const appliedHighlightsRef = useRef(new Map());
-  const appliedSearchRef = useRef(new Set());
+  const appliedSearchRef = useRef(new Map());
+  const selectionCleanupRef = useRef([]);
 
   useEffect(() => {
     onSelectionRef.current = onSelection;
@@ -28,18 +32,38 @@ export default function BookView({
 
   const applyTheme = (rendition, theme) => {
     if (!rendition) return;
-    const bodyStyles = theme === 'dark' 
-      ? { 
-          'body': { 'color': '#e5e7eb !important', 'background': '#111827 !important' },
-          'p, span, div, li, h1, h2, h3, h4, h5, h6': { 'color': '#e5e7eb !important' }
-        } 
-      : { 
-          'body': { 'color': '#111827 !important', 'background': '#ffffff !important' },
-          'p, span, div, li, h1, h2, h3, h4, h5, h6': { 'color': '#111827 !important' }
-        };
+    const isScrolled = settings.flow === 'scrolled';
+    const isDark = theme === 'dark';
+    const isSepia = theme === 'sepia';
+    const textColor = isDark ? '#e5e7eb' : isSepia ? '#3f2f1f' : '#111827';
+    const paginatedBackground = isDark ? '#111827' : isSepia ? '#f8efd2' : '#ffffff';
+    const scrolledOuterBackground = isDark ? '#0b1220' : isSepia ? '#eadfbd' : '#f3f4f6';
+    const scrolledPageBackground = paginatedBackground;
+    const bodyStyles = {
+      'html': {
+        'background': `${isScrolled ? scrolledOuterBackground : paginatedBackground} !important`
+      },
+      'body': {
+        'color': `${textColor} !important`,
+        'background': `${scrolledPageBackground} !important`,
+        'max-width': isScrolled ? 'min(940px, calc(100vw - 88px)) !important' : 'none !important',
+        'width': '100% !important',
+        'margin': isScrolled ? '20px auto 28px auto !important' : '0 !important',
+        'padding-left': isScrolled ? '32px !important' : '0 !important',
+        'padding-right': isScrolled ? '32px !important' : '0 !important',
+        'padding-top': '0 !important',
+        'padding-bottom': '0 !important',
+        'box-sizing': 'border-box !important'
+      },
+      'p, span, div, li, h1, h2, h3, h4, h5, h6': { 'color': `${textColor} !important` },
+      'img, svg, video, canvas': {
+        'max-width': '100% !important',
+        'height': 'auto !important'
+      }
+    };
     
-    rendition.themes.register(theme, bodyStyles);
-    rendition.themes.select(theme);
+    rendition.themes.register(EPUB_THEME_KEY, bodyStyles);
+    rendition.themes.select(EPUB_THEME_KEY);
     rendition.themes.fontSize(`${settings.fontSize}%`);
   };
 
@@ -66,11 +90,36 @@ export default function BookView({
     });
     renditionRef.current = rendition;
     appliedHighlightsRef.current = new Map();
-    appliedSearchRef.current = new Set();
+    appliedSearchRef.current = new Map();
 
     if (onRenditionReady) onRenditionReady(rendition);
 
     applyTheme(rendition, settings.theme);
+
+    const registerSelectionClearWatcher = (contents) => {
+      const doc = contents?.document;
+      const win = contents?.window;
+      if (!doc || !win) return;
+
+      const notifyIfCleared = () => {
+        const selectedText = win.getSelection?.()?.toString?.().trim?.() || '';
+        if (!selectedText && onSelectionRef.current) {
+          onSelectionRef.current('', null, null, false);
+        }
+      };
+
+      doc.addEventListener('mouseup', notifyIfCleared);
+      doc.addEventListener('keyup', notifyIfCleared);
+      doc.addEventListener('touchend', notifyIfCleared);
+
+      selectionCleanupRef.current.push(() => {
+        doc.removeEventListener('mouseup', notifyIfCleared);
+        doc.removeEventListener('keyup', notifyIfCleared);
+        doc.removeEventListener('touchend', notifyIfCleared);
+      });
+    };
+
+    rendition.hooks?.content?.register(registerSelectionClearWatcher);
 
     rendition.display(initialLocation || undefined).then(() => {
       book.locations.generate(1024).then(() => {
@@ -130,7 +179,11 @@ export default function BookView({
       });
     });
 
-    return () => { if (book) book.destroy(); };
+    return () => {
+      selectionCleanupRef.current.forEach((cleanup) => cleanup());
+      selectionCleanupRef.current = [];
+      if (book) book.destroy();
+    };
   }, [bookData, settings.flow]); 
 
   useEffect(() => {
@@ -155,15 +208,31 @@ export default function BookView({
     const timer = setTimeout(() => {
       if (!renditionRef.current) return;
       const rendition = renditionRef.current;
-      const nextSet = new Set();
+      const annotationType = 'highlight';
+      const nextMap = new Map();
       searchResults.forEach((result) => {
         if (!result?.cfi) return;
-        nextSet.add(result.cfi);
-        if (!appliedSearchRef.current.has(result.cfi)) {
+        const cfi = result.cfi;
+        const variant = cfi === activeSearchCfi ? 'active' : 'normal';
+        if (!nextMap.has(cfi) || variant === 'active') {
+          nextMap.set(cfi, variant);
+        }
+      });
+
+      nextMap.forEach((variant, cfi) => {
+        const prevVariant = appliedSearchRef.current.get(cfi);
+        if (prevVariant !== variant) {
+          if (prevVariant) {
+            try {
+              rendition.annotations.remove(cfi, annotationType);
+            } catch (err) {
+              console.error('Search highlight cleanup failed', err);
+            }
+          }
           try {
-            rendition.annotations.add('highlight', result.cfi, {}, null, 'search-hl', {
+            rendition.annotations.add(annotationType, cfi, {}, null, variant === 'active' ? 'search-hl-active' : 'search-hl', {
               fill: '#facc15',
-              'fill-opacity': '0.4',
+              'fill-opacity': variant === 'active' ? '0.85' : '0.28',
               'mix-blend-mode': 'normal'
             });
           } catch (err) {
@@ -171,10 +240,20 @@ export default function BookView({
           }
         }
       });
-      appliedSearchRef.current = new Set([...appliedSearchRef.current, ...nextSet]);
+
+      appliedSearchRef.current.forEach((_, cfi) => {
+        if (nextMap.has(cfi)) return;
+        try {
+          rendition.annotations.remove(cfi, annotationType);
+        } catch (err) {
+          console.error('Search highlight cleanup failed', err);
+        }
+      });
+
+      appliedSearchRef.current = nextMap;
     }, 40);
     return () => clearTimeout(timer);
-  }, [bookData, searchResults, settings.fontSize, settings.fontFamily, settings.flow, settings.theme]);
+  }, [bookData, searchResults, activeSearchCfi, settings.fontSize, settings.fontFamily, settings.flow, settings.theme]);
 
   useEffect(() => {
     if (!renditionRef.current) return;
@@ -227,7 +306,16 @@ export default function BookView({
 
   return (
     <div className="h-full flex flex-col relative transition-colors duration-200">
-      <div ref={viewerRef} className={`flex-1 h-full w-full ${settings.theme === 'dark' ? 'bg-gray-900' : 'bg-white'}`} />
+      <div
+        ref={viewerRef}
+        className={`flex-1 h-full w-full ${
+          settings.theme === 'dark'
+            ? 'bg-gray-900'
+            : settings.theme === 'sepia'
+              ? 'bg-amber-100'
+              : 'bg-white'
+        }`}
+      />
       {settings.flow === 'paginated' && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-between px-2">
           <button onClick={prevPage} className="pointer-events-auto bg-black/20 hover:bg-black/50 text-white p-2 rounded-full">‹</button>

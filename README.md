@@ -1,215 +1,99 @@
 # Smart Reader
 
-Smart Reader is a local-first EPUB app focused on real reading workflows:
-library management, strong in-reader tools, highlights/notes, bookmarks, and export.
+Smart Reader is a modern EPUB reading app designed for people who read deeply.
 
-Everything runs in the browser. No backend required for core reading.
+It helps you organize your library, stay focused while reading, and quickly return to important passages with highlights, notes, bookmarks, and export.
 
-## Current Product Status
+## Why Smart Reader
 
-- Core reading features are active and stable.
-- AI controls are visible in the reader, but currently marked in-app as:
-  - `AI FEATURES: NOT AVAILABLE NOW`
+Most reading apps are either too basic or overloaded.
+Smart Reader is built around real reading behavior:
 
-## What You Can Do Today
+- Find your place fast
+- Understand what matters on the page
+- Save what you want to remember
+- Come back later without friction
 
-### 1) Build a Personal EPUB Library
+## Core Experience
 
-- Upload `.epub` books.
-- Auto-extract metadata (title, author, publisher, publication date).
-- Auto-extract extended metadata when available:
-  - Language
-  - Estimated pages
-  - Genre
-- Store and render covers.
-- Search by title/author.
-- Filter by:
-  - All
-  - Favorites
-  - In progress
-  - Finished
-  - Has highlights
-  - Has notes
-  - Trash
-- Sort by:
-  - Last read (newest/oldest)
-  - Added date (newest/oldest)
-  - Progress (high to low / low to high)
-  - Title (A-Z / Z-A)
-  - Author (A-Z / Z-A)
-- Active filter/sort chips shown in UI for quick context.
-- Library view toggle:
-  - Grid view
-  - List view
-  - Persists across reloads
-- Continue Reading rail:
-  - Shows recently started, unfinished books
-  - Displays progress/time/last-read snapshot
-  - Includes quick `View in-progress` action
-- Reading streak badge:
-  - Compact `Flame` badge in library header
-  - Shows `No streak yet` or `N-day streak`
-  - Uses started-reading activity to avoid false streaks
-- Quick card actions:
-  - `Resume` (open reader directly)
-  - `Highlights` (open reader with highlights panel)
-  - `Bookmarks` (open reader with bookmarks panel)
-- Dedicated Trash icon in the library header:
-  - Opens Trash view directly
-  - Shows trashed-book count badge
-- Book metadata badges on library cards (grid + list):
-  - `Language`
-  - `Pages` (estimated)
-  - `Genre` (when available)
-- Automatic metadata backfill for legacy books already in local storage.
-- Favorite/unfavorite books.
-- Trash & restore workflow:
-  - Move books to Trash (soft delete)
-  - Restore books from Trash
-  - Permanently delete from Trash
-  - Auto-purge after 30 days in Trash
+### Library You Can Actually Manage
 
-### 2) Read Comfortably (Per Book)
+- Upload EPUB books in seconds
+- Clean cover-based library (grid or list)
+- Smart metadata (author, language, estimated pages, genre when available)
+- Search, filter, and sort to find the right book fast
+- Sticky library toolbar (search, filters, sort, view mode always visible while scrolling)
+- Quick filter count chips (`To read`, `In progress`, `Finished`, `Favorites`) with one-click filtering
+- Combine `Status` filtering with quick `Favorites` filtering when needed
+- One-click `Reset filters` action to return search/filter/sort to default
+- Manual `TO READ` tagging (create your personal "read next" queue)
+- Favorites and quick actions (`Resume`, `Highlights`, `Bookmarks`)
+- Notes Center in Library with cross-book note browsing, inline editing, and jump-to-reader
+- Continue Reading rail with progress and session context
+- Trash with restore flow and retention handling
 
-- Resume from last read location automatically.
-- Use either reading flow:
-  - Paginated
-  - Infinite scroll
-- Switch light/dark theme.
-- Change font size.
-- Change font family (multiple popular fonts available).
-- Per-book reader settings persistence:
+### Reader Built for Focus
+
+- Paginated and infinite-scroll modes
+- Centered portrait-style reading column in scroll mode
+- Per-book reading preferences:
   - Theme
-  - Flow mode
   - Font size
   - Font family
+  - Reading flow
+- Light mode, dark mode, and sepia reading mode
+- Keyboard navigation support
+- Chapter menu + table of contents navigation
 
-### 3) Navigate Faster
+### Search That Works at Two Levels
 
-- Top progress indicator with estimated time left.
-- Keyboard navigation:
-  - `ArrowLeft/ArrowRight` in paginated mode
-  - `ArrowUp/ArrowDown` in scroll mode
-- Click chapter entries from TOC.
-- Save bookmarks from current position and jump back instantly.
+- In-reader search with result navigation (`X/N`, next/previous)
+- Global search across:
+  - Book metadata
+  - Highlights
+  - Notes
+  - Bookmarks
+  - In-book content
+- Global search opens exact reader location with context preserved
 
-### 4) Work on Text While Reading
+### Highlights, Notes, and Study Workflow
 
-- Select text to open contextual actions:
-  - Dictionary
-  - Highlight
-  - Translate
-- Dictionary and translation popovers open near selection (contextual placement).
-- Translation supports source/target language selection.
+- Multi-color highlights
+- Add and edit notes on highlights
+- Jump to any saved highlight instantly
+- Bookmarks for key pages
+- Dictionary and translation from text selection
+- Export highlights to PDF (select all or specific items)
 
-### 5) Highlight, Annotate, and Export
+### Reading Progress That Feels Useful
 
-- Create highlights with multiple colors.
-- Open highlights panel to:
-  - Browse all highlights
-  - Jump directly to a highlight in-book
-  - Delete highlights
-  - Add/edit notes on highlights
-  - Select all or specific highlights
-- Export selected highlights to PDF:
-  - Clean card layout
-  - Compact spacing
-  - Includes chapter/page context
-  - Includes notes in exported output
+- Accurate per-book progress tracking
+- Estimated time left
+- Reading sessions and “last session” snapshot
+- Reading streak badge on home
 
-### 6) Track Reading Over Time
+## Current Status
 
-- Persist reading progress per book.
-- Track total reading time.
-- Track last-read timestamp.
-- Show daily streak on Home based on consecutive reading days.
+Smart Reader is fully usable for everyday reading workflows.
 
-## Translation Providers
+AI buttons are visible in the UI, but AI features are currently marked as unavailable.
 
-The reader supports free translation options out of the box.
-
-- Default provider: `MyMemory`
-- Optional provider: `LibreTranslate`
-
-Environment variables:
-
-```bash
-VITE_TRANSLATE_PROVIDER=mymemory
-VITE_TRANSLATE_ENDPOINT=https://libretranslate.com/translate
-VITE_TRANSLATE_API_KEY=
-VITE_TRANSLATE_EMAIL=
-```
-
-Notes:
-
-- `VITE_TRANSLATE_EMAIL` increases MyMemory free daily quota if provided.
-- If provider is MyMemory, source language selection is required (auto-detect is not available there).
-
-## Tech Stack
-
-- React + Vite
-- Tailwind CSS
-- epub.js
-- localforage (IndexedDB abstraction)
-- html2canvas + jsPDF (highlight export)
-- Playwright (E2E tests)
-
-## Run Locally
+## Quick Start
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open the Vite URL (usually `http://localhost:5173`).
+Open the app at the local Vite URL (usually `http://localhost:5173`).
 
-## Scripts
+## Main App Areas
 
-```bash
-npm run dev        # start dev server
-npm run build      # production build
-npm run preview    # preview production build
-npm run lint       # run ESLint
-npm run test:e2e   # run Playwright tests
-```
+- `src/pages/Home.jsx` - Library, search, filters, sort, favorites, trash, and global search UI
+- `src/pages/Reader.jsx` - Reading experience, contextual tools, highlights, bookmarks, export, and search handoff
+- `src/components/BookView.jsx` - EPUB rendering and navigation engine
+- `src/services/db.js` - Local-first persistence layer
 
-## Testing
+---
 
-E2E tests live in:
-
-- `tests/e2e/reader.spec.js`
-  - Search cancellation behavior
-  - Dictionary stale-response race handling
-  - Translation behavior
-  - Reader iframe remount regression guard
-- `tests/e2e/home.spec.js`
-  - Library sort/filter behavior
-  - Library metadata badge rendering (language + estimated pages)
-  - Library view toggle persistence
-  - Continue Reading rail visibility behavior
-  - Quick card action navigation (`Highlights` / `Bookmarks`)
-  - Reading streak badge behavior
-  - Trash icon flow (`move -> restore -> delete forever`)
-  - 30-day trash auto-purge behavior
-  - Favorites filter behavior
-
-To run browser tests locally:
-
-```bash
-npx playwright install chromium
-npm run test:e2e
-```
-
-## Important Security Note
-
-`src/services/ai.js` currently contains a client-side Gemini API key pattern.
-If AI features are re-enabled for production, move model calls behind a secure server-side proxy.
-
-## Key Files
-
-- `src/pages/Home.jsx` - library upload/search/sort/filter/trash/view-toggle/continue-reading/quick-actions
-- `src/pages/Reader.jsx` - reader UI, contextual tools, highlights/bookmarks panels, export, panel deep-link handling
-- `src/components/BookView.jsx` - epub.js rendering, navigation, location events
-- `src/services/db.js` - local data persistence (books, metadata backfill, trash retention/purge, highlights, notes, bookmarks, settings, started-state)
-- `src/services/ai.js` - AI summarization integration (currently not active for product flow)
-- `Improvements.md` - lightweight backlog of requested improvement ideas
+If you want a reader that feels practical on day one and scalable for serious reading habits, Smart Reader is built for that.
