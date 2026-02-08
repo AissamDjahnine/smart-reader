@@ -95,7 +95,14 @@ Open the app at the local Vite URL (usually `http://localhost:5173`).
 
 ## Main App Areas
 
-- `src/pages/Home.jsx` - Library workspace (sidebar sections), shelves/collections, notes center, highlights center, account panel, search/filter/sort, trash, and global search UI
+- `src/pages/Home.jsx` - Library page orchestrator (state, data loading, feature composition)
+- `src/pages/library/LibraryWorkspaceNav.jsx` - Sidebar and mobile workspace navigation
+- `src/pages/library/LibraryToolbarSection.jsx` - Library search/filter/sort toolbar + active chips + view toggle
+- `src/pages/library/LibraryCollectionsModal.jsx` - Collections management modal
+- `src/pages/library/LibraryNotesCenterPanel.jsx` - Notes Center panel
+- `src/pages/library/LibraryHighlightsCenterPanel.jsx` - Highlights Center panel
+- `src/pages/library/LibraryGlobalSearchPanel.jsx` - Global search result panel
+- `src/pages/library/LibraryAccountSection.jsx` - Account section form
 - `src/pages/Reader.jsx` - Reading experience, contextual tools, highlights, bookmarks, export, and search handoff
 - `src/components/BookView.jsx` - EPUB rendering and navigation engine
 - `src/services/db.js` - Local-first persistence layer
