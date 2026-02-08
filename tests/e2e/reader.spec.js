@@ -34,6 +34,22 @@ test('selection toolbar closes automatically when selection is cleared', async (
   await expect(page.getByTestId('selection-toolbar')).toHaveCount(0);
 });
 
+test('ai toolbar actions are visibly disabled and orange', async ({ page }) => {
+  await openFixtureBook(page);
+
+  const explain = page.getByTestId('ai-explain-disabled');
+  const story = page.getByTestId('ai-story-disabled');
+
+  await expect(explain).toBeVisible();
+  await expect(story).toBeVisible();
+  await expect(explain).toBeDisabled();
+  await expect(story).toBeDisabled();
+  await expect(explain).toHaveClass(/text-orange-700/);
+  await expect(explain).toHaveClass(/bg-orange-50/);
+  await expect(story).toHaveClass(/text-orange-700/);
+  await expect(story).toHaveClass(/bg-orange-50/);
+});
+
 
 test('search clear cancels results', async ({ page }) => {
   await openFixtureBook(page);

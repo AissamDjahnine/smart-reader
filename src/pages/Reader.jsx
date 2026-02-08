@@ -2671,13 +2671,22 @@ export default function Reader() {
         </div>
         
         <div className="flex items-center gap-1 sm:gap-2">
-          <button onClick={handleManualPageSummary} className="p-2 px-3 rounded-full bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center gap-2 transition hover:scale-105 active:scale-95">
+          <button
+            type="button"
+            disabled
+            data-testid="ai-explain-disabled"
+            title="AI feature not available yet"
+            className="flex cursor-not-allowed items-center gap-2 rounded-full border border-orange-200 bg-orange-50 p-2 px-3 text-orange-700 opacity-90 dark:border-orange-800/40 dark:bg-orange-900/20 dark:text-orange-300"
+          >
             <Wand2 size={18} />
             <span className="text-[10px] font-black uppercase hidden lg:inline">Explain Page</span>
           </button>
           <button
-            onClick={handleStoryRecap}
-            className={`p-2 rounded-full transition flex items-center gap-2 px-3 ${isStoryRecapping ? 'animate-pulse text-yellow-500' : 'text-blue-500'}`}
+            type="button"
+            disabled
+            data-testid="ai-story-disabled"
+            title="AI feature not available yet"
+            className="flex cursor-not-allowed items-center gap-2 rounded-full border border-orange-200 bg-orange-50 p-2 px-3 text-orange-700 opacity-90 dark:border-orange-800/40 dark:bg-orange-900/20 dark:text-orange-300"
           >
             <Sparkles size={20} />
             <span className="hidden md:inline text-xs font-black uppercase">Story</span>
