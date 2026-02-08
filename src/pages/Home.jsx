@@ -1,8 +1,48 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { addBook, getAllBooks, deleteBook, toggleFavorite, toggleToRead, markBookStarted, backfillBookMetadata, moveBookToTrash, restoreBookFromTrash, purgeExpiredTrashBooks, updateHighlightNote } from '../services/db'; 
+import {
+  addBook,
+  getAllBooks,
+  deleteBook,
+  toggleFavorite,
+  toggleToRead,
+  markBookStarted,
+  backfillBookMetadata,
+  moveBookToTrash,
+  restoreBookFromTrash,
+  purgeExpiredTrashBooks,
+  updateHighlightNote,
+  getAllCollections,
+  createCollection,
+  renameCollection,
+  deleteCollection,
+  toggleBookCollection
+} from '../services/db';
 import ePub from 'epubjs';
-import { Plus, Book as BookIcon, User, Calendar, Trash2, Clock, Search, Heart, Tag, Filter, ArrowUpDown, LayoutGrid, List, Flame, RotateCcw, ArrowLeft, FileText } from 'lucide-react';
+import {
+  Plus,
+  Book as BookIcon,
+  User,
+  Calendar,
+  Trash2,
+  Clock,
+  Search,
+  Heart,
+  Tag,
+  Filter,
+  ArrowUpDown,
+  LayoutGrid,
+  List,
+  Flame,
+  RotateCcw,
+  ArrowLeft,
+  FileText,
+  FolderClosed,
+  FolderPlus,
+  Pencil,
+  Check,
+  X
+} from 'lucide-react';
 
 const STARTED_BOOK_IDS_KEY = 'library-started-book-ids';
 const TRASH_RETENTION_DAYS = 30;
@@ -124,6 +164,15 @@ const searchBookContent = async (book, query, maxMatches = 30) => {
 const CONTENT_SCROLL_HEIGHT_CLASS = "h-[42vh]";
 const CONTENT_PANEL_HEIGHT_CLASS = "h-[calc(42vh+3rem)]";
 const FOUND_BOOK_COVER_PADDING_CLASS = "p-4";
+const COLLECTION_COLOR_OPTIONS = [
+  "#2563eb",
+  "#7c3aed",
+  "#db2777",
+  "#ea580c",
+  "#16a34a",
+  "#0891b2",
+  "#4b5563"
+];
 
 export default function Home() {
   const navigate = useNavigate();
@@ -133,6 +182,7 @@ export default function Home() {
   // Search, filter & sort states
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [collectionFilter, setCollectionFilter] = useState("all");
   const [flagFilters, setFlagFilters] = useState([]);
   const [sortBy, setSortBy] = useState("last-read-desc");
   const [viewMode, setViewMode] = useState(() => {
@@ -143,6 +193,14 @@ export default function Home() {
   const [editingNoteId, setEditingNoteId] = useState("");
   const [noteEditorValue, setNoteEditorValue] = useState("");
   const [isSavingNote, setIsSavingNote] = useState(false);
+  const [collections, setCollections] = useState([]);
+  const [showCollectionsModal, setShowCollectionsModal] = useState(false);
+  const [collectionNameDraft, setCollectionNameDraft] = useState("");
+  const [collectionColorDraft, setCollectionColorDraft] = useState(COLLECTION_COLOR_OPTIONS[0]);
+  const [editingCollectionId, setEditingCollectionId] = useState("");
+  const [editingCollectionName, setEditingCollectionName] = useState("");
+  const [collectionError, setCollectionError] = useState("");
+  const [collectionPickerBookId, setCollectionPickerBookId] = useState("");
   const [contentSearchMatches, setContentSearchMatches] = useState({});
   const [isContentSearching, setIsContentSearching] = useState(false);
   const contentSearchTokenRef = useRef(0);
@@ -208,10 +266,24 @@ export default function Home() {
     setNoteEditorValue("");
   }, [statusFilter, isNotesCenterOpen]);
 
+  useEffect(() => {
+    if (!collectionPickerBookId) return;
+    const onPointerDown = (event) => {
+      const target = event?.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest('[data-testid="book-collection-picker"]')) return;
+      if (target.closest('[data-testid="book-collection-picker-toggle"]')) return;
+      setCollectionPickerBookId("");
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [collectionPickerBookId]);
+
   const loadLibrary = async () => {
     await purgeExpiredTrashBooks(TRASH_RETENTION_DAYS);
-    const storedBooks = await getAllBooks();
+    const [storedBooks, storedCollections] = await Promise.all([getAllBooks(), getAllCollections()]);
     setBooks(storedBooks);
+    setCollections(storedCollections);
 
     const legacyBookIds = storedBooks
       .filter((book) => {
@@ -324,6 +396,68 @@ export default function Home() {
     loadLibrary();
   };
 
+  const handleToggleCollectionPicker = (e, id) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCollectionPickerBookId((current) => (current === id ? "" : id));
+  };
+
+  const handleToggleBookCollection = async (e, bookId, collectionId) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      await toggleBookCollection(bookId, collectionId);
+      await loadLibrary();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleCreateCollection = async () => {
+    setCollectionError("");
+    try {
+      await createCollection(collectionNameDraft, collectionColorDraft);
+      setCollectionNameDraft("");
+      setCollectionColorDraft(COLLECTION_COLOR_OPTIONS[0]);
+      await loadLibrary();
+    } catch (err) {
+      setCollectionError(err?.message || "Unable to create collection.");
+    }
+  };
+
+  const startCollectionRename = (collection) => {
+    setCollectionError("");
+    setEditingCollectionId(collection.id);
+    setEditingCollectionName(collection.name);
+  };
+
+  const cancelCollectionRename = () => {
+    setEditingCollectionId("");
+    setEditingCollectionName("");
+    setCollectionError("");
+  };
+
+  const handleSaveCollectionRename = async () => {
+    if (!editingCollectionId) return;
+    setCollectionError("");
+    try {
+      await renameCollection(editingCollectionId, editingCollectionName);
+      await loadLibrary();
+      cancelCollectionRename();
+    } catch (err) {
+      setCollectionError(err?.message || "Unable to rename collection.");
+    }
+  };
+
+  const handleDeleteCollection = async (collectionId) => {
+    setCollectionError("");
+    await deleteCollection(collectionId);
+    if (collectionFilter === collectionId) {
+      setCollectionFilter("all");
+    }
+    await loadLibrary();
+  };
+
   const handleToggleNotesCenter = () => {
     setIsNotesCenterOpen((current) => !current);
     setEditingNoteId("");
@@ -376,6 +510,10 @@ export default function Home() {
     { value: "finished", label: "Finished" },
     { value: "trash", label: "Trash" }
   ];
+  const collectionFilterOptions = [
+    { value: "all", label: "All collections" },
+    ...collections.map((collection) => ({ value: collection.id, label: collection.name }))
+  ];
   const flagFilterOptions = [
     { value: "favorites", label: "Favorites" },
     { value: "has-highlights", label: "Has highlights" },
@@ -426,6 +564,19 @@ export default function Home() {
     setFlagFilters((current) =>
       current.includes(flag) ? current.filter((item) => item !== flag) : [...current, flag]
     );
+  };
+
+  const collectionMap = new Map(collections.map((collection) => [collection.id, collection]));
+  const hexToRgba = (hex, alpha = 0.16) => {
+    const clean = (hex || "").replace("#", "").trim();
+    if (clean.length !== 6) return `rgba(37, 99, 235, ${alpha})`;
+    const r = Number.parseInt(clean.slice(0, 2), 16);
+    const g = Number.parseInt(clean.slice(2, 4), 16);
+    const b = Number.parseInt(clean.slice(4, 6), 16);
+    if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) {
+      return `rgba(37, 99, 235, ${alpha})`;
+    }
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
   };
 
   const bookMatchesLibrarySearch = (book, query) => {
@@ -586,7 +737,12 @@ export default function Home() {
               return true;
             });
 
-      return matchesSearch && matchesStatus && matchesFlags;
+      const matchesCollection =
+        collectionFilter === "all"
+          ? true
+          : Array.isArray(book.collectionIds) && book.collectionIds.includes(collectionFilter);
+
+      return matchesSearch && matchesStatus && matchesFlags && matchesCollection;
     })
     .sort((left, right) => {
       if (sortBy === "last-read-desc") return normalizeTime(right.lastRead) - normalizeTime(left.lastRead);
@@ -787,7 +943,11 @@ export default function Home() {
     .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead))
     .slice(0, 8);
 
-  const showContinueReading = statusFilter === "all" && !searchQuery.trim() && continueReadingBooks.length > 0;
+  const showContinueReading =
+    statusFilter === "all" &&
+    collectionFilter === "all" &&
+    !searchQuery.trim() &&
+    continueReadingBooks.length > 0;
   const { streakCount, readToday } = getReadingStreak(books);
 
   const formatTime = (totalSeconds) => {
@@ -814,6 +974,41 @@ export default function Home() {
       >
         TO READ
       </span>
+    );
+  };
+
+  const renderCollectionChips = (book, extraClasses = "") => {
+    const ids = Array.isArray(book?.collectionIds) ? book.collectionIds : [];
+    if (!ids.length) return null;
+    const resolved = ids
+      .map((id) => collectionMap.get(id))
+      .filter(Boolean);
+    if (!resolved.length) return null;
+
+    const visible = resolved.slice(0, 2);
+    const remaining = resolved.length - visible.length;
+    return (
+      <div className={`mt-2 flex flex-wrap items-center gap-1.5 ${extraClasses}`}>
+        {visible.map((collection) => (
+          <span
+            key={`${book.id}-${collection.id}`}
+            data-testid="book-collection-chip"
+            className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold tracking-wide"
+            style={{
+              borderColor: collection.color,
+              backgroundColor: hexToRgba(collection.color, 0.16),
+              color: collection.color
+            }}
+          >
+            {collection.name}
+          </span>
+        ))}
+        {remaining > 0 && (
+          <span className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-bold text-gray-600">
+            +{remaining}
+          </span>
+        )}
+      </div>
     );
   };
 
@@ -993,9 +1188,15 @@ export default function Home() {
     return statusFilterOptions.find((f) => f.value === statusFilter)?.label || "All books";
   };
 
+  const getCollectionFilterLabel = () => {
+    if (collectionFilter === "all") return "All collections";
+    return collections.find((item) => item.id === collectionFilter)?.name || "All collections";
+  };
+
   const resetLibraryFilters = () => {
     setSearchQuery("");
     setStatusFilter("all");
+    setCollectionFilter("all");
     setFlagFilters([]);
     setSortBy("last-read-desc");
   };
@@ -1003,6 +1204,7 @@ export default function Home() {
   const hasActiveLibraryFilters =
     Boolean(searchQuery.trim()) ||
     statusFilter !== "all" ||
+    collectionFilter !== "all" ||
     flagFilters.length > 0 ||
     sortBy !== "last-read-desc";
 
@@ -1167,7 +1369,7 @@ export default function Home() {
           data-testid="library-toolbar-sticky"
           className="sticky top-3 z-20 mb-3 rounded-2xl bg-gray-50/95 pb-2 backdrop-blur supports-[backdrop-filter]:bg-gray-50/80"
         >
-          <div className="grid grid-cols-1 items-stretch gap-3 md:grid-cols-[minmax(0,1fr)_220px_280px_auto]">
+          <div className="grid grid-cols-1 items-stretch gap-3 md:grid-cols-[minmax(0,1fr)_220px_220px_280px_auto]">
             <div className="relative flex-1">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
               <input 
@@ -1178,6 +1380,22 @@ export default function Home() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
+            </div>
+
+            <div className="relative">
+              <FolderClosed className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+              <select
+                data-testid="library-collection-filter"
+                value={collectionFilter}
+                onChange={(e) => setCollectionFilter(e.target.value)}
+                className="h-[52px] w-full rounded-2xl border border-gray-200 bg-white pl-11 pr-4 text-sm font-semibold text-gray-700 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+              >
+                {collectionFilterOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className="relative">
@@ -1213,6 +1431,22 @@ export default function Home() {
             </div>
 
             <div className="flex items-stretch justify-end gap-2">
+              {!isTrashView && (
+                <button
+                  type="button"
+                  data-testid="library-manage-collections-button"
+                  onClick={() => {
+                    setShowCollectionsModal(true);
+                    setCollectionError("");
+                  }}
+                  className="inline-flex h-[52px] items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 text-sm font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                  title="Manage shelves"
+                >
+                  <FolderPlus size={16} />
+                  <span>Shelves</span>
+                </button>
+              )}
+
               <div
                 className="flex h-[52px] w-[120px] items-center rounded-2xl border border-gray-200 bg-white p-1 shadow-sm"
                 data-testid="library-view-toggle"
@@ -1388,6 +1622,166 @@ export default function Home() {
             )}
           </section>
         )}
+
+        {showCollectionsModal && !isTrashView && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <div
+              className="absolute inset-0 bg-black/35"
+              onClick={() => {
+                setShowCollectionsModal(false);
+                cancelCollectionRename();
+              }}
+            />
+            <section
+              data-testid="collections-modal"
+              className="relative w-full max-w-xl rounded-3xl border border-gray-200 bg-white p-5 shadow-2xl"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-base font-bold text-gray-900">Manage Shelves</h2>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Group books into custom collections.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  data-testid="collections-modal-close"
+                  onClick={() => {
+                    setShowCollectionsModal(false);
+                    cancelCollectionRename();
+                  }}
+                  className="p-2 rounded-full text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-3">
+                <div className="text-xs font-semibold text-gray-700">Create shelf</div>
+                <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <input
+                    data-testid="collection-create-input"
+                    value={collectionNameDraft}
+                    onChange={(e) => setCollectionNameDraft(e.target.value)}
+                    placeholder="Shelf name (e.g. Classics)"
+                    className="h-10 flex-1 rounded-xl border border-gray-200 bg-white px-3 text-sm text-gray-800 outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <div className="flex items-center gap-2">
+                    {COLLECTION_COLOR_OPTIONS.map((color) => (
+                      <button
+                        key={`draft-${color}`}
+                        type="button"
+                        data-testid="collection-color-option"
+                        onClick={() => setCollectionColorDraft(color)}
+                        className={`h-6 w-6 rounded-full border-2 ${collectionColorDraft === color ? "border-gray-900" : "border-white"}`}
+                        style={{ backgroundColor: color }}
+                        title={color}
+                      />
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="collection-create-button"
+                    onClick={handleCreateCollection}
+                    className="h-10 rounded-xl bg-blue-600 px-4 text-sm font-bold text-white hover:bg-blue-700"
+                  >
+                    Create
+                  </button>
+                </div>
+                {collectionError && (
+                  <div className="mt-2 text-xs font-semibold text-red-600">{collectionError}</div>
+                )}
+              </div>
+
+              <div className="mt-4 max-h-[50vh] space-y-2 overflow-y-auto pr-1">
+                {collections.length === 0 && (
+                  <div className="rounded-2xl border border-dashed border-gray-200 p-4 text-sm text-gray-500">
+                    No shelves yet. Create your first one above.
+                  </div>
+                )}
+                {collections.map((collection) => {
+                  const linkedCount = books.filter((book) => Array.isArray(book.collectionIds) && book.collectionIds.includes(collection.id)).length;
+                  const isEditing = editingCollectionId === collection.id;
+                  return (
+                    <div
+                      key={collection.id}
+                      data-testid="collection-item"
+                      className="rounded-2xl border border-gray-200 bg-white p-3"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
+                              style={{ backgroundColor: collection.color }}
+                            />
+                            {isEditing ? (
+                              <input
+                                data-testid="collection-rename-input"
+                                value={editingCollectionName}
+                                onChange={(e) => setEditingCollectionName(e.target.value)}
+                                className="h-8 flex-1 rounded-lg border border-gray-200 px-2 text-sm text-gray-800 outline-none focus:ring-2 focus:ring-blue-500"
+                              />
+                            ) : (
+                              <div data-testid="collection-item-name" className="truncate text-sm font-bold text-gray-900">
+                                {collection.name}
+                              </div>
+                            )}
+                          </div>
+                          <div className="mt-1 text-xs text-gray-500">
+                            {linkedCount} book{linkedCount === 1 ? "" : "s"}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {isEditing ? (
+                            <>
+                              <button
+                                type="button"
+                                data-testid="collection-rename-save"
+                                onClick={handleSaveCollectionRename}
+                                className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-700"
+                              >
+                                <Check size={12} />
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={cancelCollectionRename}
+                                className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs font-bold text-gray-600"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                data-testid="collection-rename-button"
+                                onClick={() => startCollectionRename(collection)}
+                                className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs font-bold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                              >
+                                <Pencil size={12} />
+                                Rename
+                              </button>
+                              <button
+                                type="button"
+                                data-testid="collection-delete-button"
+                                onClick={() => handleDeleteCollection(collection.id)}
+                                className="rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs font-bold text-red-600 hover:bg-red-100"
+                              >
+                                Delete
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          </div>
+        )}
         {globalSearchQuery && !isTrashView && (
           <div className={`mb-4 ${showGlobalSearchSplitColumns ? "grid grid-cols-1 lg:grid-cols-[minmax(0,1.65fr)_minmax(300px,0.95fr)] gap-4 items-start" : ""}`}>
           <section
@@ -1514,6 +1908,9 @@ export default function Home() {
           <span className="px-2 py-1 rounded-full bg-gray-100 border border-gray-200">
             {getFilterLabel()}
           </span>
+          <span className="px-2 py-1 rounded-full bg-gray-100 border border-gray-200">
+            {getCollectionFilterLabel()}
+          </span>
           {flagFilters.map((flag) => {
             const label = flagFilterOptions.find((item) => item.value === flag)?.label || flag;
             return (
@@ -1630,6 +2027,19 @@ export default function Home() {
                             <Trash2 size={16} />
                           </button>
                           <button
+                            type="button"
+                            data-testid="book-collection-picker-toggle"
+                            onClick={(e) => handleToggleCollectionPicker(e, book.id)}
+                            className={`p-2 rounded-xl shadow-md transition-all active:scale-95 ${
+                              Array.isArray(book.collectionIds) && book.collectionIds.length
+                                ? 'bg-indigo-500 text-white'
+                                : 'bg-white text-gray-400 hover:text-indigo-600'
+                            }`}
+                            title="Shelves"
+                          >
+                            <FolderClosed size={16} />
+                          </button>
+                          <button
                             data-testid="book-toggle-to-read"
                             onClick={(e) => handleToggleToRead(e, book.id)}
                             className={`p-2 rounded-xl shadow-md transition-all active:scale-95 ${
@@ -1655,6 +2065,64 @@ export default function Home() {
                     <div className="absolute bottom-3 right-3 bg-black/60 backdrop-blur-md text-white text-xs font-bold px-2 py-1 rounded-lg">
                       {book.progress}%
                     </div>
+
+                    {collectionPickerBookId === book.id && !inTrash && (
+                      <div
+                        data-testid="book-collection-picker"
+                        className="absolute left-3 top-3 z-20 w-[230px] rounded-xl border border-gray-200 bg-white p-3 shadow-xl"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                        }}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                        }}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-[11px] font-bold text-gray-700 uppercase tracking-wide">Shelves</div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setShowCollectionsModal(true);
+                              setCollectionError("");
+                            }}
+                            className="text-[10px] font-bold text-blue-600 hover:text-blue-700"
+                          >
+                            Manage
+                          </button>
+                        </div>
+                        {collections.length === 0 ? (
+                          <p className="mt-2 text-[11px] text-gray-500">Create a shelf first.</p>
+                        ) : (
+                          <div className="mt-2 max-h-40 overflow-y-auto space-y-1">
+                            {collections.map((collection) => {
+                              const isChecked = Array.isArray(book.collectionIds) && book.collectionIds.includes(collection.id);
+                              return (
+                                <label
+                                  key={`${book.id}-${collection.id}`}
+                                  className="flex items-center gap-2 rounded-lg px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    data-testid="book-collection-toggle"
+                                    checked={isChecked}
+                                    onChange={(e) => handleToggleBookCollection(e, book.id, collection.id)}
+                                  />
+                                  <span
+                                    className="inline-block w-2.5 h-2.5 rounded-full"
+                                    style={{ backgroundColor: collection.color }}
+                                  />
+                                  <span className="truncate">{collection.name}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <div className="p-5 flex-1 flex flex-col">
@@ -1668,6 +2136,7 @@ export default function Home() {
                     </div>
 
                     {renderMetadataBadges(book)}
+                    {renderCollectionChips(book)}
 
                     {renderReadingStateBadge(book, "mt-2")}
                     {renderToReadTag(book, "mt-2")}
@@ -1767,6 +2236,7 @@ export default function Home() {
                       </div>
 
                       {renderMetadataBadges(book)}
+                      {renderCollectionChips(book)}
 
                       {renderReadingStateBadge(book, "mt-2")}
                       {renderToReadTag(book, "mt-2")}
@@ -1843,6 +2313,19 @@ export default function Home() {
                         ) : (
                           <>
                             <button
+                              type="button"
+                              data-testid="book-collection-picker-toggle"
+                              onClick={(e) => handleToggleCollectionPicker(e, book.id)}
+                              className={`p-2 rounded-xl shadow-sm transition-all active:scale-95 ${
+                                Array.isArray(book.collectionIds) && book.collectionIds.length
+                                  ? 'bg-indigo-500 text-white'
+                                  : 'bg-white border border-gray-200 text-gray-400 hover:text-indigo-600'
+                              }`}
+                              title="Shelves"
+                            >
+                              <FolderClosed size={16} />
+                            </button>
+                            <button
                               data-testid="book-toggle-to-read"
                               onClick={(e) => handleToggleToRead(e, book.id)}
                               className={`p-2 rounded-xl shadow-sm transition-all active:scale-95 ${
@@ -1872,6 +2355,64 @@ export default function Home() {
                           </>
                         )}
                       </div>
+
+                      {collectionPickerBookId === book.id && !inTrash && (
+                        <div
+                          data-testid="book-collection-picker"
+                          className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                          }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                          }}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-[11px] font-bold text-gray-700 uppercase tracking-wide">Shelves</div>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setShowCollectionsModal(true);
+                                setCollectionError("");
+                              }}
+                              className="text-[10px] font-bold text-blue-600 hover:text-blue-700"
+                            >
+                              Manage
+                            </button>
+                          </div>
+                          {collections.length === 0 ? (
+                            <p className="mt-2 text-[11px] text-gray-500">Create a shelf first.</p>
+                          ) : (
+                            <div className="mt-2 max-h-36 overflow-y-auto space-y-1">
+                              {collections.map((collection) => {
+                                const isChecked = Array.isArray(book.collectionIds) && book.collectionIds.includes(collection.id);
+                                return (
+                                  <label
+                                    key={`${book.id}-list-${collection.id}`}
+                                    className="flex items-center gap-2 rounded-lg px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      data-testid="book-collection-toggle"
+                                      checked={isChecked}
+                                      onChange={(e) => handleToggleBookCollection(e, book.id, collection.id)}
+                                    />
+                                    <span
+                                      className="inline-block w-2.5 h-2.5 rounded-full"
+                                      style={{ backgroundColor: collection.color }}
+                                    />
+                                    <span className="truncate">{collection.name}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </Link>

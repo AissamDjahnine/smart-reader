@@ -2,11 +2,22 @@ import localforage from 'localforage';
 import ePub from 'epubjs';
 
 const bookStore = localforage.createInstance({ name: "SmartReaderLib" });
+const collectionsStore = localforage.createInstance({ name: "SmartReaderLib", storeName: "collections" });
 const mutationQueues = new Map();
 const BOOK_METADATA_VERSION = 1;
 const TRASH_RETENTION_DAYS = 30;
 const READING_SESSION_BREAK_MS = 10 * 60 * 1000;
 const MAX_READING_SESSIONS = 180;
+const DEFAULT_COLLECTION_COLOR = "#2563eb";
+const ALLOWED_COLLECTION_COLORS = new Set([
+  "#2563eb",
+  "#7c3aed",
+  "#db2777",
+  "#ea580c",
+  "#16a34a",
+  "#0891b2",
+  "#4b5563"
+]);
 
 const runBookMutation = async (id, mutator) => {
   const previous = mutationQueues.get(id) || Promise.resolve();
@@ -43,6 +54,32 @@ const toPositiveInteger = (value) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
   return Math.max(1, Math.round(parsed));
+};
+
+const normalizeCollectionIds = (value) => {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim()))];
+};
+
+const normalizeBookCollections = (book) => {
+  if (!book || typeof book !== "object") return book;
+  const normalizedIds = normalizeCollectionIds(book.collectionIds);
+  const hasSameIds =
+    Array.isArray(book.collectionIds) &&
+    book.collectionIds.length === normalizedIds.length &&
+    book.collectionIds.every((id, index) => id === normalizedIds[index]);
+
+  if (hasSameIds) return book;
+  return {
+    ...book,
+    collectionIds: normalizedIds
+  };
+};
+
+const normalizeCollectionName = (value) => (value || "").toString().trim();
+const normalizeCollectionColor = (value) => {
+  const clean = (value || "").toString().trim().toLowerCase();
+  return ALLOWED_COLLECTION_COLORS.has(clean) ? clean : DEFAULT_COLLECTION_COLOR;
 };
 
 const extractGenre = (metadata = {}) => {
@@ -132,6 +169,7 @@ export const addBook = async (file) => {
     },
     isFavorite: false,
     isToRead: false,
+    collectionIds: [],
     isDeleted: false,
     deletedAt: null,
     readingTime: 0,
@@ -151,7 +189,15 @@ export const addBook = async (file) => {
 
 export const getAllBooks = async () => {
   const books = [];
-  await bookStore.iterate((value) => { books.push(value); });
+  const updates = [];
+  await bookStore.iterate((value, key) => {
+    const normalized = normalizeBookCollections(value);
+    books.push(normalized);
+    if (normalized !== value) {
+      updates.push(bookStore.setItem(key, normalized));
+    }
+  });
+  if (updates.length) await Promise.all(updates);
   return books.sort((a, b) => {
     if (a.isFavorite === b.isFavorite) {
       return new Date(b.addedAt) - new Date(a.addedAt);
@@ -363,6 +409,106 @@ export const toggleToRead = async (id) => {
     book.isToRead = !Boolean(book.isToRead);
     return book;
   });
+};
+
+export const getAllCollections = async () => {
+  const collections = [];
+  await collectionsStore.iterate((value) => {
+    if (!value || typeof value !== "object") return;
+    collections.push({
+      id: value.id,
+      name: normalizeCollectionName(value.name),
+      color: normalizeCollectionColor(value.color),
+      createdAt: value.createdAt || new Date().toISOString(),
+      updatedAt: value.updatedAt || value.createdAt || new Date().toISOString()
+    });
+  });
+  return collections
+    .filter((item) => item.id && item.name)
+    .sort((left, right) => {
+      const leftTime = new Date(left.createdAt || 0).getTime();
+      const rightTime = new Date(right.createdAt || 0).getTime();
+      if (leftTime !== rightTime) return leftTime - rightTime;
+      return left.name.localeCompare(right.name);
+    });
+};
+
+export const createCollection = async (name, color = DEFAULT_COLLECTION_COLOR) => {
+  const cleanName = normalizeCollectionName(name);
+  if (!cleanName) throw new Error("Collection name is required.");
+  const existing = await getAllCollections();
+  const exists = existing.some((item) => item.name.toLowerCase() === cleanName.toLowerCase());
+  if (exists) throw new Error("A collection with that name already exists.");
+
+  const now = new Date().toISOString();
+  const id = `col-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const collection = {
+    id,
+    name: cleanName,
+    color: normalizeCollectionColor(color),
+    createdAt: now,
+    updatedAt: now
+  };
+  await collectionsStore.setItem(id, collection);
+  return collection;
+};
+
+export const renameCollection = async (id, name) => {
+  if (!id) throw new Error("Collection id is required.");
+  const cleanName = normalizeCollectionName(name);
+  if (!cleanName) throw new Error("Collection name is required.");
+
+  const existing = await getAllCollections();
+  const duplicate = existing.some(
+    (item) => item.id !== id && item.name.toLowerCase() === cleanName.toLowerCase()
+  );
+  if (duplicate) throw new Error("A collection with that name already exists.");
+
+  const current = await collectionsStore.getItem(id);
+  if (!current) throw new Error("Collection not found.");
+
+  const next = {
+    ...current,
+    name: cleanName,
+    color: normalizeCollectionColor(current.color),
+    updatedAt: new Date().toISOString()
+  };
+  await collectionsStore.setItem(id, next);
+  return next;
+};
+
+export const deleteCollection = async (id) => {
+  if (!id) return;
+  await collectionsStore.removeItem(id);
+
+  const pending = [];
+  await bookStore.iterate((value, key) => {
+    const normalizedIds = normalizeCollectionIds(value?.collectionIds);
+    if (!normalizedIds.includes(id)) return;
+    pending.push(
+      runBookMutation(key, (book) => {
+        book.collectionIds = normalizeCollectionIds(book.collectionIds).filter((item) => item !== id);
+        return book;
+      })
+    );
+  });
+  if (pending.length) await Promise.all(pending);
+};
+
+export const toggleBookCollection = async (bookId, collectionId) => {
+  if (!bookId || !collectionId) return [];
+  const collection = await collectionsStore.getItem(collectionId);
+  if (!collection) throw new Error("Collection not found.");
+
+  const updatedBook = await runBookMutation(bookId, (book) => {
+    const current = normalizeCollectionIds(book.collectionIds);
+    const exists = current.includes(collectionId);
+    book.collectionIds = exists
+      ? current.filter((item) => item !== collectionId)
+      : [...current, collectionId];
+    return book;
+  });
+  return normalizeCollectionIds(updatedBook?.collectionIds);
 };
 
 export const saveHighlight = async (bookId, highlight) => {

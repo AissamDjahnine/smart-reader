@@ -3,6 +3,28 @@ import path from 'path';
 
 const fixturePath = path.resolve(process.cwd(), 'tests/fixtures/fixture.epub');
 
+async function createShelf(page, name) {
+  await page.getByTestId('library-manage-collections-button').click();
+  await expect(page.getByTestId('collections-modal')).toBeVisible();
+  await page.getByTestId('collection-create-input').fill(name);
+  await page.getByTestId('collection-create-button').click();
+  await expect(page.getByTestId('collection-item-name').filter({ hasText: name })).toBeVisible();
+  await page.getByTestId('collections-modal-close').click();
+  await expect(page.getByTestId('collections-modal')).toHaveCount(0);
+}
+
+async function assignFirstBookToShelf(page, name) {
+  await page.getByTestId('library-view-list').click();
+  await expect(page.getByTestId('library-books-list')).toBeVisible();
+  await page.getByTestId('book-collection-picker-toggle').first().click();
+  const picker = page.getByTestId('book-collection-picker').first();
+  await expect(picker).toBeVisible();
+  const shelfRow = picker.locator('label').filter({ hasText: name }).first();
+  await expect(shelfRow).toBeVisible();
+  await shelfRow.locator('input[type="checkbox"]').click({ force: true });
+  await expect(page.getByTestId('book-collection-chip').filter({ hasText: name }).first()).toBeVisible();
+}
+
 test('library sort and filter controls work with favorites', async ({ page }) => {
   await page.addInitScript(() => {
     indexedDB.deleteDatabase('SmartReaderLib');
@@ -38,6 +60,112 @@ test('library sort and filter controls work with favorites', async ({ page }) =>
   await favoritesQuickFilter.click();
   await expect(favoritesQuickFilter).toHaveAttribute('aria-pressed', 'true');
   await expect(bookLink).toBeVisible();
+});
+
+test('collections create and assign flow works', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await createShelf(page, 'Classics');
+  await assignFirstBookToShelf(page, 'Classics');
+});
+
+test('collection filter narrows visible books', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await createShelf(page, 'Shelf One');
+  await assignFirstBookToShelf(page, 'Shelf One');
+  await page.getByTestId('library-collection-filter').selectOption({ label: 'Shelf One' });
+  await expect(page.getByTestId('library-collection-filter')).not.toHaveValue('all');
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+  await page.getByTestId('library-collection-filter').selectOption({ label: 'All collections' });
+  await expect(page.getByTestId('library-collection-filter')).toHaveValue('all');
+});
+
+test('collection rename updates filter options and chips', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await createShelf(page, 'Old Shelf');
+  await assignFirstBookToShelf(page, 'Old Shelf');
+
+  await page.getByTestId('library-manage-collections-button').click();
+  await expect(page.getByTestId('collections-modal')).toBeVisible();
+  await page.getByTestId('collection-rename-button').first().click();
+  await page.getByTestId('collection-rename-input').first().fill('New Shelf');
+  await page.getByTestId('collection-rename-save').first().click();
+  await expect(page.getByTestId('collection-item-name').filter({ hasText: 'New Shelf' })).toBeVisible();
+  await expect(page.getByTestId('collection-item-name').filter({ hasText: 'Old Shelf' })).toHaveCount(0);
+  await page.getByTestId('collections-modal-close').click();
+
+  await expect(page.getByTestId('library-collection-filter').locator('option', { hasText: 'New Shelf' })).toHaveCount(1);
+  await expect(page.getByTestId('library-collection-filter').locator('option', { hasText: 'Old Shelf' })).toHaveCount(0);
+  await expect(page.getByTestId('book-collection-chip').filter({ hasText: 'New Shelf' }).first()).toBeVisible();
+});
+
+test('collection delete clears assignment and resets active collection filter', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await createShelf(page, 'Delete Me');
+  await assignFirstBookToShelf(page, 'Delete Me');
+  await page.getByTestId('library-collection-filter').selectOption({ label: 'Delete Me' });
+  await expect(page.getByTestId('library-collection-filter')).toHaveValue(/col-/);
+
+  await page.getByTestId('library-manage-collections-button').click();
+  await expect(page.getByTestId('collections-modal')).toBeVisible();
+  await page.getByTestId('collection-delete-button').first().click();
+  await expect(page.getByTestId('collection-item').filter({ hasText: 'Delete Me' })).toHaveCount(0);
+  await page.getByTestId('collections-modal-close').click();
+
+  await expect(page.getByTestId('library-collection-filter')).toHaveValue('all');
+  await expect(page.getByTestId('library-collection-filter').locator('option', { hasText: 'Delete Me' })).toHaveCount(0);
+  await expect(page.getByTestId('book-collection-chip').filter({ hasText: 'Delete Me' })).toHaveCount(0);
+});
+
+test('collections and assignments persist after reload', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await createShelf(page, 'Persistent Shelf');
+  await assignFirstBookToShelf(page, 'Persistent Shelf');
+
+  await page.reload();
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+  await expect(page.getByTestId('library-collection-filter').locator('option', { hasText: 'Persistent Shelf' })).toHaveCount(1);
+  await expect(page.getByTestId('book-collection-chip').filter({ hasText: 'Persistent Shelf' }).first()).toBeVisible();
 });
 
 test('library toolbar is sticky and reset button clears search status and flag filters', async ({ page }) => {
