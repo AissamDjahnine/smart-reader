@@ -3,27 +3,22 @@ import path from 'path';
 
 const fixturePath = path.resolve(process.cwd(), 'tests/fixtures/fixture.epub');
 
-async function openCollectionsModal(page) {
+async function openCollectionsPage(page) {
   await page.getByTestId('library-collections-trigger').click();
-  await expect(page.getByTestId('collections-modal')).toBeVisible();
+  await expect(page.getByTestId('collections-board')).toBeVisible();
+}
+
+async function openLibraryPage(page) {
+  await page.getByTestId('sidebar-my-library').click();
+  await expect(page.getByRole('heading', { name: 'My Library' })).toBeVisible();
 }
 
 async function createShelf(page, name) {
-  await openCollectionsModal(page);
+  await openCollectionsPage(page);
   await page.getByTestId('collection-add-toggle').click();
   await page.getByTestId('collection-create-input').fill(name);
   await page.getByTestId('collection-create-button').click();
   await expect(page.getByTestId('collection-item-name').filter({ hasText: name })).toBeVisible();
-  await page.getByTestId('collections-modal-close').click();
-  await expect(page.getByTestId('collections-modal')).toHaveCount(0);
-}
-
-async function showCollection(page, name) {
-  await openCollectionsModal(page);
-  const row = page.getByTestId('collection-item').filter({ hasText: name }).first();
-  await expect(row).toBeVisible();
-  await row.getByTestId('collection-show-button').click();
-  await expect(page.getByTestId('collections-modal')).toHaveCount(0);
 }
 
 async function assignFirstBookToShelf(page, name) {
@@ -86,10 +81,14 @@ test('collections create and assign flow works', async ({ page }) => {
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
 
   await createShelf(page, 'Classics');
+  await openLibraryPage(page);
   await assignFirstBookToShelf(page, 'Classics');
+  await openCollectionsPage(page);
+  await expect(page.getByTestId('collection-column').filter({ hasText: 'Classics' })).toBeVisible();
+  await expect(page.getByTestId('collection-column-book')).toHaveCount(1);
 });
 
-test('collection show opens collection view and back returns library', async ({ page }) => {
+test('collections page renders Jira-style columns with books inside each collection', async ({ page }) => {
   await page.addInitScript(() => {
     indexedDB.deleteDatabase('SmartReaderLib');
     localStorage.clear();
@@ -100,18 +99,16 @@ test('collection show opens collection view and back returns library', async ({ 
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
 
   await createShelf(page, 'Shelf One');
+  await createShelf(page, 'Shelf Two');
+  await openLibraryPage(page);
   await assignFirstBookToShelf(page, 'Shelf One');
-  await showCollection(page, 'Shelf One');
+  await openCollectionsPage(page);
 
-  await expect(page.getByRole('heading', { name: 'Shelf One' })).toBeVisible();
-  await expect(page.getByTestId('collection-view-back-button')).toBeVisible();
-  await expect(page.getByTestId('library-reset-filters-button')).toHaveCount(0);
-  await expect(page.getByTestId('library-empty-reset-filters-button')).toHaveCount(0);
-  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
-
-  await page.getByTestId('collection-view-back-button').click();
-  await expect(page.getByRole('heading', { name: 'My Library' })).toBeVisible();
-  await expect(page.getByTestId('collection-view-back-button')).toHaveCount(0);
+  await expect(page.getByTestId('collection-column')).toHaveCount(2);
+  await expect(page.getByTestId('collection-column').filter({ hasText: 'Shelf One' })).toBeVisible();
+  await expect(page.getByTestId('collection-column').filter({ hasText: 'Shelf Two' })).toBeVisible();
+  await expect(page.getByTestId('collection-column').filter({ hasText: 'Shelf One' }).getByTestId('collection-column-book')).toHaveCount(1);
+  await expect(page.getByTestId('collection-column').filter({ hasText: 'Shelf Two' }).getByText('No books in this collection yet.')).toBeVisible();
 });
 
 test('collection rename updates filter options and chips', async ({ page }) => {
@@ -125,20 +122,16 @@ test('collection rename updates filter options and chips', async ({ page }) => {
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
 
   await createShelf(page, 'Old Shelf');
+  await openLibraryPage(page);
   await assignFirstBookToShelf(page, 'Old Shelf');
 
-  await openCollectionsModal(page);
+  await openCollectionsPage(page);
   await page.getByTestId('collection-rename-button').first().click();
   await page.getByTestId('collection-rename-input').first().fill('New Shelf');
   await page.getByTestId('collection-rename-save').first().click();
   await expect(page.getByTestId('collection-item-name').filter({ hasText: 'New Shelf' })).toBeVisible();
   await expect(page.getByTestId('collection-item-name').filter({ hasText: 'Old Shelf' })).toHaveCount(0);
-  await page.getByTestId('collections-modal-close').click();
-
-  await showCollection(page, 'New Shelf');
-  await expect(page.getByRole('heading', { name: 'New Shelf' })).toBeVisible();
-  await expect(page.getByTestId('collection-view-back-button')).toBeVisible();
-  await page.getByTestId('collection-view-back-button').click();
+  await openLibraryPage(page);
   await expect(page.getByTestId('book-collection-chip').filter({ hasText: 'New Shelf' }).first()).toBeVisible();
 });
 
@@ -153,17 +146,13 @@ test('collection delete clears assignment and resets active collection filter', 
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
 
   await createShelf(page, 'Delete Me');
+  await openLibraryPage(page);
   await assignFirstBookToShelf(page, 'Delete Me');
-  await showCollection(page, 'Delete Me');
-  await expect(page.getByRole('heading', { name: 'Delete Me' })).toBeVisible();
 
-  await openCollectionsModal(page);
+  await openCollectionsPage(page);
   await page.getByTestId('collection-delete-button').first().click();
-  await expect(page.getByTestId('collection-item').filter({ hasText: 'Delete Me' })).toHaveCount(0);
-  await page.getByTestId('collections-modal-close').click();
-
-  await expect(page.getByRole('heading', { name: 'My Library' })).toBeVisible();
-  await expect(page.getByTestId('collection-view-back-button')).toHaveCount(0);
+  await expect(page.getByTestId('collection-item-name').filter({ hasText: 'Delete Me' })).toHaveCount(0);
+  await openLibraryPage(page);
   await expect(page.getByTestId('book-collection-chip').filter({ hasText: 'Delete Me' })).toHaveCount(0);
 });
 
@@ -179,13 +168,14 @@ test('collections and assignments persist after reload', async ({ page }) => {
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
 
   await createShelf(page, 'Persistent Shelf');
+  await openLibraryPage(page);
   await assignFirstBookToShelf(page, 'Persistent Shelf');
 
   await page.reload();
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
-  await openCollectionsModal(page);
+  await openCollectionsPage(page);
   await expect(page.getByTestId('collection-item-name').filter({ hasText: 'Persistent Shelf' })).toBeVisible();
-  await page.getByTestId('collections-modal-close').click();
+  await openLibraryPage(page);
   await expect(page.getByTestId('book-collection-chip').filter({ hasText: 'Persistent Shelf' }).first()).toBeVisible();
 });
 

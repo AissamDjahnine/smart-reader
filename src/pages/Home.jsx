@@ -41,7 +41,7 @@ import LibraryAccountSection from './library/LibraryAccountSection';
 import { LibraryWorkspaceSidebar, LibraryWorkspaceMobileNav } from './library/LibraryWorkspaceNav';
 import LibraryNotesCenterPanel from './library/LibraryNotesCenterPanel';
 import LibraryHighlightsCenterPanel from './library/LibraryHighlightsCenterPanel';
-import LibraryCollectionsModal from './library/LibraryCollectionsModal';
+import LibraryCollectionsBoard from './library/LibraryCollectionsBoard';
 import LibraryGlobalSearchPanel from './library/LibraryGlobalSearchPanel';
 import LibraryToolbarSection from './library/LibraryToolbarSection';
 
@@ -244,7 +244,6 @@ export default function Home() {
   const [noteEditorValue, setNoteEditorValue] = useState("");
   const [isSavingNote, setIsSavingNote] = useState(false);
   const [collections, setCollections] = useState([]);
-  const [showCollectionsModal, setShowCollectionsModal] = useState(false);
   const [collectionNameDraft, setCollectionNameDraft] = useState("");
   const [collectionColorDraft, setCollectionColorDraft] = useState(COLLECTION_COLOR_OPTIONS[0]);
   const [editingCollectionId, setEditingCollectionId] = useState("");
@@ -252,7 +251,6 @@ export default function Home() {
   const [collectionError, setCollectionError] = useState("");
   const [collectionPickerBookId, setCollectionPickerBookId] = useState("");
   const [showCreateCollectionForm, setShowCreateCollectionForm] = useState(false);
-  const [collectionViewId, setCollectionViewId] = useState("");
   const [contentSearchMatches, setContentSearchMatches] = useState({});
   const [isContentSearching, setIsContentSearching] = useState(false);
   const contentSearchTokenRef = useRef(0);
@@ -456,15 +454,19 @@ export default function Home() {
     setCollectionPickerBookId((current) => (current === id ? "" : id));
   };
 
-  const handleToggleBookCollection = async (e, bookId, collectionId) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const toggleBookCollectionMembership = async (bookId, collectionId) => {
     try {
       await toggleBookCollection(bookId, collectionId);
       await loadLibrary();
     } catch (err) {
       console.error(err);
     }
+  };
+
+  const handleToggleBookCollection = async (e, bookId, collectionId) => {
+    e.preventDefault();
+    e.stopPropagation();
+    await toggleBookCollectionMembership(bookId, collectionId);
   };
 
   const handleCreateCollection = async () => {
@@ -510,23 +512,7 @@ export default function Home() {
     if (collectionFilter === collectionId) {
       setCollectionFilter("all");
     }
-    if (collectionViewId === collectionId) {
-      setCollectionViewId("");
-    }
     await loadLibrary();
-  };
-
-  const openCollectionView = (collectionId) => {
-    setCollectionFilter(collectionId);
-    setCollectionViewId(collectionId);
-    setStatusFilter("all");
-    setShowCollectionsModal(false);
-    setShowCreateCollectionForm(false);
-  };
-
-  const exitCollectionView = () => {
-    setCollectionViewId("");
-    setCollectionFilter("all");
   };
 
   const handleToggleNotesCenter = () => {
@@ -562,37 +548,31 @@ export default function Home() {
     if (section === "library") {
       setIsNotesCenterOpen(false);
       setIsHighlightsCenterOpen(false);
-      setShowCollectionsModal(false);
       return;
     }
     if (section === "collections") {
-      setShowCollectionsModal(true);
       setCollectionError("");
-      setShowCreateCollectionForm(false);
       setIsNotesCenterOpen(false);
       setIsHighlightsCenterOpen(false);
+      setStatusFilter("all");
       return;
     }
     if (section === "notes") {
       setIsNotesCenterOpen(true);
       setIsHighlightsCenterOpen(false);
-      setShowCollectionsModal(false);
       return;
     }
     if (section === "highlights") {
       setIsHighlightsCenterOpen(true);
       setIsNotesCenterOpen(false);
-      setShowCollectionsModal(false);
       return;
     }
     if (section === "account") {
       setStatusFilter("all");
-      setCollectionViewId("");
       setCollectionFilter("all");
     }
     setIsNotesCenterOpen(false);
     setIsHighlightsCenterOpen(false);
-    setShowCollectionsModal(false);
   };
 
   const handleAccountFieldChange = (field, value) => {
@@ -807,10 +787,6 @@ export default function Home() {
   const activeBooks = books.filter((book) => !book.isDeleted);
   const trashedBooksCount = books.length - activeBooks.length;
   const isTrashView = statusFilter === "trash";
-  const activeCollectionView = collectionViewId
-    ? collections.find((collection) => collection.id === collectionViewId) || null
-    : null;
-  const isCollectionView = Boolean(activeCollectionView) && !isTrashView;
   const quickFilterStats = [
     {
       key: "to-read",
@@ -1395,7 +1371,6 @@ export default function Home() {
     setSearchQuery("");
     setStatusFilter("all");
     setCollectionFilter("all");
-    setCollectionViewId("");
     setFlagFilters([]);
     setSortBy("last-read-desc");
   };
@@ -1406,13 +1381,11 @@ export default function Home() {
     collectionFilter !== "all" ||
     flagFilters.length > 0 ||
     sortBy !== "last-read-desc";
-  const canShowResetFilters = hasActiveLibraryFilters && !isCollectionView;
+  const canShowResetFilters = hasActiveLibraryFilters;
   const isDarkLibraryTheme = libraryTheme === "dark";
   const isAccountSection = librarySection === "account";
-  const isNotesSection = librarySection === "notes";
-  const isHighlightsSection = librarySection === "highlights";
-  const isCenterSection = isNotesSection || isHighlightsSection;
-  const shouldShowLibraryHomeContent = !isCenterSection;
+  const isCollectionsPage = librarySection === "collections";
+  const shouldShowLibraryHomeContent = librarySection === "library";
   const shouldShowContinueReading = showContinueReading && librarySection === "library";
 
   return (
@@ -1433,17 +1406,6 @@ export default function Home() {
         />
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10">
           <div>
-            {isCollectionView && !isAccountSection && (
-              <button
-                type="button"
-                data-testid="collection-view-back-button"
-                onClick={exitCollectionView}
-                className="mb-3 inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
-              >
-                <ArrowLeft size={13} />
-                <span>Back to Library</span>
-              </button>
-            )}
             {isAccountSection ? (
               <>
                 <h1 className={`text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
@@ -1456,71 +1418,75 @@ export default function Home() {
             ) : (
               <>
                 <h1 className="text-4xl font-extrabold text-gray-900 tracking-tight">
-                  {isCollectionView ? activeCollectionView?.name || "Collection" : "My Library"}
+                  {isCollectionsPage ? "My Collections" : "My Library"}
                 </h1>
                 <p className="text-gray-500 mt-1">
-                  {isCollectionView
-                    ? `Collection view · ${sortedBooks.length} book${sortedBooks.length === 1 ? "" : "s"}`
+                  {isCollectionsPage
+                    ? `${collections.length} collection${collections.length === 1 ? "" : "s"}`
                     : isTrashView
                     ? `Trash has ${sortedBooks.length} books`
                     : sortedBooks.length === activeBooks.length
                     ? `You have ${activeBooks.length} books`
                     : `Showing ${sortedBooks.length} of ${activeBooks.length} books`}
-                  {!isTrashView && trashedBooksCount > 0 ? ` · ${trashedBooksCount} in trash` : ""}
+                  {!isTrashView && !isCollectionsPage && trashedBooksCount > 0 ? ` · ${trashedBooksCount} in trash` : ""}
                 </p>
-                <div
-                  data-testid="library-streak-badge"
-                  className={`mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${
-                    streakCount > 0
-                      ? 'border-orange-200 bg-orange-50 text-orange-700'
-                      : 'border-gray-200 bg-white text-gray-500'
-                  }`}
-                  title={streakCount > 0 && !readToday ? 'Read today to keep your streak alive.' : 'Daily reading streak'}
-                >
-                  <Flame size={14} className={streakCount > 0 ? 'text-orange-500' : 'text-gray-400'} />
-                  <span>{streakCount > 0 ? `${streakCount}-day streak` : 'No streak yet'}</span>
-                </div>
-
-                <div data-testid="library-quick-filters" className="mt-3 flex flex-wrap gap-2">
-                  {quickFilterStats.map((stat) => {
-                    const isQuickActive =
-                      stat.key === "favorites"
-                        ? isFlagFilterActive("favorites")
-                        : statusFilter === stat.key;
-                    return (
-                    <button
-                      key={stat.key}
-                      type="button"
-                      data-testid={`library-quick-filter-${stat.key}`}
-                      aria-pressed={isQuickActive}
-                      onClick={() => {
-                        if (stat.key === "favorites") {
-                          if (statusFilter === "trash") setStatusFilter("all");
-                          toggleFlagFilter("favorites");
-                          return;
-                        }
-                        setStatusFilter(stat.key);
-                      }}
-                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
-                        isQuickActive
-                          ? "border-blue-200 bg-blue-50 text-blue-700"
-                          : "border-gray-200 bg-white text-gray-600 hover:border-blue-200 hover:text-blue-700"
+                {!isCollectionsPage && (
+                  <>
+                    <div
+                      data-testid="library-streak-badge"
+                      className={`mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${
+                        streakCount > 0
+                          ? 'border-orange-200 bg-orange-50 text-orange-700'
+                          : 'border-gray-200 bg-white text-gray-500'
                       }`}
-                      title={`Show ${stat.label.toLowerCase()} books`}
+                      title={streakCount > 0 && !readToday ? 'Read today to keep your streak alive.' : 'Daily reading streak'}
                     >
-                      <span>{stat.label}</span>
-                      <span
-                        data-testid={`library-quick-filter-${stat.key}-count`}
-                        className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold ${
-                          isQuickActive ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
-                        }`}
-                      >
-                        {stat.count}
-                      </span>
-                    </button>
-                    );
-                  })}
-                </div>
+                      <Flame size={14} className={streakCount > 0 ? 'text-orange-500' : 'text-gray-400'} />
+                      <span>{streakCount > 0 ? `${streakCount}-day streak` : 'No streak yet'}</span>
+                    </div>
+
+                    <div data-testid="library-quick-filters" className="mt-3 flex flex-wrap gap-2">
+                      {quickFilterStats.map((stat) => {
+                        const isQuickActive =
+                          stat.key === "favorites"
+                            ? isFlagFilterActive("favorites")
+                            : statusFilter === stat.key;
+                        return (
+                        <button
+                          key={stat.key}
+                          type="button"
+                          data-testid={`library-quick-filter-${stat.key}`}
+                          aria-pressed={isQuickActive}
+                          onClick={() => {
+                            if (stat.key === "favorites") {
+                              if (statusFilter === "trash") setStatusFilter("all");
+                              toggleFlagFilter("favorites");
+                              return;
+                            }
+                            setStatusFilter(stat.key);
+                          }}
+                          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                            isQuickActive
+                              ? "border-blue-200 bg-blue-50 text-blue-700"
+                              : "border-gray-200 bg-white text-gray-600 hover:border-blue-200 hover:text-blue-700"
+                          }`}
+                          title={`Show ${stat.label.toLowerCase()} books`}
+                        >
+                          <span>{stat.label}</span>
+                          <span
+                            data-testid={`library-quick-filter-${stat.key}-count`}
+                            className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold ${
+                              isQuickActive ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
+                            }`}
+                          >
+                            {stat.count}
+                          </span>
+                        </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -1547,7 +1513,7 @@ export default function Home() {
               type="button"
               data-testid="trash-toggle-button"
               onClick={() => {
-                setCollectionViewId("");
+                setLibrarySection("library");
                 setCollectionFilter("all");
                 setStatusFilter((current) => (current === "trash" ? "all" : "trash"));
               }}
@@ -1691,47 +1657,33 @@ export default function Home() {
             onOpenReader={handleOpenHighlightInReader}
           />
         )}
-
-        {showCollectionsModal && !isTrashView && (
-          <LibraryCollectionsModal
+        {isCollectionsPage && !isTrashView && (
+          <LibraryCollectionsBoard
+            collections={collections}
+            books={books}
             collectionError={collectionError}
             showCreateCollectionForm={showCreateCollectionForm}
             collectionNameDraft={collectionNameDraft}
             collectionColorDraft={collectionColorDraft}
             collectionColorOptions={COLLECTION_COLOR_OPTIONS}
-            collectionFilter={collectionFilter}
-            isCollectionView={isCollectionView}
-            collections={collections}
-            books={books}
             editingCollectionId={editingCollectionId}
             editingCollectionName={editingCollectionName}
-            collectionViewId={collectionViewId}
-            onBackdropClose={() => {
-              setShowCollectionsModal(false);
-              cancelCollectionRename();
-            }}
             onToggleCreateForm={() => {
               setCollectionError("");
               setShowCreateCollectionForm((current) => !current);
-            }}
-            onClose={() => {
-              setShowCollectionsModal(false);
               cancelCollectionRename();
-              setShowCreateCollectionForm(false);
             }}
             onCollectionNameChange={setCollectionNameDraft}
             onCollectionColorChange={setCollectionColorDraft}
             onCreateCollection={handleCreateCollection}
-            onSelectAllCollections={() => {
-              setCollectionFilter("all");
-              setCollectionViewId("");
-            }}
             onCollectionRenameStart={startCollectionRename}
             onCollectionRenameInputChange={setEditingCollectionName}
             onCollectionRenameSave={handleSaveCollectionRename}
             onCollectionRenameCancel={cancelCollectionRename}
             onCollectionDelete={handleDeleteCollection}
-            onCollectionShow={openCollectionView}
+            onOpenBook={handleOpenBook}
+            onRemoveFromCollection={toggleBookCollectionMembership}
+            buildReaderPath={buildReaderPath}
           />
         )}
         {shouldShowLibraryHomeContent && globalSearchQuery && !isTrashView && (
@@ -1904,7 +1856,8 @@ export default function Home() {
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              setShowCollectionsModal(true);
+                              setLibrarySection("collections");
+                              setCollectionPickerBookId("");
                               setCollectionError("");
                             }}
                             className="text-[10px] font-bold text-blue-600 hover:text-blue-700"
@@ -2137,7 +2090,8 @@ export default function Home() {
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                setShowCollectionsModal(true);
+                                setLibrarySection("collections");
+                                setCollectionPickerBookId("");
                                 setCollectionError("");
                               }}
                               className="text-[10px] font-bold text-blue-600 hover:text-blue-700"
