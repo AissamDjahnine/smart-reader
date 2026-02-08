@@ -19,6 +19,7 @@ Smart Reader is built around real reading behavior:
 ### Library You Can Actually Manage
 
 - Upload EPUB books in seconds
+- Upload feedback: loading popup with a green progress bar, followed by a yellow “Book loaded and added” toast
 - Clean cover-based library (grid or list)
 - Smart metadata (author, language, estimated pages, genre when available)
 - Clean inline metadata rows on cards (lightweight language/pages display)
