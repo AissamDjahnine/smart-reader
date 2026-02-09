@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   addBook,
+  readEpubMetadata,
   getAllBooks,
   deleteBook,
   toggleFavorite,
@@ -220,6 +221,7 @@ export default function Home() {
   const [uploadStage, setUploadStage] = useState("idle");
   const [showUploadSuccess, setShowUploadSuccess] = useState(false);
   const [recentlyAddedBookId, setRecentlyAddedBookId] = useState("");
+  const [duplicatePrompt, setDuplicatePrompt] = useState(null);
   
   // Search, filter & sort states
   const [searchQuery, setSearchQuery] = useState("");
@@ -673,42 +675,95 @@ export default function Home() {
     navigate(buildReaderPath(entry.bookId, "highlights", { cfi: entry.cfiRange || "" }));
   };
 
+  const normalizeDuplicateValue = (value) => (value || "").toString().trim().toLowerCase();
+
+  const findDuplicateBooks = (title, author) => {
+    const normTitle = normalizeDuplicateValue(title);
+    const normAuthor = normalizeDuplicateValue(author);
+    return books.filter((book) => {
+      if (book.isDeleted) return false;
+      return normalizeDuplicateValue(book.title) === normTitle && normalizeDuplicateValue(book.author) === normAuthor;
+    });
+  };
+
+  const buildDuplicateTitle = (baseTitle) => {
+    const existingTitles = new Set(
+      books
+        .filter((book) => !book.isDeleted)
+        .map((book) => normalizeDuplicateValue(book.title))
+    );
+    let idx = 1;
+    let candidate = `${baseTitle} (Duplicate ${idx})`;
+    while (existingTitles.has(normalizeDuplicateValue(candidate))) {
+      idx += 1;
+      candidate = `${baseTitle} (Duplicate ${idx})`;
+    }
+    return candidate;
+  };
+
+  const completeAddBook = async (file, preparedMetadata, options = {}) => {
+    setIsUploading(true);
+    startUploadProgress();
+    try {
+      const newBook = await addBook(file, {
+        preparedMetadata,
+        titleOverride: options.titleOverride
+      });
+      await loadLibrary();
+      stopUploadProgress();
+      setUploadProgress(100);
+      setUploadStage("done");
+      setShowUploadSuccess(true);
+      if (newBook?.id) {
+        setRecentlyAddedBookId(newBook.id);
+        if (recentHighlightTimerRef.current) {
+          clearTimeout(recentHighlightTimerRef.current);
+        }
+        recentHighlightTimerRef.current = setTimeout(() => {
+          setRecentlyAddedBookId("");
+        }, 10000);
+      }
+      if (uploadSuccessTimerRef.current) {
+        clearTimeout(uploadSuccessTimerRef.current);
+      }
+      uploadSuccessTimerRef.current = setTimeout(() => {
+        setShowUploadSuccess(false);
+        setUploadStage("idle");
+        setUploadProgress(0);
+      }, 2800);
+    } catch (err) {
+      console.error(err);
+      stopUploadProgress();
+      setUploadStage("idle");
+      setUploadProgress(0);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   const handleFileUpload = async (event) => {
     const file = event.target.files[0];
     if (file && file.type === "application/epub+zip") {
-      setIsUploading(true);
-      startUploadProgress();
       try {
-        const newBook = await addBook(file);
-        await loadLibrary();
-        stopUploadProgress();
-        setUploadProgress(100);
-        setUploadStage("done");
-        setShowUploadSuccess(true);
-        if (newBook?.id) {
-          setRecentlyAddedBookId(newBook.id);
-          if (recentHighlightTimerRef.current) {
-            clearTimeout(recentHighlightTimerRef.current);
-          }
-          recentHighlightTimerRef.current = setTimeout(() => {
-            setRecentlyAddedBookId("");
-          }, 10000);
+        const prepared = await readEpubMetadata(file);
+        const title = prepared?.metadata?.title || file.name.replace('.epub', '');
+        const author = prepared?.metadata?.creator || "Unknown Author";
+        const duplicates = findDuplicateBooks(title, author);
+        if (duplicates.length > 0) {
+          setDuplicatePrompt({
+            file,
+            preparedMetadata: prepared,
+            title,
+            author,
+            duplicates
+          });
+          event.target.value = "";
+          return;
         }
-        if (uploadSuccessTimerRef.current) {
-          clearTimeout(uploadSuccessTimerRef.current);
-        }
-        uploadSuccessTimerRef.current = setTimeout(() => {
-          setShowUploadSuccess(false);
-          setUploadStage("idle");
-          setUploadProgress(0);
-        }, 2800);
+        await completeAddBook(file, prepared);
       } catch (err) {
         console.error(err);
-        stopUploadProgress();
-        setUploadStage("idle");
-        setUploadProgress(0);
       } finally {
-        setIsUploading(false);
         event.target.value = "";
       }
     }
@@ -2296,6 +2351,66 @@ export default function Home() {
           <div className="fixed bottom-24 right-6 z-50">
             <div className="rounded-full border border-amber-300 px-4 py-2 text-xs font-semibold text-amber-700 bg-amber-50/40 backdrop-blur-sm shadow-sm">
               Book loaded and added
+            </div>
+          </div>
+        )}
+        {duplicatePrompt && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div
+              className="absolute inset-0 bg-black/30"
+              onClick={() => setDuplicatePrompt(null)}
+            />
+            <div className="relative w-full max-w-lg rounded-3xl border border-gray-200 bg-white p-5 shadow-2xl">
+              <h3 className="text-lg font-bold text-gray-900">Duplicate book detected</h3>
+              <p className="mt-1 text-sm text-gray-500">
+                We found a book with the same title and author.
+              </p>
+              <div className="mt-3 rounded-2xl border border-gray-200 bg-gray-50 p-3">
+                {duplicatePrompt.duplicates.map((book) => (
+                  <div key={`dup-${book.id}`} className="text-sm font-semibold text-gray-800">
+                    {book.title} · <span className="text-gray-500">{book.author}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">
+                Replace will remove all highlights, notes, and bookmarks for the existing copy.
+              </div>
+              <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <button
+                  type="button"
+                  data-testid="duplicate-ignore"
+                  onClick={() => setDuplicatePrompt(null)}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-600 hover:border-gray-300"
+                >
+                  Ignore
+                </button>
+                <button
+                  type="button"
+                  data-testid="duplicate-replace"
+                  onClick={async () => {
+                    const prompt = duplicatePrompt;
+                    setDuplicatePrompt(null);
+                    await Promise.all(prompt.duplicates.map((book) => deleteBook(book.id)));
+                    await completeAddBook(prompt.file, prompt.preparedMetadata);
+                  }}
+                  className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-100"
+                >
+                  Replace
+                </button>
+                <button
+                  type="button"
+                  data-testid="duplicate-keep-both"
+                  onClick={async () => {
+                    const prompt = duplicatePrompt;
+                    setDuplicatePrompt(null);
+                    const duplicateTitle = buildDuplicateTitle(prompt.title);
+                    await completeAddBook(prompt.file, prompt.preparedMetadata, { titleOverride: duplicateTitle });
+                  }}
+                  className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+                >
+                  Keep Both
+                </button>
+              </div>
             </div>
           </div>
         )}

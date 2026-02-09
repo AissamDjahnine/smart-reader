@@ -117,6 +117,38 @@ const estimatePageCount = async (book) => {
   return null;
 };
 
+export const readEpubMetadata = async (file) => {
+  const book = ePub(file);
+  try {
+    const metadata = await book.loaded.metadata;
+    const estimatedPages = await estimatePageCount(book);
+    const genre = extractGenre(metadata);
+    const rawCoverUrl = await book.coverUrl();
+
+    let finalCover = null;
+    if (rawCoverUrl) {
+      try {
+        finalCover = await toBase64(rawCoverUrl);
+      } catch (err) {
+        console.error("Cover conversion failed", err);
+      }
+    }
+
+    return {
+      metadata,
+      estimatedPages,
+      genre,
+      cover: finalCover
+    };
+  } finally {
+    try {
+      book.destroy();
+    } catch (err) {
+      console.error(err);
+    }
+  }
+};
+
 const needsMetadataBackfill = (book) => {
   if (!book) return false;
   if (!book.data) return false;
@@ -128,26 +160,19 @@ const needsMetadataBackfill = (book) => {
   return missingLanguage || missingPages || missingGenreField;
 };
 
-export const addBook = async (file) => {
+export const addBook = async (file, options = {}) => {
   const id = Date.now().toString();
-  const book = ePub(file);
-  const metadata = await book.loaded.metadata;
-  const estimatedPages = await estimatePageCount(book);
-  const genre = extractGenre(metadata);
-  const rawCoverUrl = await book.coverUrl();
-  
-  let finalCover = null;
-  if (rawCoverUrl) {
-    try {
-      finalCover = await toBase64(rawCoverUrl);
-    } catch (err) {
-      console.error("Cover conversion failed", err);
-    }
-  }
+  const prepared = options.preparedMetadata || (await readEpubMetadata(file));
+  const metadata = prepared?.metadata || {};
+  const estimatedPages = prepared?.estimatedPages || null;
+  const genre = prepared?.genre || "";
+  const finalCover = prepared?.cover || null;
+  const baseTitle = metadata.title || file.name.replace('.epub', '');
+  const bookTitle = options.titleOverride || baseTitle;
 
   const newBook = {
     id,
-    title: metadata.title || file.name.replace('.epub', ''),
+    title: bookTitle,
     author: metadata.creator || "Unknown Author",
     language: metadata.language || "",
     genre: genre || "",
