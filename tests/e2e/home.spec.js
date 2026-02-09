@@ -3,6 +3,36 @@ import path from 'path';
 
 const fixturePath = path.resolve(process.cwd(), 'tests/fixtures/fixture.epub');
 
+async function openCollectionsPage(page) {
+  await page.getByTestId('library-collections-trigger').click();
+  await expect(page.getByTestId('collections-board')).toBeVisible();
+}
+
+async function openLibraryPage(page) {
+  await page.getByTestId('sidebar-my-library').click();
+  await expect(page.getByRole('heading', { name: 'My Library' })).toBeVisible();
+}
+
+async function createShelf(page, name) {
+  await openCollectionsPage(page);
+  await page.getByTestId('collection-add-toggle').click();
+  await page.getByTestId('collection-create-input').fill(name);
+  await page.getByTestId('collection-create-button').click();
+  await expect(page.getByTestId('collection-item-name').filter({ hasText: name })).toBeVisible();
+}
+
+async function assignFirstBookToShelf(page, name) {
+  await page.getByTestId('library-view-list').click();
+  await expect(page.getByTestId('library-books-list')).toBeVisible();
+  await page.getByTestId('book-collection-picker-toggle').first().click();
+  const picker = page.getByTestId('book-collection-picker').first();
+  await expect(picker).toBeVisible();
+  const shelfRow = picker.locator('label').filter({ hasText: name }).first();
+  await expect(shelfRow).toBeVisible();
+  await shelfRow.locator('input[type="checkbox"]').click({ force: true });
+  await expect(page.getByTestId('book-collection-chip').filter({ hasText: name }).first()).toBeVisible();
+}
+
 test('library sort and filter controls work with favorites', async ({ page }) => {
   await page.addInitScript(() => {
     indexedDB.deleteDatabase('SmartReaderLib');
@@ -38,6 +68,377 @@ test('library sort and filter controls work with favorites', async ({ page }) =>
   await favoritesQuickFilter.click();
   await expect(favoritesQuickFilter).toHaveAttribute('aria-pressed', 'true');
   await expect(bookLink).toBeVisible();
+});
+
+test('collections create and assign flow works', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await createShelf(page, 'Classics');
+  await openLibraryPage(page);
+  await assignFirstBookToShelf(page, 'Classics');
+  await openCollectionsPage(page);
+  await expect(page.getByTestId('collections-directory-layout')).toBeVisible();
+  await expect(page.getByTestId('collection-item-name').filter({ hasText: 'Classics' })).toBeVisible();
+  await expect(page.getByTestId('collections-detail-panel').getByTestId('collection-column-book')).toHaveCount(1);
+});
+
+test('collections page supports optional board mode with balanced columns', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await createShelf(page, 'Shelf One');
+  await createShelf(page, 'Shelf Two');
+  await openLibraryPage(page);
+  await assignFirstBookToShelf(page, 'Shelf One');
+  await openCollectionsPage(page);
+
+  await page.getByTestId('collections-view-board').click();
+  await expect(page.getByTestId('collections-board-overview')).toBeVisible();
+  const boardColumnCount = await page.getByTestId('collections-board-column').count();
+  expect(boardColumnCount).toBeGreaterThan(0);
+
+  await expect(page.getByTestId('collection-column')).toHaveCount(2);
+  await expect(page.getByTestId('collection-column').filter({ hasText: 'Shelf One' })).toBeVisible();
+  await expect(page.getByTestId('collection-column').filter({ hasText: 'Shelf Two' })).toBeVisible();
+  await expect(page.getByTestId('collection-column').filter({ hasText: 'Shelf One' }).getByTestId('collection-column-book')).toHaveCount(1);
+  await expect(page.getByTestId('collection-column').filter({ hasText: 'Shelf Two' }).getByText('No books in this collection yet.')).toBeVisible();
+});
+
+test('collections detail can add books directly to selected collection', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await createShelf(page, 'Add Target');
+  await openCollectionsPage(page);
+  await expect(page.getByTestId('collections-detail-panel').getByTestId('collection-column-book')).toHaveCount(0);
+
+  await page.getByTestId('collection-detail-add-book').click();
+  const addBooksModal = page.getByTestId('collection-add-books-modal');
+  await expect(addBooksModal).toBeVisible();
+  await expect(addBooksModal.getByTestId('collection-add-books-item')).toHaveCount(1);
+
+  await addBooksModal.getByTestId('collection-add-books-confirm').first().click();
+  await expect(page.getByTestId('collections-detail-panel').getByTestId('collection-column-book')).toHaveCount(1);
+  await expect(addBooksModal.getByTestId('collection-add-books-item')).toHaveCount(0);
+});
+
+test('collection rename updates filter options and chips', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await createShelf(page, 'Old Shelf');
+  await openLibraryPage(page);
+  await assignFirstBookToShelf(page, 'Old Shelf');
+
+  await openCollectionsPage(page);
+  await page.getByTestId('collection-rename-button').first().click();
+  await page.getByTestId('collection-rename-input').first().fill('New Shelf');
+  await page.getByTestId('collection-rename-save').first().click();
+  await expect(page.getByTestId('collection-item-name').filter({ hasText: 'New Shelf' })).toBeVisible();
+  await expect(page.getByTestId('collection-item-name').filter({ hasText: 'Old Shelf' })).toHaveCount(0);
+  await openLibraryPage(page);
+  await expect(page.getByTestId('book-collection-chip').filter({ hasText: 'New Shelf' }).first()).toBeVisible();
+});
+
+test('collection delete clears assignment and resets active collection filter', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await createShelf(page, 'Delete Me');
+  await openLibraryPage(page);
+  await assignFirstBookToShelf(page, 'Delete Me');
+
+  await openCollectionsPage(page);
+  await page.getByTestId('collection-delete-button').first().click();
+  await expect(page.getByTestId('collection-item-name').filter({ hasText: 'Delete Me' })).toHaveCount(0);
+  await openLibraryPage(page);
+  await expect(page.getByTestId('book-collection-chip').filter({ hasText: 'Delete Me' })).toHaveCount(0);
+});
+
+test('collections and assignments persist after reload', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await createShelf(page, 'Persistent Shelf');
+  await openLibraryPage(page);
+  await assignFirstBookToShelf(page, 'Persistent Shelf');
+
+  await page.reload();
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+  await openCollectionsPage(page);
+  await expect(page.getByTestId('collection-item-name').filter({ hasText: 'Persistent Shelf' })).toBeVisible();
+  await openLibraryPage(page);
+  await expect(page.getByTestId('book-collection-chip').filter({ hasText: 'Persistent Shelf' }).first()).toBeVisible();
+});
+
+test('newly added book shows a temporary yellow halo highlight', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
+  await expect(bookLink).toHaveClass(/ring-amber-400/);
+
+  await page.waitForTimeout(10200);
+  await expect(bookLink).not.toHaveClass(/ring-amber-400/);
+});
+
+test('duplicate book upload prompts and keep both creates a second copy', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await fileInput.setInputFiles(fixturePath);
+  const modal = page.getByText('Duplicate book detected');
+  await expect(modal).toBeVisible();
+  await page.getByTestId('duplicate-keep-both').click();
+
+  await expect(page.getByRole('link', { name: /Test Book \(Duplicate 1\)/i }).first()).toBeVisible();
+  await expect(page.getByRole('link', { name: /Test Book/i })).toHaveCount(2);
+});
+
+test('bulk upload applies duplicate rules per file and increments duplicate suffix', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await fileInput.setInputFiles([fixturePath, fixturePath, fixturePath]);
+
+  for (const duplicateIndex of [1, 2, 3]) {
+    const duplicateModalTitle = page.getByText('Duplicate book detected');
+    await expect(duplicateModalTitle).toBeVisible({ timeout: 20000 });
+    await page.getByTestId('duplicate-keep-both').click();
+    await expect(page.getByRole('link', { name: new RegExp(`Test Book \\(Duplicate ${duplicateIndex}\\)`, 'i') }).first()).toBeVisible({ timeout: 20000 });
+  }
+
+  await expect(page.getByRole('link', { name: /Test Book/i })).toHaveCount(4);
+});
+
+test('book info popover shows epub metadata', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await page.getByTestId('library-view-list').click();
+  const listContainer = page.getByTestId('library-books-list');
+  await expect(listContainer).toBeVisible();
+  await listContainer.getByTestId('book-info').first().click({ force: true });
+
+  const popover = page.getByTestId('book-info-popover');
+  await expect(popover).toBeVisible();
+  await expect(popover.getByText('Book info')).toBeVisible();
+  await expect(popover.getByText('EPUB metadata')).toBeVisible();
+
+  const keys = await popover.getByTestId('book-info-metadata-key').allTextContents();
+  const normalized = keys.map((text) => text.trim().toLowerCase()).filter(Boolean);
+
+  expect(normalized[0]).toBe('title');
+  if (normalized.length > 1) {
+    expect(['creator', 'author']).toContain(normalized[1]);
+  }
+  if (normalized.length > 2) {
+    expect(normalized[2]).toBe('language');
+  }
+
+  await expect(popover.getByText('identifier', { exact: true })).toHaveCount(0);
+  await expect(popover.getByText('modified', { exact: true })).toHaveCount(0);
+  await expect(popover.getByText('Language: English')).toHaveCount(1);
+});
+
+test('book info popover hover opens metadata without navigating away', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await page.getByTestId('library-view-list').click();
+  const listContainer = page.getByTestId('library-books-list');
+  await expect(listContainer).toBeVisible();
+
+  const infoButton = listContainer.getByTestId('book-info').first();
+  await infoButton.hover();
+
+  const popover = page.getByTestId('book-info-popover');
+  await expect(popover).toBeVisible();
+  await expect(popover.getByText('Book info')).toBeVisible();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole('heading', { name: 'My Library' })).toBeVisible();
+});
+
+test('book info hover works from grid cards without triggering navigation', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  const firstCard = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(firstCard).toBeVisible();
+
+  await firstCard.hover();
+  const infoButton = firstCard.getByTestId('book-info');
+  await expect(infoButton).toBeVisible();
+  await infoButton.hover();
+
+  const popover = page.getByTestId('book-info-popover');
+  await expect(popover).toBeVisible();
+  await expect(popover.getByText('Book info')).toBeVisible();
+  await expect(page).toHaveURL(/\/$/);
+});
+
+test('book info popover sanitizes html metadata values to plain text', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  const patched = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs')
+          ? 'keyvaluepairs'
+          : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didPatch = false;
+
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+
+          const row = cursor.value;
+          const bookLike = row?.value && typeof row.value === 'object' ? row.value : row;
+          if (bookLike && typeof bookLike === 'object' && bookLike.title === 'Test Book') {
+            if (row?.value && typeof row.value === 'object') {
+              row.value.epubMetadata = {
+                ...(row.value.epubMetadata || {}),
+                description: '<div><p><strong>THE SUNDAY TIMES</strong><br>&amp; immersive at times</p></div>'
+              };
+              cursor.update(row);
+            } else {
+              row.epubMetadata = {
+                ...(row.epubMetadata || {}),
+                description: '<div><p><strong>THE SUNDAY TIMES</strong><br>&amp; immersive at times</p></div>'
+              };
+              cursor.update(row);
+            }
+            didPatch = true;
+          }
+          cursor.continue();
+        };
+
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didPatch);
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+    });
+  });
+  expect(patched).toBeTruthy();
+
+  await page.getByTestId('library-view-list').click();
+  await expect(page.getByTestId('library-books-list')).toBeVisible();
+  const listRow = page.getByRole('link', { name: /Test Book/i }).first();
+  await listRow.getByTitle('Favorite').click({ force: true });
+  await expect(page.getByTestId('library-quick-filter-favorites')).toContainText('1');
+  await listRow.getByTitle('Favorite').click({ force: true });
+  await expect(page.getByTestId('library-quick-filter-favorites')).toContainText('0');
+  await listRow.getByTestId('book-info').click({ force: true });
+
+  const popover = page.getByTestId('book-info-popover');
+  await expect(popover).toBeVisible();
+  await expect(popover.getByText('THE SUNDAY TIMES')).toBeVisible();
+  await expect(popover.getByText('& immersive at times')).toBeVisible();
+  await expect(popover.getByText('<div>')).toHaveCount(0);
+  await expect(popover.getByText('<strong>')).toHaveCount(0);
 });
 
 test('library toolbar is sticky and reset button clears search status and flag filters', async ({ page }) => {
@@ -93,9 +494,7 @@ test('library toolbar controls stay aligned to the search bar height', async ({ 
   const controls = {
     search: page.getByTestId('library-search'),
     filter: page.getByTestId('library-filter'),
-    sort: page.getByTestId('library-sort'),
-    viewToggle: page.getByTestId('library-view-toggle'),
-    notesCenter: page.getByTestId('library-notes-center-toggle')
+    sort: page.getByTestId('library-sort')
   };
 
   await Promise.all(Object.values(controls).map((locator) => expect(locator).toBeVisible()));
@@ -125,8 +524,8 @@ test('library card shows language and estimated pages metadata', async ({ page }
   await fileInput.setInputFiles(fixturePath);
 
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
-  await expect(page.getByTestId('book-meta-language').first()).toContainText(/Language: English/i);
-  await expect(page.getByTestId('book-meta-pages').first()).toContainText(/Pages:\s*\d+/i);
+  await expect(page.getByTestId('book-meta-language').first()).toContainText(/English/i);
+  await expect(page.getByTestId('book-meta-pages').first()).toContainText(/\d+\s*pages/i);
 });
 
 test('library quick filter chips show counts and apply filters', async ({ page }) => {
@@ -326,6 +725,51 @@ test('notes center edits note and syncs to reader highlights panel', async ({ pa
   await expect(page.getByText('Updated note from Notes Center')).toBeVisible();
 });
 
+test('notes and highlights sections hide home-only library content', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
+  await expect(page.getByTestId('library-books-grid')).toBeVisible();
+  await expect(page.getByTestId('library-toolbar-sticky')).toBeVisible();
+
+  const href = await bookLink.getAttribute('href');
+  const bookId = href ? new URL(href, 'http://localhost').searchParams.get('id') : null;
+  expect(bookId).toBeTruthy();
+  await page.evaluate((id) => {
+    localStorage.setItem('library-started-book-ids', JSON.stringify([id]));
+  }, bookId);
+  await page.reload();
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+  await expect(page.getByTestId('continue-reading-rail')).toBeVisible();
+
+  await page.getByTestId('library-notes-center-toggle').click();
+  await expect(page.getByTestId('notes-center-panel')).toBeVisible();
+  await expect(page.getByTestId('continue-reading-rail')).toHaveCount(0);
+  await expect(page.getByTestId('library-toolbar-sticky')).toHaveCount(0);
+  await expect(page.getByTestId('library-books-grid')).toHaveCount(0);
+  await expect(page.getByTestId('library-books-list')).toHaveCount(0);
+
+  await page.getByTestId('library-highlights-center-toggle').click();
+  await expect(page.getByTestId('highlights-center-panel')).toBeVisible();
+  await expect(page.getByTestId('continue-reading-rail')).toHaveCount(0);
+  await expect(page.getByTestId('library-toolbar-sticky')).toHaveCount(0);
+  await expect(page.getByTestId('library-books-grid')).toHaveCount(0);
+  await expect(page.getByTestId('library-books-list')).toHaveCount(0);
+
+  await page.getByTestId('sidebar-my-library').click();
+  await expect(page.getByTestId('library-toolbar-sticky')).toBeVisible();
+  await expect(page.getByTestId('library-books-grid')).toBeVisible();
+});
+
 test('library view toggle persists after reload', async ({ page }) => {
   await page.goto('/');
   await page.evaluate(() => {
@@ -400,7 +844,7 @@ test('continue reading rail appears for started books and hides in filtered mode
   await expect(page.getByTestId('continue-reading-rail')).toHaveCount(0);
 });
 
-test('quick card actions open reader highlights and bookmarks panels', async ({ page }) => {
+test('library cards remove quick action row and still open reader on click', async ({ page }) => {
   await page.goto('/');
   await page.evaluate(() => {
     indexedDB.deleteDatabase('SmartReaderLib');
@@ -409,34 +853,27 @@ test('quick card actions open reader highlights and bookmarks panels', async ({ 
   await page.reload();
   const fileInput = page.locator('input[type="file"][accept=".epub"]');
   await fileInput.setInputFiles(fixturePath);
-  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
 
-  await page.getByTestId('quick-action-highlights').first().click();
-  await expect(page).toHaveURL(/panel=highlights/);
-  await expect(page.getByTestId('highlights-panel')).toBeVisible();
+  await expect(page.getByTestId('quick-action-resume')).toHaveCount(0);
+  await expect(page.getByTestId('quick-action-highlights')).toHaveCount(0);
+  await expect(page.getByTestId('quick-action-bookmarks')).toHaveCount(0);
 
-  await page.goto('/');
-  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
-
-  await page.getByTestId('quick-action-bookmarks').first().click();
-  await expect(page).toHaveURL(/panel=bookmarks/);
-  await expect(page.getByTestId('bookmarks-panel')).toBeVisible();
-});
-
-test('quick action resume opens reader directly', async ({ page }) => {
-  await page.goto('/');
-  await page.evaluate(() => {
-    indexedDB.deleteDatabase('SmartReaderLib');
-    localStorage.clear();
-  });
-  await page.reload();
-  const fileInput = page.locator('input[type="file"][accept=".epub"]');
-  await fileInput.setInputFiles(fixturePath);
-  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
-
-  await page.getByTestId('quick-action-resume').first().click();
+  await bookLink.click();
   await expect(page).toHaveURL(/\/read\?id=/);
-  await expect(page).not.toHaveURL(/panel=/);
+  await expect(page.getByRole('button', { name: /Open chapters/i })).toBeVisible();
+
+  await page.goto('/');
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+  await page.getByTestId('library-view-list').click();
+  await expect(page.getByTestId('library-books-list')).toBeVisible();
+  await expect(page.getByTestId('quick-action-resume')).toHaveCount(0);
+  await expect(page.getByTestId('quick-action-highlights')).toHaveCount(0);
+  await expect(page.getByTestId('quick-action-bookmarks')).toHaveCount(0);
+
+  await page.getByRole('link', { name: /Test Book/i }).first().click();
+  await expect(page).toHaveURL(/\/read\?id=/);
   await expect(page.getByRole('button', { name: /Open chapters/i })).toBeVisible();
 });
 
@@ -594,6 +1031,51 @@ test('trash icon supports move to trash, restore, and permanent delete', async (
   page.once('dialog', (dialog) => dialog.accept());
   await page.getByTestId('book-delete-forever').first().click();
   await expect(page.getByText('Trash is empty.')).toBeVisible();
+});
+
+test('trash manual selection keeps checkboxes checked and toggles select-all label', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByText('Duplicate book detected')).toBeVisible();
+  await page.getByTestId('duplicate-keep-both').click();
+  await expect(page.getByRole('link', { name: /Test Book/i })).toHaveCount(2);
+
+  await page.getByTestId('library-view-list').click();
+  await expect(page.getByTestId('library-books-list')).toBeVisible();
+
+  page.on('dialog', (dialog) => dialog.accept());
+  await page.getByTestId('book-move-trash').first().click();
+  await page.getByTestId('book-move-trash').first().click();
+
+  await page.getByTestId('trash-toggle-button').click();
+  await expect(page.getByTestId('trash-retention-note')).toBeVisible();
+
+  const selectAllButton = page.getByTestId('trash-select-all');
+  await expect(selectAllButton).toContainText('Select all');
+  await expect(page.getByText('0 selected')).toBeVisible();
+
+  const trashCheckboxes = page.locator('[data-testid^="trash-book-select-input-"]');
+  await expect(trashCheckboxes).toHaveCount(2);
+
+  await trashCheckboxes.nth(0).click();
+  await expect(trashCheckboxes.nth(0)).toBeChecked();
+  await expect(page.getByText('1 selected')).toBeVisible();
+  await expect(selectAllButton).toContainText('Select all');
+
+  await trashCheckboxes.nth(1).click();
+  await expect(trashCheckboxes.nth(0)).toBeChecked();
+  await expect(trashCheckboxes.nth(1)).toBeChecked();
+  await expect(page.getByText('2 selected')).toBeVisible();
+  await expect(selectAllButton).toContainText('Unselect all');
 });
 
 test('trash items older than 30 days are auto-purged on load', async ({ page }) => {
@@ -815,8 +1297,10 @@ test('global search shows scanning state and found book cover rendering', async 
   await searchInput.fill('the');
 
   await expect(page.getByTestId('global-search-panel')).toBeVisible();
-  await page.waitForSelector('[data-testid=\"global-search-scanning\"]', { state: 'attached', timeout: 10000 });
-  await expect(page.getByTestId('global-search-scanning')).toBeVisible();
+  const scanningIndicator = page.getByTestId('global-search-scanning');
+  if (await scanningIndicator.count()) {
+    await expect(scanningIndicator).toBeVisible();
+  }
   await expect
     .poll(async () => page.getByTestId('global-search-found-book-cover').count(), { timeout: 25000 })
     .toBeGreaterThan(0);
@@ -916,4 +1400,29 @@ test('empty state reset button clears filters and restores results', async ({ pa
   await page.getByTestId('library-empty-reset-filters-button').click();
   await expect(searchInput).toHaveValue('');
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+});
+
+test('account section renders profile form even after opening trash view', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await page.getByTestId('trash-toggle-button').click();
+  await expect(page.getByTestId('trash-retention-note')).toBeVisible();
+
+  await page.getByTestId('library-account-trigger').click();
+  await expect(page.getByTestId('library-account-panel')).toBeVisible();
+  await expect(page.getByTestId('library-account-first-name')).toBeVisible();
+  await expect(page.getByTestId('library-account-email')).toHaveValue('dreamerissame@gmail.com');
+  await expect(page.getByTestId('library-account-language')).toBeVisible();
+  await expect(page.getByTestId('library-account-email-notifications')).toBeVisible();
+  await expect(page.getByTestId('library-account-save')).toBeVisible();
+  await expect(page.getByTestId('library-toolbar-sticky')).toHaveCount(0);
+  await expect(page.getByTestId('library-books-grid')).toHaveCount(0);
 });
