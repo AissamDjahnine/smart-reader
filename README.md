@@ -42,7 +42,16 @@ Smart Reader is built around real reading behavior:
 - Favorites with cleaner, less cluttered library cards
 - Notes Center in Library with cross-book note browsing, inline editing, and jump-to-reader
 - Continue Reading rail with progress and session context
-- Trash with restore flow and retention handling
+- Dedicated Trash workspace (independent from library filters):
+  - Trash-specific search and sort
+  - Grid/list views
+  - Bulk actions: `Select all` / `Unselect all`, `Restore selected`, `Delete selected`, `Restore all`, `Delete all`
+  - 30-day retention notice and auto-purge handling
+  - Reliable per-book checkbox selection (manual one-by-one and bulk selection parity)
+- Permanent delete backup flow:
+  - Single book: optional PDF + JSON export (highlights and notes)
+  - Multiple books: optional ZIP export with one folder per book (`PDF` + `JSON`)
+  - If a book has no highlights/notes, no backup prompt is shown
 - Top-right `Dark mode / Light mode` toggle directly in the library header
 
 ### Reader Built for Focus
