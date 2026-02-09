@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { jsPDF } from "jspdf";
 import {
   addBook,
   readEpubMetadata,
@@ -31,7 +32,6 @@ import {
   Tag,
   Flame,
   RotateCcw,
-  ArrowLeft,
   FileText,
   Moon,
   Sun,
@@ -39,6 +39,10 @@ import {
   FolderClosed,
   Info,
   X,
+  Search,
+  ArrowUpDown,
+  LayoutGrid,
+  List,
 } from 'lucide-react';
 import LibraryAccountSection from './library/LibraryAccountSection';
 import { LibraryWorkspaceSidebar, LibraryWorkspaceMobileNav } from './library/LibraryWorkspaceNav';
@@ -191,6 +195,34 @@ const formatMetadataValue = (rawValue, key = "") => {
   return compactWhitespace(String(rawValue));
 };
 
+const toSafeFilename = (value, fallback = "book") => {
+  const normalized = compactWhitespace(value || "");
+  if (!normalized) return fallback;
+  return normalized.replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_").slice(0, 120) || fallback;
+};
+
+const triggerBlobDownload = (blob, filename) => {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 3000);
+};
+
+const getBookAnnotationStats = (book) => {
+  const highlights = Array.isArray(book?.highlights) ? book.highlights : [];
+  const highlightsCount = highlights.filter((item) => compactWhitespace(item?.text)).length;
+  const notesCount = highlights.filter((item) => compactWhitespace(item?.note)).length;
+  return {
+    highlightsCount,
+    notesCount,
+    hasAny: highlightsCount > 0 || notesCount > 0
+  };
+};
+
 const buildSnippet = (value, query) => {
   const source = compactWhitespace(value);
   if (!source) return "";
@@ -301,6 +333,8 @@ export default function Home() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [collectionFilter, setCollectionFilter] = useState("all");
   const [librarySection, setLibrarySection] = useState("library");
+  const [trashSortBy, setTrashSortBy] = useState("deleted-desc");
+  const [selectedTrashBookIds, setSelectedTrashBookIds] = useState([]);
   const [flagFilters, setFlagFilters] = useState([]);
   const [sortBy, setSortBy] = useState("last-read-desc");
   const [viewMode, setViewMode] = useState(() => {
@@ -399,7 +433,7 @@ export default function Home() {
 
   useEffect(() => {
     const query = searchQuery.trim().toLowerCase();
-    const shouldSearchContent = query.length >= 2 && statusFilter !== "trash";
+    const shouldSearchContent = query.length >= 2 && librarySection === "library";
 
     if (!shouldSearchContent) {
       setContentSearchMatches({});
@@ -436,22 +470,22 @@ export default function Home() {
         setIsContentSearching(false);
       }
     };
-  }, [books, searchQuery, statusFilter]);
+  }, [books, searchQuery, librarySection]);
 
   useEffect(() => {
-    if (statusFilter !== "trash") return;
+    if (librarySection !== "trash") return;
     if (!flagFilters.length) return;
     setFlagFilters([]);
-  }, [statusFilter, flagFilters]);
+  }, [librarySection, flagFilters]);
 
   useEffect(() => {
-    if (statusFilter !== "trash") return;
+    if (librarySection !== "trash") return;
     if (!isNotesCenterOpen && !isHighlightsCenterOpen) return;
     setIsNotesCenterOpen(false);
     setIsHighlightsCenterOpen(false);
     setEditingNoteId("");
     setNoteEditorValue("");
-  }, [statusFilter, isNotesCenterOpen, isHighlightsCenterOpen]);
+  }, [librarySection, isNotesCenterOpen, isHighlightsCenterOpen]);
 
   useEffect(() => {
     if (!collectionPickerBookId) return;
@@ -465,6 +499,11 @@ export default function Home() {
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [collectionPickerBookId]);
+
+  useEffect(() => {
+    const trashedIds = new Set(books.filter((book) => Boolean(book.isDeleted)).map((book) => book.id));
+    setSelectedTrashBookIds((current) => current.filter((id) => trashedIds.has(id)));
+  }, [books]);
 
   useEffect(() => {
     return () => {
@@ -591,10 +630,211 @@ export default function Home() {
   const handleDeleteBookForever = async (e, id) => {
     e.preventDefault();
     e.stopPropagation();
-    if (window.confirm("Delete this book forever? This cannot be undone.")) {
-      await deleteBook(id);
-      loadLibrary(); 
+    const targetBook = books.find((book) => book.id === id);
+    if (!targetBook) return;
+    const { hasAny } = getBookAnnotationStats(targetBook);
+    const confirmMessage = hasAny
+      ? "Delete this book forever? This cannot be undone."
+      : "Delete this book forever? This cannot be undone. (No highlights nor notes are available with this book.)";
+    if (!window.confirm(confirmMessage)) return;
+    if (hasAny) {
+      const shouldBackup = window.confirm("Download backup first? (PDF + JSON with highlights and notes)");
+      if (shouldBackup) {
+        await exportTrashBackups([targetBook]);
+      }
     }
+    await deleteBook(id);
+    await loadLibrary();
+  };
+
+  const buildBookBackupPayload = (book) => {
+    const highlights = Array.isArray(book?.highlights) ? book.highlights : [];
+    const highlightedEntries = highlights
+      .filter((item) => compactWhitespace(item?.text))
+      .map((item, index) => ({
+        index: index + 1,
+        text: compactWhitespace(item?.text),
+        note: compactWhitespace(item?.note || ""),
+        color: item?.color || "",
+        cfiRange: item?.cfiRange || "",
+        chapterLabel: item?.chapterLabel || ""
+      }));
+    return {
+      exportedAt: new Date().toISOString(),
+      book: {
+        id: book.id,
+        title: book.title,
+        author: book.author,
+        language: book.language || "",
+        deletedAt: book.deletedAt || "",
+        estimatedPages: book.estimatedPages || null
+      },
+      highlights: highlightedEntries,
+      notes: highlightedEntries.filter((item) => item.note)
+    };
+  };
+
+  const buildBookBackupPdfBlob = (book, payload) => {
+    const doc = new jsPDF({
+      orientation: "p",
+      unit: "pt",
+      format: "a4"
+    });
+    const margin = 40;
+    const lineHeight = 16;
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const contentWidth = pageWidth - margin * 2;
+    let y = margin;
+
+    const ensureSpace = (height = lineHeight) => {
+      if (y + height <= pageHeight - margin) return;
+      doc.addPage();
+      y = margin;
+    };
+
+    const writeLine = (text, options = {}) => {
+      const size = options.size || 11;
+      const style = options.style || "normal";
+      const color = options.color || [17, 24, 39];
+      const before = options.before || 0;
+      const after = options.after || 6;
+      if (before) y += before;
+      doc.setFont("helvetica", style);
+      doc.setFontSize(size);
+      doc.setTextColor(...color);
+      const lines = doc.splitTextToSize(String(text || ""), contentWidth);
+      lines.forEach((line) => {
+        ensureSpace(lineHeight);
+        doc.text(line, margin, y);
+        y += lineHeight;
+      });
+      y += after;
+    };
+
+    writeLine(book.title || "Untitled", { size: 18, style: "bold", after: 2 });
+    writeLine(book.author || "Unknown Author", { size: 12, color: [75, 85, 99], after: 10 });
+    writeLine(`Deleted: ${book.deletedAt ? new Date(book.deletedAt).toLocaleString() : "Unknown"}`, { size: 10, color: [100, 116, 139], after: 12 });
+
+    if (!payload.highlights.length) {
+      writeLine("No highlights found.", { size: 11, color: [100, 116, 139] });
+    } else {
+      payload.highlights.forEach((entry) => {
+        writeLine(`Highlight ${entry.index}`, { size: 11, style: "bold", color: [30, 64, 175], after: 2 });
+        writeLine(entry.text, { size: 11, color: [31, 41, 55], after: 2 });
+        if (entry.note) {
+          writeLine(`Note: ${entry.note}`, { size: 10, style: "italic", color: [75, 85, 99], after: 2 });
+        }
+        if (entry.chapterLabel) {
+          writeLine(`Chapter: ${entry.chapterLabel}`, { size: 9, color: [107, 114, 128], after: 4 });
+        }
+        y += 8;
+      });
+    }
+
+    return doc.output("blob");
+  };
+
+  const exportTrashBackups = async (targetBooks) => {
+    const validBooks = (targetBooks || []).filter(Boolean);
+    if (!validBooks.length) return;
+
+    if (validBooks.length === 1) {
+      const book = validBooks[0];
+      const payload = buildBookBackupPayload(book);
+      const pdfBlob = buildBookBackupPdfBlob(book, payload);
+      const jsonBlob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const baseName = toSafeFilename(`${book.title || "book"}-${book.author || "author"}`);
+      triggerBlobDownload(pdfBlob, `${baseName}-highlights-notes.pdf`);
+      triggerBlobDownload(jsonBlob, `${baseName}-highlights-notes.json`);
+      return;
+    }
+
+    const { default: JSZip } = await import("jszip");
+    const zip = new JSZip();
+    validBooks.forEach((book, index) => {
+      const payload = buildBookBackupPayload(book);
+      const folderName = toSafeFilename(`${index + 1}-${book.title || "book"}`);
+      const folder = zip.folder(folderName);
+      if (!folder) return;
+      const pdfBlob = buildBookBackupPdfBlob(book, payload);
+      folder.file("highlights-notes.pdf", pdfBlob);
+      folder.file("highlights-notes.json", JSON.stringify(payload, null, 2));
+    });
+    const zipBlob = await zip.generateAsync({ type: "blob" });
+    triggerBlobDownload(zipBlob, `trash-backup-${new Date().toISOString().slice(0, 10)}.zip`);
+  };
+
+  const handleToggleTrashSelection = (id) => {
+    setSelectedTrashBookIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return Array.from(next);
+    });
+  };
+
+  const handleToggleSelectAllTrash = () => {
+    setSelectedTrashBookIds((current) => {
+      const nextIds = Array.from(new Set(sortedTrashBooks.map((book) => book.id)));
+      if (!nextIds.length) return [];
+      const allSelected = nextIds.every((id) => current.includes(id));
+      return allSelected ? [] : nextIds;
+    });
+  };
+
+  const handleRestoreSelectedTrash = async () => {
+    if (!selectedTrashBookIds.length) return;
+    await Promise.all(selectedTrashBookIds.map((id) => restoreBookFromTrash(id)));
+    setSelectedTrashBookIds([]);
+    await loadLibrary();
+  };
+
+  const handleDeleteSelectedTrash = async () => {
+    if (!selectedTrashBookIds.length) return;
+    const selectedBooks = trashedBooks.filter((book) => selectedTrashBookIds.includes(book.id));
+    const hasAnyAnnotations = selectedBooks.some((book) => getBookAnnotationStats(book).hasAny);
+    const confirmMessage = hasAnyAnnotations
+      ? "Delete selected books forever? This cannot be undone."
+      : "Delete selected books forever? This cannot be undone. (No highlights nor notes are available with selected books.)";
+    if (!window.confirm(confirmMessage)) return;
+    if (hasAnyAnnotations) {
+      const shouldBackup = window.confirm("Download backup first? (ZIP with PDF + JSON per book)");
+      if (shouldBackup) {
+        await exportTrashBackups(selectedBooks);
+      }
+    }
+    await Promise.all(selectedTrashBookIds.map((id) => deleteBook(id)));
+    setSelectedTrashBookIds([]);
+    await loadLibrary();
+  };
+
+  const handleRestoreAllTrash = async () => {
+    if (!trashedBooks.length) return;
+    await Promise.all(trashedBooks.map((book) => restoreBookFromTrash(book.id)));
+    setSelectedTrashBookIds([]);
+    await loadLibrary();
+  };
+
+  const handleDeleteAllTrash = async () => {
+    if (!trashedBooks.length) return;
+    const hasAnyAnnotations = trashedBooks.some((book) => getBookAnnotationStats(book).hasAny);
+    const confirmMessage = hasAnyAnnotations
+      ? "Delete all books from Trash forever? This cannot be undone."
+      : "Delete all books from Trash forever? This cannot be undone. (No highlights nor notes are available with books in trash.)";
+    if (!window.confirm(confirmMessage)) return;
+    if (hasAnyAnnotations) {
+      const shouldBackup = window.confirm("Download backup first? (ZIP with PDF + JSON per book)");
+      if (shouldBackup) {
+        await exportTrashBackups(trashedBooks);
+      }
+    }
+    await Promise.all(trashedBooks.map((book) => deleteBook(book.id)));
+    setSelectedTrashBookIds([]);
+    await loadLibrary();
   };
 
   const handleToggleFavorite = async (e, id) => {
@@ -711,6 +951,16 @@ export default function Home() {
     if (section === "library") {
       setIsNotesCenterOpen(false);
       setIsHighlightsCenterOpen(false);
+      setSelectedTrashBookIds([]);
+      return;
+    }
+    if (section === "trash") {
+      setIsNotesCenterOpen(false);
+      setIsHighlightsCenterOpen(false);
+      setCollectionFilter("all");
+      setStatusFilter("all");
+      setCollectionPickerBookId("");
+      setSelectedTrashBookIds([]);
       return;
     }
     if (section === "collections") {
@@ -718,21 +968,25 @@ export default function Home() {
       setIsNotesCenterOpen(false);
       setIsHighlightsCenterOpen(false);
       setStatusFilter("all");
+      setSelectedTrashBookIds([]);
       return;
     }
     if (section === "notes") {
       setIsNotesCenterOpen(true);
       setIsHighlightsCenterOpen(false);
+      setSelectedTrashBookIds([]);
       return;
     }
     if (section === "highlights") {
       setIsHighlightsCenterOpen(true);
       setIsNotesCenterOpen(false);
+      setSelectedTrashBookIds([]);
       return;
     }
     if (section === "account") {
       setStatusFilter("all");
       setCollectionFilter("all");
+      setSelectedTrashBookIds([]);
     }
     setIsNotesCenterOpen(false);
     setIsHighlightsCenterOpen(false);
@@ -892,8 +1146,7 @@ export default function Home() {
     { value: "all", label: "All books" },
     { value: "to-read", label: "To read" },
     { value: "in-progress", label: "In progress" },
-    { value: "finished", label: "Finished" },
-    { value: "trash", label: "Trash" }
+    { value: "finished", label: "Finished" }
   ];
   const flagFilterOptions = [
     { value: "favorites", label: "Favorites" },
@@ -912,6 +1165,16 @@ export default function Home() {
     { value: "title-desc", label: "Title (Z-A)" },
     { value: "author-asc", label: "Author (A-Z)" },
     { value: "author-desc", label: "Author (Z-A)" }
+  ];
+  const trashSortOptions = [
+    { value: "deleted-desc", label: "Last deleted (newest)" },
+    { value: "deleted-asc", label: "Last deleted (oldest)" },
+    { value: "title-asc", label: "Title (A-Z)" },
+    { value: "title-desc", label: "Title (Z-A)" },
+    { value: "author-asc", label: "Author (A-Z)" },
+    { value: "author-desc", label: "Author (Z-A)" },
+    { value: "added-desc", label: "Added date (newest)" },
+    { value: "added-asc", label: "Added date (oldest)" }
   ];
 
   const normalizeString = (value) => (value || "").toString().toLowerCase();
@@ -992,6 +1255,21 @@ export default function Home() {
     return false;
   };
 
+  const bookMatchesTrashSearch = (book, query) => {
+    if (!query) return true;
+    const normalizedQuery = normalizeString(query.trim());
+    if (!normalizedQuery) return true;
+
+    const searchableFields = [
+      book.title,
+      book.author,
+      formatLanguageLabel(book.language),
+      formatGenreLabel(book.genre)
+    ];
+
+    return searchableFields.some((field) => normalizeString(field).includes(normalizedQuery));
+  };
+
   const getReadingStreak = (libraryBooks) => {
     const dayKeys = new Set(
       libraryBooks
@@ -1032,8 +1310,8 @@ export default function Home() {
   };
 
   const activeBooks = books.filter((book) => !book.isDeleted);
+  const trashedBooks = books.filter((book) => Boolean(book.isDeleted));
   const trashedBooksCount = books.length - activeBooks.length;
-  const isTrashView = statusFilter === "trash";
   const quickFilterStats = [
     {
       key: "to-read",
@@ -1154,7 +1432,7 @@ export default function Home() {
   const notesCenterPairs = buildCenterPairs(notesCenterFilteredEntries, "notes-book");
   const highlightsCenterPairs = buildCenterPairs(highlightsCenterFilteredEntries, "highlights-book");
 
-  const sortedBooks = [...books]
+  const sortedBooks = [...activeBooks]
     .filter((book) => {
       const query = searchQuery.trim().toLowerCase();
       const matchesSearch = !query || bookMatchesLibrarySearch(book, query);
@@ -1164,26 +1442,20 @@ export default function Home() {
         ? book.highlights.filter((h) => (h?.note || "").trim()).length
         : 0;
       const progress = normalizeNumber(book.progress);
-      const inTrash = Boolean(book.isDeleted);
 
       const matchesStatus =
-        statusFilter === "trash" ? inTrash
-        : inTrash ? false
-        : statusFilter === "all" ? true
+        statusFilter === "all" ? true
         : statusFilter === "to-read" ? isBookToRead(book)
         : statusFilter === "in-progress" ? progress > 0 && progress < 100
         : statusFilter === "finished" ? progress >= 100
         : true;
 
-      const matchesFlags =
-        statusFilter === "trash"
-          ? true
-          : flagFilters.every((flag) => {
-              if (flag === "favorites") return Boolean(book.isFavorite);
-              if (flag === "has-highlights") return highlightCount > 0;
-              if (flag === "has-notes") return noteCount > 0;
-              return true;
-            });
+      const matchesFlags = flagFilters.every((flag) => {
+        if (flag === "favorites") return Boolean(book.isFavorite);
+        if (flag === "has-highlights") return highlightCount > 0;
+        if (flag === "has-notes") return noteCount > 0;
+        return true;
+      });
 
       const matchesCollection =
         collectionFilter === "all"
@@ -1202,6 +1474,19 @@ export default function Home() {
       if (sortBy === "title-desc") return normalizeString(right.title).localeCompare(normalizeString(left.title));
       if (sortBy === "author-asc") return normalizeString(left.author).localeCompare(normalizeString(right.author));
       if (sortBy === "author-desc") return normalizeString(right.author).localeCompare(normalizeString(left.author));
+      return normalizeString(left.title).localeCompare(normalizeString(right.title));
+    });
+
+  const sortedTrashBooks = [...trashedBooks]
+    .filter((book) => bookMatchesTrashSearch(book, searchQuery))
+    .sort((left, right) => {
+      if (trashSortBy === "deleted-desc") return normalizeTime(right.deletedAt) - normalizeTime(left.deletedAt);
+      if (trashSortBy === "deleted-asc") return normalizeTime(left.deletedAt) - normalizeTime(right.deletedAt);
+      if (trashSortBy === "title-desc") return normalizeString(right.title).localeCompare(normalizeString(left.title));
+      if (trashSortBy === "author-asc") return normalizeString(left.author).localeCompare(normalizeString(right.author));
+      if (trashSortBy === "author-desc") return normalizeString(right.author).localeCompare(normalizeString(left.author));
+      if (trashSortBy === "added-desc") return normalizeTime(right.addedAt) - normalizeTime(left.addedAt);
+      if (trashSortBy === "added-asc") return normalizeTime(left.addedAt) - normalizeTime(right.addedAt);
       return normalizeString(left.title).localeCompare(normalizeString(right.title));
     });
 
@@ -1376,7 +1661,7 @@ export default function Home() {
     .filter((item) => item.contentItems.length > 0);
   const showGlobalSearchBooksColumn = Boolean(
     globalSearchQuery &&
-    !isTrashView &&
+    librarySection === "library" &&
     (globalMatchedBookPairs.length || globalMatchedBooks.length)
   );
   const showGlobalSearchSplitColumns = showGlobalSearchBooksColumn && globalMatchedBookPairs.length === 0;
@@ -1646,7 +1931,6 @@ export default function Home() {
   };
 
   const getFilterLabel = () => {
-    if (statusFilter === "trash") return "Trash";
     return statusFilterOptions.find((f) => f.value === statusFilter)?.label || "All books";
   };
 
@@ -1673,8 +1957,14 @@ export default function Home() {
   const isDarkLibraryTheme = libraryTheme === "dark";
   const isAccountSection = librarySection === "account";
   const isCollectionsPage = librarySection === "collections";
+  const isTrashSection = librarySection === "trash";
   const shouldShowLibraryHomeContent = librarySection === "library";
   const shouldShowContinueReading = showContinueReading && librarySection === "library";
+  const visibleTrashIds = Array.from(new Set(sortedTrashBooks.map((book) => book.id)));
+  const trashSelectedCount = selectedTrashBookIds.length;
+  const allVisibleTrashSelected =
+    visibleTrashIds.length > 0 &&
+    visibleTrashIds.every((id) => selectedTrashBookIds.includes(id));
 
   return (
     <div className={`min-h-screen p-6 md:p-12 font-sans ${isDarkLibraryTheme ? "bg-slate-950 text-slate-100" : "bg-gray-50 text-gray-900"}`}>
@@ -1684,6 +1974,7 @@ export default function Home() {
           isDarkLibraryTheme={isDarkLibraryTheme}
           notesCount={notesCenterEntries.length}
           highlightsCount={highlightsCenterEntries.length}
+          trashCount={trashedBooksCount}
           onSelectSection={handleSidebarSectionSelect}
         />
 
@@ -1706,19 +1997,19 @@ export default function Home() {
             ) : (
               <>
                 <h1 className="text-4xl font-extrabold text-gray-900 tracking-tight">
-                  {isCollectionsPage ? "My Collections" : "My Library"}
+                  {isCollectionsPage ? "My Collections" : isTrashSection ? "Trash" : "My Library"}
                 </h1>
                 <p className="text-gray-500 mt-1">
                   {isCollectionsPage
                     ? `${collections.length} collection${collections.length === 1 ? "" : "s"}`
-                    : isTrashView
-                    ? `Trash has ${sortedBooks.length} books`
+                    : isTrashSection
+                    ? `Showing ${sortedTrashBooks.length} of ${trashedBooksCount} deleted books`
                     : sortedBooks.length === activeBooks.length
                     ? `You have ${activeBooks.length} books`
                     : `Showing ${sortedBooks.length} of ${activeBooks.length} books`}
-                  {!isTrashView && !isCollectionsPage && trashedBooksCount > 0 ? ` · ${trashedBooksCount} in trash` : ""}
+                  {!isTrashSection && !isCollectionsPage && trashedBooksCount > 0 ? ` · ${trashedBooksCount} in trash` : ""}
                 </p>
-                {!isCollectionsPage && (
+                {!isCollectionsPage && !isTrashSection && (
                   <>
                     <div
                       data-testid="library-streak-badge"
@@ -1747,7 +2038,6 @@ export default function Home() {
                           aria-pressed={isQuickActive}
                           onClick={() => {
                             if (stat.key === "favorites") {
-                              if (statusFilter === "trash") setStatusFilter("all");
                               toggleFlagFilter("favorites");
                               return;
                             }
@@ -1801,17 +2091,19 @@ export default function Home() {
               type="button"
               data-testid="trash-toggle-button"
               onClick={() => {
-                setLibrarySection("library");
+                const nextSection = isTrashSection ? "library" : "trash";
+                setLibrarySection(nextSection);
                 setCollectionFilter("all");
-                setStatusFilter((current) => (current === "trash" ? "all" : "trash"));
+                setStatusFilter("all");
+                setSelectedTrashBookIds([]);
               }}
               className={`relative p-3 rounded-full border shadow-sm transition-all ${
-                isTrashView
+                isTrashSection
                   ? "bg-amber-500 text-white border-amber-500"
                   : "bg-white text-gray-600 border-gray-200 hover:text-amber-600 hover:border-amber-300"
               }`}
-              title={isTrashView ? "Back to library" : "Open Trash"}
-              aria-label={isTrashView ? "Back to library" : "Open Trash"}
+              title={isTrashSection ? "Back to library" : "Open Trash"}
+              aria-label={isTrashSection ? "Back to library" : "Open Trash"}
             >
               <Trash2 size={20} />
               {trashedBooksCount > 0 && (
@@ -1916,7 +2208,132 @@ export default function Home() {
             onResetFilters={resetLibraryFilters}
           />
         )}
-        {isNotesCenterOpen && !isTrashView && (
+        {isTrashSection && (
+          <>
+            <div
+              data-testid="trash-retention-note"
+              className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800"
+            >
+              Books in Trash are permanently deleted after {TRASH_RETENTION_DAYS} days.
+            </div>
+
+            <div
+              data-testid="trash-toolbar"
+              className="sticky top-3 z-20 mb-3 rounded-2xl bg-gray-50/95 pb-2 backdrop-blur supports-[backdrop-filter]:bg-gray-50/80"
+            >
+              <div className="grid grid-cols-1 items-stretch gap-3 md:grid-cols-[minmax(0,1fr)_320px_auto]">
+                <div className="relative flex-1">
+                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                  <input
+                    type="text"
+                    placeholder="Search deleted books..."
+                    data-testid="trash-search"
+                    className="h-[52px] w-full rounded-2xl border border-gray-200 bg-white pl-12 pr-4 text-base focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                </div>
+
+                <div className="relative">
+                  <ArrowUpDown className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                  <select
+                    data-testid="trash-sort"
+                    value={trashSortBy}
+                    onChange={(e) => setTrashSortBy(e.target.value)}
+                    className="h-[52px] w-full rounded-2xl border border-gray-200 bg-white pl-11 pr-4 text-sm font-semibold text-gray-700 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+                  >
+                    {trashSortOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div
+                  className="flex h-[52px] w-[108px] items-center rounded-2xl border border-gray-200 bg-white p-1 shadow-sm"
+                  data-testid="library-view-toggle"
+                >
+                  <button
+                    type="button"
+                    data-testid="library-view-grid"
+                    aria-pressed={viewMode === "grid"}
+                    onClick={() => setViewMode("grid")}
+                    className={`flex h-full flex-1 items-center justify-center rounded-xl transition-colors ${
+                      viewMode === "grid" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
+                    }`}
+                    title="Grid view"
+                  >
+                    <LayoutGrid size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="library-view-list"
+                    aria-pressed={viewMode === "list"}
+                    onClick={() => setViewMode("list")}
+                    className={`flex h-full flex-1 items-center justify-center rounded-xl transition-colors ${
+                      viewMode === "list" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
+                    }`}
+                    title="List view"
+                  >
+                    <List size={16} />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div data-testid="trash-bulk-actions" className="mb-6 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                data-testid="trash-select-all"
+                onClick={handleToggleSelectAllTrash}
+                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+              >
+                {allVisibleTrashSelected ? "Unselect all" : "Select all"}
+              </button>
+              <span className="text-xs font-semibold text-gray-500">
+                {trashSelectedCount} selected
+              </span>
+              <button
+                type="button"
+                data-testid="trash-restore-selected"
+                onClick={handleRestoreSelectedTrash}
+                disabled={!trashSelectedCount}
+                className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 enabled:hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Restore selected
+              </button>
+              <button
+                type="button"
+                data-testid="trash-delete-selected"
+                onClick={handleDeleteSelectedTrash}
+                disabled={!trashSelectedCount}
+                className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 enabled:hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Delete selected
+              </button>
+              <button
+                type="button"
+                data-testid="trash-restore-all"
+                onClick={handleRestoreAllTrash}
+                disabled={!trashedBooks.length}
+                className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 enabled:hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Restore all
+              </button>
+              <button
+                type="button"
+                data-testid="trash-delete-all"
+                onClick={handleDeleteAllTrash}
+                disabled={!trashedBooks.length}
+                className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 enabled:hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Delete all
+              </button>
+            </div>
+          </>
+        )}
+        {isNotesCenterOpen && !isTrashSection && (
           <LibraryNotesCenterPanel
             notesCenterFilteredEntries={notesCenterFilteredEntries}
             notesCenterPairs={notesCenterPairs}
@@ -1936,7 +2353,7 @@ export default function Home() {
           />
         )}
 
-        {isHighlightsCenterOpen && !isTrashView && (
+        {isHighlightsCenterOpen && !isTrashSection && (
           <LibraryHighlightsCenterPanel
             highlightsCenterFilteredEntries={highlightsCenterFilteredEntries}
             highlightsCenterPairs={highlightsCenterPairs}
@@ -1948,7 +2365,7 @@ export default function Home() {
             onOpenReader={handleOpenHighlightInReader}
           />
         )}
-        {isCollectionsPage && !isTrashView && (
+        {isCollectionsPage && !isTrashSection && (
           <LibraryCollectionsBoard
             collections={collections}
             books={books}
@@ -1977,7 +2394,7 @@ export default function Home() {
             buildReaderPath={buildReaderPath}
           />
         )}
-        {shouldShowLibraryHomeContent && globalSearchQuery && !isTrashView && (
+        {shouldShowLibraryHomeContent && globalSearchQuery && (
           <LibraryGlobalSearchPanel
             showGlobalSearchSplitColumns={showGlobalSearchSplitColumns}
             globalSearchTotal={globalSearchTotal}
@@ -1991,33 +2408,13 @@ export default function Home() {
             renderGlobalSearchBookCard={renderGlobalSearchBookCard}
           />
         )}
-        {shouldShowLibraryHomeContent && isTrashView && (
-          <div className="mb-6 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-            <div
-              data-testid="trash-retention-note"
-              className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800"
-            >
-              Books in Trash are permanently deleted after {TRASH_RETENTION_DAYS} days.
-            </div>
-            <button
-              type="button"
-              data-testid="trash-back-button"
-              onClick={() => setStatusFilter("all")}
-              className="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50"
-            >
-              <ArrowLeft size={14} />
-              <span>Back to Library</span>
-            </button>
-          </div>
-        )}
-
-        {shouldShowLibraryHomeContent && !showGlobalSearchBooksColumn && (sortedBooks.length === 0 ? (
+        {(shouldShowLibraryHomeContent || isTrashSection) && (!showGlobalSearchBooksColumn || isTrashSection) && ((isTrashSection ? sortedTrashBooks.length : sortedBooks.length) === 0 ? (
           <div className="bg-white border-2 border-dashed border-gray-200 rounded-3xl p-20 text-center shadow-sm">
             <BookIcon size={48} className="mx-auto text-gray-300 mb-4" />
             <p className="text-gray-500 text-lg">
-              {isTrashView ? "Trash is empty." : "No books found matching your criteria."}
+              {isTrashSection ? "Trash is empty." : "No books found matching your criteria."}
             </p>
-            {canShowResetFilters && (
+            {!isTrashSection && canShowResetFilters && (
               <button 
                 data-testid="library-empty-reset-filters-button"
                 onClick={resetLibraryFilters}
@@ -2032,7 +2429,7 @@ export default function Home() {
           </div>
         ) : viewMode === "grid" ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8 animate-in fade-in duration-500" data-testid="library-books-grid">
-            {sortedBooks.map((book) => {
+            {(isTrashSection ? sortedTrashBooks : sortedBooks).map((book) => {
               const inTrash = Boolean(book.isDeleted);
               const isRecent = book.id === recentlyAddedBookId;
               return (
@@ -2150,6 +2547,29 @@ export default function Home() {
                         </>
                       )}
                     </div>
+                    {inTrash && (
+                      <label
+                        data-testid={`trash-book-select-${book.id}`}
+                        className="absolute left-3 top-3 z-10 inline-flex items-center rounded-lg bg-white/95 px-2 py-1 text-[11px] font-semibold text-gray-700 shadow-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                        }}
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          data-testid={`trash-book-select-input-${book.id}`}
+                          className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 accent-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
+                          checked={selectedTrashBookIds.includes(book.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                          }}
+                          onChange={() => handleToggleTrashSelection(book.id)}
+                        />
+                      </label>
+                    )}
                     
                     <div className="absolute bottom-3 right-3 bg-black/60 backdrop-blur-md text-white text-xs font-bold px-2 py-1 rounded-lg">
                       {book.progress}%
@@ -2257,7 +2677,7 @@ export default function Home() {
           </div>
         ) : (
           <div className="space-y-4 animate-in fade-in duration-500" data-testid="library-books-list">
-            {sortedBooks.map((book) => {
+            {(isTrashSection ? sortedTrashBooks : sortedBooks).map((book) => {
               const inTrash = Boolean(book.isDeleted);
               const isRecent = book.id === recentlyAddedBookId;
               return (
@@ -2326,6 +2746,29 @@ export default function Home() {
                     </div>
 
                     <div className="flex flex-col gap-2 md:w-44">
+                      {inTrash && (
+                        <label
+                          data-testid={`trash-book-select-${book.id}`}
+                          className="inline-flex items-center justify-end gap-2 rounded-lg px-2 py-1 text-xs font-semibold text-gray-600"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                          }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            data-testid={`trash-book-select-input-${book.id}`}
+                            className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 accent-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
+                            checked={selectedTrashBookIds.includes(book.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                            }}
+                            onChange={() => handleToggleTrashSelection(book.id)}
+                          />
+                        </label>
+                      )}
                       <div className="flex items-center gap-2 justify-end">
                         {inTrash ? (
                           <>
@@ -2482,17 +2925,19 @@ export default function Home() {
             })}
           </div>
         ))}
-        <label
-          data-testid="library-add-book-fab"
-          className={`fixed bottom-6 right-6 z-50 flex h-16 w-16 cursor-pointer items-center justify-center rounded-full bg-blue-600 text-white shadow-xl transition-all hover:scale-105 hover:bg-blue-700 focus-within:ring-4 focus-within:ring-blue-200 ${
-            isUploading ? 'opacity-60 pointer-events-none' : ''
-          }`}
-          title={isUploading ? 'Adding book...' : 'Add Book'}
-          aria-label={isUploading ? 'Adding book...' : 'Add Book'}
-        >
-          <Plus size={28} />
-          <input type="file" accept=".epub" className="hidden" onChange={handleFileUpload} />
-        </label>
+        {!isTrashSection && (
+          <label
+            data-testid="library-add-book-fab"
+            className={`fixed bottom-6 right-6 z-50 flex h-16 w-16 cursor-pointer items-center justify-center rounded-full bg-blue-600 text-white shadow-xl transition-all hover:scale-105 hover:bg-blue-700 focus-within:ring-4 focus-within:ring-blue-200 ${
+              isUploading ? 'opacity-60 pointer-events-none' : ''
+            }`}
+            title={isUploading ? 'Adding book...' : 'Add Book'}
+            aria-label={isUploading ? 'Adding book...' : 'Add Book'}
+          >
+            <Plus size={28} />
+            <input type="file" accept=".epub" className="hidden" onChange={handleFileUpload} />
+          </label>
+        )}
         {uploadStage === "reading" && (
           <div
             data-testid="upload-progress-modal"

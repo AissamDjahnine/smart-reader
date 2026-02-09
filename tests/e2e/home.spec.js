@@ -846,6 +846,51 @@ test('trash icon supports move to trash, restore, and permanent delete', async (
   await expect(page.getByText('Trash is empty.')).toBeVisible();
 });
 
+test('trash manual selection keeps checkboxes checked and toggles select-all label', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByText('Duplicate book detected')).toBeVisible();
+  await page.getByTestId('duplicate-keep-both').click();
+  await expect(page.getByRole('link', { name: /Test Book/i })).toHaveCount(2);
+
+  await page.getByTestId('library-view-list').click();
+  await expect(page.getByTestId('library-books-list')).toBeVisible();
+
+  page.on('dialog', (dialog) => dialog.accept());
+  await page.getByTestId('book-move-trash').first().click();
+  await page.getByTestId('book-move-trash').first().click();
+
+  await page.getByTestId('trash-toggle-button').click();
+  await expect(page.getByTestId('trash-retention-note')).toBeVisible();
+
+  const selectAllButton = page.getByTestId('trash-select-all');
+  await expect(selectAllButton).toContainText('Select all');
+  await expect(page.getByText('0 selected')).toBeVisible();
+
+  const trashCheckboxes = page.locator('[data-testid^="trash-book-select-input-"]');
+  await expect(trashCheckboxes).toHaveCount(2);
+
+  await trashCheckboxes.nth(0).click();
+  await expect(trashCheckboxes.nth(0)).toBeChecked();
+  await expect(page.getByText('1 selected')).toBeVisible();
+  await expect(selectAllButton).toContainText('Select all');
+
+  await trashCheckboxes.nth(1).click();
+  await expect(trashCheckboxes.nth(0)).toBeChecked();
+  await expect(trashCheckboxes.nth(1)).toBeChecked();
+  await expect(page.getByText('2 selected')).toBeVisible();
+  await expect(selectAllButton).toContainText('Unselect all');
+});
+
 test('trash items older than 30 days are auto-purged on load', async ({ page }) => {
   await page.addInitScript(() => {
     indexedDB.deleteDatabase('SmartReaderLib');
