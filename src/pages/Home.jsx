@@ -58,10 +58,42 @@ const LIBRARY_THEME_KEY = 'library-theme';
 const LIBRARY_LANGUAGE_KEY = 'library-language';
 const ACCOUNT_PROFILE_KEY = 'library-account-profile';
 const ACCOUNT_DEFAULT_EMAIL = 'dreamerissame@gmail.com';
+const LIBRARY_PERF_DEBUG_KEY = "library-perf-debug";
+const LIBRARY_PERF_HISTORY_KEY = "__smartReaderPerfHistory";
 const LANGUAGE_DISPLAY_NAMES =
   typeof Intl !== "undefined" && typeof Intl.DisplayNames === "function"
     ? new Intl.DisplayNames(["en"], { type: "language" })
     : null;
+
+const getPerfNow = () => {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+  return Date.now();
+};
+
+const isPerfLoggingEnabled = () => {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(LIBRARY_PERF_DEBUG_KEY) === "1";
+};
+
+const recordPerfMetric = (label, startAt, details = {}) => {
+  const durationMs = Number((getPerfNow() - startAt).toFixed(1));
+  if (!isPerfLoggingEnabled() || typeof window === "undefined") return durationMs;
+
+  const entry = {
+    label,
+    durationMs,
+    details,
+    at: new Date().toISOString()
+  };
+  const history = Array.isArray(window[LIBRARY_PERF_HISTORY_KEY]) ? window[LIBRARY_PERF_HISTORY_KEY] : [];
+  history.push(entry);
+  if (history.length > 200) history.shift();
+  window[LIBRARY_PERF_HISTORY_KEY] = history;
+  console.info(`[perf] ${label} ${durationMs}ms`, details);
+  return durationMs;
+};
 
 const readStoredAccountProfile = () => {
   if (typeof window === "undefined") {
@@ -576,6 +608,7 @@ export default function Home() {
   };
 
   const loadLibrary = async () => {
+    const loadStartAt = getPerfNow();
     await purgeExpiredTrashBooks(TRASH_RETENTION_DAYS);
     const [storedBooks, storedCollections] = await Promise.all([getAllBooks(), getAllCollections()]);
     setBooks(storedBooks);
@@ -592,11 +625,27 @@ export default function Home() {
       })
       .map((book) => book.id);
 
-    if (!legacyBookIds.length) return;
+    if (!legacyBookIds.length) {
+      recordPerfMetric("library.load", loadStartAt, {
+        books: storedBooks.length,
+        collections: storedCollections.length,
+        legacyBackfills: 0
+      });
+      return;
+    }
 
+    const backfillStartAt = getPerfNow();
     await Promise.all(legacyBookIds.map((id) => backfillBookMetadata(id)));
     const refreshedBooks = await getAllBooks();
     setBooks(refreshedBooks);
+    recordPerfMetric("library.backfill", backfillStartAt, {
+      legacyBackfills: legacyBookIds.length
+    });
+    recordPerfMetric("library.load", loadStartAt, {
+      books: refreshedBooks.length,
+      collections: storedCollections.length,
+      legacyBackfills: legacyBookIds.length
+    });
   };
 
   const readStartedBookIds = () => {
@@ -1090,22 +1139,38 @@ export default function Home() {
   };
 
   const normalizeDuplicateValue = (value) => (value || "").toString().trim().toLowerCase();
+  const getDuplicateKey = (title, author) =>
+    `${normalizeDuplicateValue(title)}::${normalizeDuplicateValue(author)}`;
 
-  const findDuplicateBooks = (title, author, sourceBooks = books) => {
-    const normTitle = normalizeDuplicateValue(title);
-    const normAuthor = normalizeDuplicateValue(author);
-    return sourceBooks.filter((book) => {
-      if (book.isDeleted) return false;
-      return normalizeDuplicateValue(book.title) === normTitle && normalizeDuplicateValue(book.author) === normAuthor;
+  const buildDuplicateIndex = (sourceBooks = []) => {
+    const byKey = new Map();
+    const titleSet = new Set();
+    sourceBooks.forEach((book) => {
+      if (!book || book.isDeleted) return;
+      const key = getDuplicateKey(book.title, book.author);
+      const existing = byKey.get(key) || [];
+      byKey.set(key, [...existing, book]);
+      titleSet.add(normalizeDuplicateValue(book.title));
     });
+    return { byKey, titleSet };
   };
 
-  const buildDuplicateTitle = (baseTitle, sourceBooks = books) => {
-    const existingTitles = new Set(
-      sourceBooks
-        .filter((book) => !book.isDeleted)
-        .map((book) => normalizeDuplicateValue(book.title))
-    );
+  const findDuplicateBooks = (title, author, sourceBooks = books, duplicateIndex = null) => {
+    if (duplicateIndex) {
+      return duplicateIndex.byKey.get(getDuplicateKey(title, author)) || [];
+    }
+    const key = getDuplicateKey(title, author);
+    return sourceBooks.filter((book) => !book.isDeleted && getDuplicateKey(book.title, book.author) === key);
+  };
+
+  const buildDuplicateTitle = (baseTitle, sourceBooks = books, duplicateIndex = null) => {
+    const existingTitles = duplicateIndex
+      ? duplicateIndex.titleSet
+      : new Set(
+        sourceBooks
+          .filter((book) => !book.isDeleted)
+          .map((book) => normalizeDuplicateValue(book.title))
+      );
     let idx = 1;
     let candidate = `${baseTitle} (Duplicate ${idx})`;
     while (existingTitles.has(normalizeDuplicateValue(candidate))) {
@@ -1120,9 +1185,11 @@ export default function Home() {
       preparedMetadata,
       titleOverride: options.titleOverride
     });
-    await loadLibrary();
+    if (!options.skipReload) {
+      await loadLibrary();
+    }
     setUploadProgress(100);
-    if (newBook?.id) {
+    if (newBook?.id && !options.skipRecentHighlight) {
       setRecentlyAddedBookId(newBook.id);
       if (recentHighlightTimerRef.current) {
         clearTimeout(recentHighlightTimerRef.current);
@@ -1163,6 +1230,7 @@ export default function Home() {
     }
 
     try {
+      const batchStartAt = getPerfNow();
       setIsUploading(true);
       setShowUploadSuccess(false);
       setUploadStage("reading");
@@ -1173,23 +1241,56 @@ export default function Home() {
       setUploadProgress(0);
 
       let addedCount = 0;
+      let lastAddedBookId = "";
       let knownBooks = await getAllBooks();
+      let duplicateIndex = buildDuplicateIndex(knownBooks);
+      const syncVisibleBooks = () => {
+        const sortedKnownBooks = [...knownBooks].sort((left, right) => {
+          if (left.isFavorite === right.isFavorite) {
+            return new Date(right.addedAt) - new Date(left.addedAt);
+          }
+          return left.isFavorite ? -1 : 1;
+        });
+        setBooks(sortedKnownBooks);
+      };
+      recordPerfMetric("upload.batch.prefetch", batchStartAt, {
+        files: files.length,
+        knownBooks: knownBooks.length
+      });
+
       for (let index = 0; index < files.length; index += 1) {
+        const fileStartAt = getPerfNow();
         const file = files[index];
         setUploadBatchCurrentIndex(index + 1);
         setUploadBatchCurrentName(file.name || `Book ${index + 1}`);
         startUploadProgress();
 
         try {
+          const metadataStartAt = getPerfNow();
           const prepared = await readEpubMetadata(file);
+          const metadataDuration = recordPerfMetric("upload.file.metadata", metadataStartAt, {
+            fileName: file.name,
+            index: index + 1,
+            totalFiles: files.length
+          });
           const title = prepared?.metadata?.title || file.name.replace(/\.epub$/i, "");
           const author = prepared?.metadata?.creator || "Unknown Author";
-          const duplicates = findDuplicateBooks(title, author, knownBooks);
+          const duplicates = findDuplicateBooks(title, author, knownBooks, duplicateIndex);
 
           if (duplicates.length === 0) {
-            await completeAddBook(file, prepared);
+            const newBook = await completeAddBook(file, prepared, { skipReload: true, skipRecentHighlight: true });
             addedCount += 1;
-            knownBooks = await getAllBooks();
+            lastAddedBookId = newBook?.id || lastAddedBookId;
+            if (newBook) {
+              knownBooks = [...knownBooks, newBook];
+              duplicateIndex = buildDuplicateIndex(knownBooks);
+              syncVisibleBooks();
+            }
+            recordPerfMetric("upload.file.total", fileStartAt, {
+              fileName: file.name,
+              decision: "added",
+              metadataMs: metadataDuration
+            });
             continue;
           }
 
@@ -1204,29 +1305,76 @@ export default function Home() {
           });
 
           if (decision === "ignore") {
+            recordPerfMetric("upload.file.total", fileStartAt, {
+              fileName: file.name,
+              decision: "ignored",
+              metadataMs: metadataDuration
+            });
             continue;
           }
 
           if (decision === "replace") {
             await Promise.all(duplicates.map((book) => deleteBook(book.id)));
-            await completeAddBook(file, prepared);
+            const duplicateIds = new Set(duplicates.map((book) => book.id));
+            knownBooks = knownBooks.filter((book) => !duplicateIds.has(book.id));
+            const newBook = await completeAddBook(file, prepared, { skipReload: true, skipRecentHighlight: true });
             addedCount += 1;
-            knownBooks = await getAllBooks();
+            lastAddedBookId = newBook?.id || lastAddedBookId;
+            if (newBook) knownBooks = [...knownBooks, newBook];
+            duplicateIndex = buildDuplicateIndex(knownBooks);
+            syncVisibleBooks();
+            recordPerfMetric("upload.file.total", fileStartAt, {
+              fileName: file.name,
+              decision: "replaced",
+              metadataMs: metadataDuration,
+              replacedCount: duplicates.length
+            });
             continue;
           }
 
           if (decision === "keep-both") {
-            const duplicateTitle = buildDuplicateTitle(title, knownBooks);
-            await completeAddBook(file, prepared, { titleOverride: duplicateTitle });
+            const duplicateTitle = buildDuplicateTitle(title, knownBooks, duplicateIndex);
+            const newBook = await completeAddBook(file, prepared, {
+              titleOverride: duplicateTitle,
+              skipReload: true,
+              skipRecentHighlight: true
+            });
             addedCount += 1;
-            knownBooks = await getAllBooks();
+            lastAddedBookId = newBook?.id || lastAddedBookId;
+            if (newBook) {
+              knownBooks = [...knownBooks, newBook];
+              duplicateIndex = buildDuplicateIndex(knownBooks);
+              syncVisibleBooks();
+            }
+            recordPerfMetric("upload.file.total", fileStartAt, {
+              fileName: file.name,
+              decision: "keep-both",
+              metadataMs: metadataDuration
+            });
           }
         } catch (err) {
           console.error(err);
+          recordPerfMetric("upload.file.total", fileStartAt, {
+            fileName: file.name,
+            decision: "error"
+          });
         } finally {
           stopUploadProgress();
           setUploadProgress(100);
           setUploadBatchCompleted(index + 1);
+        }
+      }
+
+      if (addedCount > 0) {
+        await loadLibrary();
+        if (lastAddedBookId) {
+          setRecentlyAddedBookId(lastAddedBookId);
+          if (recentHighlightTimerRef.current) {
+            clearTimeout(recentHighlightTimerRef.current);
+          }
+          recentHighlightTimerRef.current = setTimeout(() => {
+            setRecentlyAddedBookId("");
+          }, 10000);
         }
       }
 
@@ -1249,6 +1397,10 @@ export default function Home() {
           setShowUploadSuccess(false);
         }, 2800);
       }
+      recordPerfMetric("upload.batch.total", batchStartAt, {
+        files: files.length,
+        addedCount
+      });
     } finally {
       setIsUploading(false);
       input.value = "";

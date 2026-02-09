@@ -215,15 +215,10 @@ export const addBook = async (file, options = {}) => {
 
 export const getAllBooks = async () => {
   const books = [];
-  const updates = [];
   await bookStore.iterate((value, key) => {
     const normalized = normalizeBookCollections(value);
     books.push(normalized);
-    if (normalized !== value) {
-      updates.push(bookStore.setItem(key, normalized));
-    }
   });
-  if (updates.length) await Promise.all(updates);
   return books.sort((a, b) => {
     if (a.isFavorite === b.isFavorite) {
       return new Date(b.addedAt) - new Date(a.addedAt);
@@ -245,10 +240,12 @@ export const purgeExpiredTrashBooks = async (retentionDays = TRASH_RETENTION_DAY
     }
   });
 
-  for (const id of idsToDelete) {
-    await bookStore.removeItem(id);
-    mutationQueues.delete(id);
-  }
+  await Promise.all(
+    idsToDelete.map(async (id) => {
+      await bookStore.removeItem(id);
+      mutationQueues.delete(id);
+    })
+  );
 
   return idsToDelete.length;
 };
