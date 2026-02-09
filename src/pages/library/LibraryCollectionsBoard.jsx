@@ -48,6 +48,8 @@ export default function LibraryCollectionsBoard({
   const [collectionSearch, setCollectionSearch] = useState("");
   const [collectionsViewMode, setCollectionsViewMode] = useState("directory");
   const [boardColumnCount, setBoardColumnCount] = useState(getBoardColumnCount);
+  const [addBooksCollectionId, setAddBooksCollectionId] = useState("");
+  const [addBooksSearch, setAddBooksSearch] = useState("");
 
   const activeBooks = useMemo(
     () => books.filter((book) => !book.isDeleted),
@@ -95,6 +97,7 @@ export default function LibraryCollectionsBoard({
 
   const selectedCollection = collections.find((collection) => collection.id === selectedCollectionId) || null;
   const selectedCollectionBooks = selectedCollection ? (booksByCollection[selectedCollection.id] || []) : [];
+  const addTargetCollection = collections.find((collection) => collection.id === addBooksCollectionId) || null;
 
   const sortedBoardEntries = useMemo(() => {
     return filteredCollections
@@ -123,6 +126,18 @@ export default function LibraryCollectionsBoard({
     });
     return columns.map((column) => column.entries);
   }, [sortedBoardEntries, boardColumnCount]);
+
+  const addBooksCandidates = useMemo(() => {
+    if (!addTargetCollection) return [];
+    const query = addBooksSearch.trim().toLowerCase();
+    return activeBooks
+      .filter((book) => !Array.isArray(book.collectionIds) || !book.collectionIds.includes(addTargetCollection.id))
+      .filter((book) => {
+        if (!query) return true;
+        return (book.title || "").toLowerCase().includes(query) || (book.author || "").toLowerCase().includes(query);
+      })
+      .sort((left, right) => (left.title || "").localeCompare(right.title || ""));
+  }, [activeBooks, addTargetCollection, addBooksSearch]);
 
   const renderCollectionControls = (collection, compact = false) => {
     const isEditing = editingCollectionId === collection.id;
@@ -154,6 +169,19 @@ export default function LibraryCollectionsBoard({
       <div className="flex items-center gap-1">
         <button
           type="button"
+          data-testid="collection-add-book"
+          onClick={() => {
+            setAddBooksCollectionId(collection.id);
+            setAddBooksSearch("");
+          }}
+          className={`inline-flex h-8 items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2 text-xs font-bold text-blue-700 hover:bg-blue-100 ${compact ? "px-2" : ""}`}
+          title="Add books"
+        >
+          <Plus size={12} />
+          {!compact && "Add"}
+        </button>
+        <button
+          type="button"
           data-testid="collection-rename-button"
           onClick={() => onCollectionRenameStart(collection)}
           className={`inline-flex h-8 items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 text-xs font-bold text-gray-700 hover:border-blue-200 hover:text-blue-700 ${compact ? "px-2" : ""}`}
@@ -174,6 +202,21 @@ export default function LibraryCollectionsBoard({
         </button>
       </div>
     );
+  };
+
+  const handleOpenAddBooks = (collectionId) => {
+    setAddBooksCollectionId(collectionId);
+    setAddBooksSearch("");
+  };
+
+  const handleCloseAddBooks = () => {
+    setAddBooksCollectionId("");
+    setAddBooksSearch("");
+  };
+
+  const handleAddBookToCollection = async (bookId) => {
+    if (!addTargetCollection) return;
+    await onRemoveFromCollection(bookId, addTargetCollection.id);
   };
 
   const renderBookItem = (book, collectionId) => {
@@ -405,12 +448,23 @@ export default function LibraryCollectionsBoard({
                 ) : (
                   <>
                     <header className="mb-3 border-b border-gray-100 pb-3">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="inline-block h-2.5 w-2.5 rounded-full"
-                          style={{ backgroundColor: selectedCollection.color }}
-                        />
-                        <h3 className="text-base font-bold text-gray-900">{selectedCollection.name}</h3>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="inline-block h-2.5 w-2.5 rounded-full"
+                            style={{ backgroundColor: selectedCollection.color }}
+                          />
+                          <h3 className="text-base font-bold text-gray-900">{selectedCollection.name}</h3>
+                        </div>
+                        <button
+                          type="button"
+                          data-testid="collection-detail-add-book"
+                          onClick={() => handleOpenAddBooks(selectedCollection.id)}
+                          className="inline-flex h-8 items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2 text-xs font-bold text-blue-700 hover:bg-blue-100"
+                        >
+                          <Plus size={12} />
+                          Add books
+                        </button>
                       </div>
                       <p className="mt-1 text-xs text-gray-500">
                         {selectedCollectionBooks.length} book{selectedCollectionBooks.length === 1 ? "" : "s"} in this collection
@@ -526,6 +580,89 @@ export default function LibraryCollectionsBoard({
             </div>
           )}
         </>
+      )}
+
+      {addTargetCollection && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4"
+          onClick={handleCloseAddBooks}
+          data-testid="collection-add-books-modal"
+        >
+          <div
+            className="w-full max-w-2xl rounded-2xl border border-gray-200 bg-white p-4 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-bold text-gray-900">
+                  Add books to {addTargetCollection.name}
+                </h3>
+                <p className="text-xs text-gray-500">
+                  Choose books from your library that are not in this collection yet.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseAddBooks}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 text-gray-500 hover:text-gray-700"
+                title="Close"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="relative mb-3">
+              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={15} />
+              <input
+                value={addBooksSearch}
+                onChange={(e) => setAddBooksSearch(e.target.value)}
+                placeholder="Search books by title or author..."
+                className="h-10 w-full rounded-xl border border-gray-200 bg-white pl-9 pr-3 text-sm text-gray-700 outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+              {addBooksCandidates.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4 text-sm text-gray-500">
+                  No available books to add.
+                </div>
+              ) : (
+                addBooksCandidates.map((book) => (
+                  <div
+                    key={`add-${addTargetCollection.id}-${book.id}`}
+                    data-testid="collection-add-books-item"
+                    className="flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white p-2"
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      <div className="h-12 w-9 shrink-0 overflow-hidden rounded-md border border-gray-100 bg-gray-100">
+                        {book.cover ? (
+                          <img src={book.cover} alt={book.title} className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center text-gray-300">
+                            <BookIcon size={12} />
+                          </div>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-gray-900">{book.title}</div>
+                        <div className="truncate text-xs text-gray-500">{book.author}</div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      data-testid="collection-add-books-confirm"
+                      onClick={() => handleAddBookToCollection(book.id)}
+                      className="inline-flex h-8 items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-3 text-xs font-bold text-blue-700 hover:bg-blue-100"
+                    >
+                      <Plus size={12} />
+                      Add
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </section>
   );

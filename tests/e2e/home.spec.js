@@ -84,11 +84,12 @@ test('collections create and assign flow works', async ({ page }) => {
   await openLibraryPage(page);
   await assignFirstBookToShelf(page, 'Classics');
   await openCollectionsPage(page);
-  await expect(page.getByTestId('collection-column').filter({ hasText: 'Classics' })).toBeVisible();
-  await expect(page.getByTestId('collection-column-book')).toHaveCount(1);
+  await expect(page.getByTestId('collections-directory-layout')).toBeVisible();
+  await expect(page.getByTestId('collection-item-name').filter({ hasText: 'Classics' })).toBeVisible();
+  await expect(page.getByTestId('collections-detail-panel').getByTestId('collection-column-book')).toHaveCount(1);
 });
 
-test('collections page renders Jira-style columns with books inside each collection', async ({ page }) => {
+test('collections page supports optional board mode with balanced columns', async ({ page }) => {
   await page.addInitScript(() => {
     indexedDB.deleteDatabase('SmartReaderLib');
     localStorage.clear();
@@ -104,11 +105,40 @@ test('collections page renders Jira-style columns with books inside each collect
   await assignFirstBookToShelf(page, 'Shelf One');
   await openCollectionsPage(page);
 
+  await page.getByTestId('collections-view-board').click();
+  await expect(page.getByTestId('collections-board-overview')).toBeVisible();
+  const boardColumnCount = await page.getByTestId('collections-board-column').count();
+  expect(boardColumnCount).toBeGreaterThan(0);
+
   await expect(page.getByTestId('collection-column')).toHaveCount(2);
   await expect(page.getByTestId('collection-column').filter({ hasText: 'Shelf One' })).toBeVisible();
   await expect(page.getByTestId('collection-column').filter({ hasText: 'Shelf Two' })).toBeVisible();
   await expect(page.getByTestId('collection-column').filter({ hasText: 'Shelf One' }).getByTestId('collection-column-book')).toHaveCount(1);
   await expect(page.getByTestId('collection-column').filter({ hasText: 'Shelf Two' }).getByText('No books in this collection yet.')).toBeVisible();
+});
+
+test('collections detail can add books directly to selected collection', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await createShelf(page, 'Add Target');
+  await openCollectionsPage(page);
+  await expect(page.getByTestId('collections-detail-panel').getByTestId('collection-column-book')).toHaveCount(0);
+
+  await page.getByTestId('collection-detail-add-book').click();
+  const addBooksModal = page.getByTestId('collection-add-books-modal');
+  await expect(addBooksModal).toBeVisible();
+  await expect(addBooksModal.getByTestId('collection-add-books-item')).toHaveCount(1);
+
+  await addBooksModal.getByTestId('collection-add-books-confirm').first().click();
+  await expect(page.getByTestId('collections-detail-panel').getByTestId('collection-column-book')).toHaveCount(1);
+  await expect(addBooksModal.getByTestId('collection-add-books-item')).toHaveCount(0);
 });
 
 test('collection rename updates filter options and chips', async ({ page }) => {
