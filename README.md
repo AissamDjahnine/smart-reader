@@ -23,6 +23,10 @@ Smart Reader is built around real reading behavior:
 - Duplicate upload guard: prompt to ignore, replace (with data loss warning), or keep both with a numbered duplicate title
 - Clean cover-based library (grid or list)
 - Smart metadata (author, language, estimated pages, genre when available)
+- Book Info popover on each card (hover/click) with cleaned EPUB metadata:
+  - Prioritized order for key fields (`Title`, `Author`, `Language`)
+  - Hidden noisy/empty entries (for example `modified`, `identifier`, and blank values)
+  - Language labels shown in full form (`English`, `French`, etc.)
 - Clean inline metadata rows on cards (lightweight language/pages display)
 - Workspace sidebar for fast section switching: `My Library`, `My Collections`, `Notes Center`, `Highlights Center`, `Account`
 - Search, filter, and sort to find the right book fast
