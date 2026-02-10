@@ -34,6 +34,17 @@ test('selection toolbar closes automatically when selection is cleared', async (
   await expect(page.getByTestId('selection-toolbar')).toHaveCount(0);
 });
 
+test('dictionary action shows icon in selection toolbar', async ({ page }) => {
+  await openFixtureBook(page);
+  await selectTextInBook(page);
+
+  const toolbar = page.getByTestId('selection-toolbar');
+  await expect(toolbar).toBeVisible();
+  await expect(
+    toolbar.getByRole('button', { name: 'Dictionary' }).locator('svg')
+  ).toHaveCount(1);
+});
+
 test('ai toolbar actions are visibly disabled and orange', async ({ page }) => {
   await openFixtureBook(page);
 

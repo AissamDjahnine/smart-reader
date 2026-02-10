@@ -8,7 +8,7 @@ import {
   Moon, Sun, BookOpen, Scroll, Type, 
   ChevronLeft, Menu, X,
   Search as SearchIcon, Sparkles, Wand2, User,
-  BookOpenText, Highlighter, Languages, Bookmark
+  BookOpenText, Highlighter, Languages, Bookmark, BookText
 } from 'lucide-react';
 
 const DEFAULT_TRANSLATE_PROVIDER = 'mymemory';
@@ -125,8 +125,10 @@ export default function Reader() {
   const highlightFlashTimersRef = useRef([]);
   const [bookmarks, setBookmarks] = useState([]);
   const [selection, setSelection] = useState(null);
+  const selectionRef = useRef(null);
   const [selectionMode, setSelectionMode] = useState('actions');
   const [postHighlightPrompt, setPostHighlightPrompt] = useState(null);
+  const postHighlightPromptStateRef = useRef(null);
   const [postHighlightNoteDraft, setPostHighlightNoteDraft] = useState('');
   const [postHighlightNoteError, setPostHighlightNoteError] = useState('');
   const [isSavingPostHighlightNote, setIsSavingPostHighlightNote] = useState(false);
@@ -193,6 +195,155 @@ export default function Reader() {
   useEffect(() => () => {
     clearHighlightFlashTimers();
   }, [clearHighlightFlashTimers]);
+
+  useEffect(() => {
+    selectionRef.current = selection;
+  }, [selection]);
+
+  useEffect(() => {
+    postHighlightPromptStateRef.current = postHighlightPrompt;
+  }, [postHighlightPrompt]);
+
+  const resolveAnchorFromRange = useCallback((range, fallbackDocument = null) => {
+    if (!range) return null;
+    const rects = range.getClientRects?.() || [];
+    const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect?.();
+    if (!rect) return null;
+    let left = rect.left;
+    let right = rect.right;
+    let top = rect.top;
+    let bottom = rect.bottom;
+    let x = rect.right;
+    let y = rect.bottom;
+    const ownerDocument = fallbackDocument || range?.startContainer?.ownerDocument || null;
+    const frameElement = ownerDocument?.defaultView?.frameElement || null;
+    if (frameElement) {
+      const frameRect = frameElement.getBoundingClientRect();
+      x += frameRect.left;
+      y += frameRect.top;
+      left += frameRect.left;
+      right += frameRect.left;
+      top += frameRect.top;
+      bottom += frameRect.top;
+    }
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 0;
+    const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 0;
+    const isVisible = right >= 0 && left <= viewportWidth && bottom >= 0 && top <= viewportHeight;
+    if (!isVisible) return null;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y };
+  }, []);
+
+  const resolveAnchorFromCfi = useCallback((cfiRange) => {
+    if (!rendition || !cfiRange) return null;
+
+    const renderedContents = rendition.getContents?.() || [];
+    for (const content of renderedContents) {
+      try {
+        const range = content?.range ? content.range(cfiRange) : null;
+        const anchor = resolveAnchorFromRange(range, content?.document || null);
+        if (anchor) return anchor;
+      } catch (err) {
+        // CFI can legitimately belong to another rendered section.
+      }
+    }
+
+    try {
+      const rangeCandidate = rendition.book?.getRange?.(cfiRange);
+      if (rangeCandidate && typeof rangeCandidate.then !== 'function') {
+        const anchor = resolveAnchorFromRange(rangeCandidate);
+        if (anchor) return anchor;
+      }
+    } catch (err) {
+      // Ignore fallback failures; caller can keep previous anchor.
+    }
+    return null;
+  }, [rendition, resolveAnchorFromRange]);
+
+  useEffect(() => {
+    if (!rendition) return;
+    let rafId = null;
+
+    const syncAnchors = () => {
+      rafId = null;
+      const currentSelection = selectionRef.current;
+      if (currentSelection?.cfiRange) {
+        const nextAnchor = resolveAnchorFromCfi(currentSelection.cfiRange);
+        if (nextAnchor) {
+          setSelection((prev) => {
+            if (!prev || prev.cfiRange !== currentSelection.cfiRange) return prev;
+            const prevX = Number(prev?.pos?.x) || 0;
+            const prevY = Number(prev?.pos?.y) || 0;
+            const deltaX = Math.abs(prevX - nextAnchor.x);
+            const deltaY = Math.abs(prevY - nextAnchor.y);
+            if (deltaX <= 1 && deltaY <= 1) return prev;
+            return { ...prev, pos: nextAnchor };
+          });
+        } else {
+          setSelection((prev) => {
+            if (!prev || prev.cfiRange !== currentSelection.cfiRange) return prev;
+            return null;
+          });
+          setSelectionMode('actions');
+        }
+      }
+
+      const currentPrompt = postHighlightPromptStateRef.current;
+      const promptCfi = currentPrompt?.highlight?.cfiRange;
+      if (promptCfi) {
+        const nextAnchor = resolveAnchorFromCfi(promptCfi);
+        if (nextAnchor) {
+          setPostHighlightPrompt((prev) => {
+            if (!prev || prev?.highlight?.cfiRange !== promptCfi) return prev;
+            const prevX = Number(prev?.x) || 0;
+            const prevY = Number(prev?.y) || 0;
+            const deltaX = Math.abs(prevX - nextAnchor.x);
+            const deltaY = Math.abs(prevY - nextAnchor.y);
+            if (deltaX <= 1 && deltaY <= 1) return prev;
+            return { ...prev, x: nextAnchor.x, y: nextAnchor.y };
+          });
+        } else {
+          closePostHighlightPrompt();
+        }
+      }
+    };
+
+    const scheduleSync = () => {
+      if (rafId !== null) return;
+      rafId = window.requestAnimationFrame(syncAnchors);
+    };
+
+    const onViewportChange = () => {
+      scheduleSync();
+    };
+
+    window.addEventListener('resize', onViewportChange);
+    window.addEventListener('scroll', onViewportChange, true);
+
+    const contentListeners = (rendition.getContents?.() || [])
+      .map((content) => {
+        const contentWindow = content?.window;
+        if (!contentWindow) return null;
+        contentWindow.addEventListener('scroll', onViewportChange);
+        contentWindow.addEventListener('resize', onViewportChange);
+        return () => {
+          contentWindow.removeEventListener('scroll', onViewportChange);
+          contentWindow.removeEventListener('resize', onViewportChange);
+        };
+      })
+      .filter(Boolean);
+
+    scheduleSync();
+
+    return () => {
+      window.removeEventListener('resize', onViewportChange);
+      window.removeEventListener('scroll', onViewportChange, true);
+      contentListeners.forEach((dispose) => dispose());
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+      }
+    };
+  }, [rendition, currentHref, resolveAnchorFromCfi, closePostHighlightPrompt]);
 
   useEffect(() => {
     if (!postHighlightPrompt) return;
@@ -2805,7 +2956,12 @@ export default function Reader() {
         return (
         <div
           className="fixed z-[70] pointer-events-auto"
-          style={{ left: clampedX, top: clampedY, transform }}
+          style={{
+            left: clampedX,
+            top: clampedY,
+            transform,
+            transition: 'left 140ms ease-out, top 140ms ease-out'
+          }}
           data-testid="selection-toolbar"
         >
           <div className={`flex items-center gap-2 px-3 py-2 rounded-2xl shadow-xl border ${
@@ -2822,8 +2978,9 @@ export default function Reader() {
                 <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
                 <button
                   onClick={() => openDictionaryForText(selection.text)}
-                  className="text-xs font-bold text-blue-600 dark:text-blue-400"
+                  className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1"
                 >
+                  <BookText size={12} />
                   Dictionary
                 </button>
                 <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
@@ -2857,8 +3014,9 @@ export default function Reader() {
               <>
                 <button
                   onClick={() => openDictionaryForText(selection.text)}
-                  className="text-xs font-bold text-blue-600 dark:text-blue-400"
+                  className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1"
                 >
+                  <BookText size={12} />
                   Dictionary
                 </button>
                 <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
@@ -2918,7 +3076,12 @@ export default function Reader() {
                 ? 'bg-gray-800 border-gray-700 text-gray-100'
                 : 'bg-white border-gray-200 text-gray-800'
             }`}
-            style={{ left, top, width: promptWidth }}
+            style={{
+              left,
+              top,
+              width: promptWidth,
+              transition: 'left 140ms ease-out, top 140ms ease-out'
+            }}
           >
             <div className="flex items-center justify-between gap-2">
               <div className="text-[10px] uppercase tracking-wider text-gray-400">
