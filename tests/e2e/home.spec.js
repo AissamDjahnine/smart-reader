@@ -1477,6 +1477,79 @@ test('persistent search index is stored in IndexedDB and includes uploaded book 
   expect(firstEntry.fullText).toContain('test book');
 });
 
+test('persistent content index is stored in IndexedDB with section text entries', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await page.getByTestId('library-search').fill('valley');
+  await expect
+    .poll(async () => page.getByTestId('global-search-result-content').count(), { timeout: 25000 })
+    .toBeGreaterThan(0);
+
+  const contentIndexInfo = await page.evaluate(() => new Promise((resolve) => {
+    const request = indexedDB.open('SmartReaderLib');
+    request.onerror = () => resolve(null);
+    request.onsuccess = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains('contentSearch')) {
+        db.close();
+        resolve(null);
+        return;
+      }
+      const tx = db.transaction('contentSearch', 'readonly');
+      const store = tx.objectStore('contentSearch');
+      const manifestReq = store.get('__manifest__');
+      manifestReq.onerror = () => {
+        db.close();
+        resolve(null);
+      };
+      manifestReq.onsuccess = () => {
+        const manifest = manifestReq.result;
+        const firstBookId = manifest?.books ? Object.keys(manifest.books)[0] : null;
+        if (!firstBookId) {
+          db.close();
+          resolve({
+            manifestVersion: manifest?.version || 0,
+            indexedBooks: 0,
+            sectionCount: 0
+          });
+          return;
+        }
+        const recordReq = store.get(`book:${firstBookId}`);
+        recordReq.onerror = () => {
+          db.close();
+          resolve(null);
+        };
+        recordReq.onsuccess = () => {
+          const record = recordReq.result;
+          db.close();
+          resolve({
+            manifestVersion: manifest?.version || 0,
+            indexedBooks: Object.keys(manifest?.books || {}).length,
+            sectionCount: Array.isArray(record?.sections) ? record.sections.length : 0,
+            hasText: Array.isArray(record?.sections)
+              ? record.sections.some((section) => typeof section?.text === 'string' && section.text.length > 0)
+              : false
+          });
+        };
+      };
+    };
+  }));
+
+  expect(contentIndexInfo).toBeTruthy();
+  expect(contentIndexInfo.manifestVersion).toBe(1);
+  expect(contentIndexInfo.indexedBooks).toBeGreaterThan(0);
+  expect(contentIndexInfo.sectionCount).toBeGreaterThan(0);
+  expect(contentIndexInfo.hasText).toBeTruthy();
+});
+
 test('empty state reset button clears filters and restores results', async ({ page }) => {
   await page.addInitScript(() => {
     indexedDB.deleteDatabase('SmartReaderLib');

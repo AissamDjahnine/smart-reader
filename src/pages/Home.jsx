@@ -20,6 +20,13 @@ import {
 } from '../services/db';
 import { readEpubMetadataFast } from '../services/epubMetadataWorkerClient';
 import { buildBookSearchRecord, syncSearchIndexFromBooks } from "../services/searchIndex";
+import {
+  ensureContentSearchIndexes,
+  getBookContentIndexSignature,
+  getContentSearchIndexRecord,
+  loadContentSearchManifest
+} from "../services/contentSearchIndex";
+import { findContentIndexCandidates } from "../services/contentSearchWorkerClient";
 import ePub from 'epubjs';
 import {
   Plus,
@@ -324,7 +331,7 @@ const flattenToc = (items, acc = []) => {
   return acc;
 };
 
-const searchBookContent = async (book, query, maxMatches = 30) => {
+const searchBookContentLegacy = async (book, query, maxMatches = 30) => {
   if (!book?.data || !query) return [];
   const epub = ePub(book.data);
   const matches = [];
@@ -363,6 +370,64 @@ const searchBookContent = async (book, query, maxMatches = 30) => {
     }
   } catch (err) {
     console.error(err);
+  } finally {
+    epub.destroy();
+  }
+
+  return matches;
+};
+
+const searchBookContentFromIndex = async (book, query, manifestEntry, maxMatches = 30) => {
+  if (!book?.id || !book?.data || !query || !manifestEntry) return null;
+  const expectedSignature = getBookContentIndexSignature(book);
+  if (manifestEntry.signature !== expectedSignature) return null;
+
+  const indexRecord = await getContentSearchIndexRecord(book.id);
+  if (!indexRecord || indexRecord.signature !== expectedSignature) return null;
+  if (!Array.isArray(indexRecord.sections) || !indexRecord.sections.length) return [];
+
+  const candidates = await findContentIndexCandidates(indexRecord.sections, query, Math.max(maxMatches, 12));
+  if (!candidates.length) return [];
+
+  const epub = ePub(book.data);
+  const matches = [];
+
+  try {
+    await epub.ready;
+    const spineItems = Array.isArray(epub?.spine?.spineItems) ? epub.spine.spineItems : [];
+    const sectionByHref = new Map();
+
+    spineItems.forEach((section) => {
+      if (!section) return;
+      const href = normalizeHref(section.href || "");
+      if (!href || sectionByHref.has(href)) return;
+      sectionByHref.set(href, section);
+    });
+
+    for (const candidate of candidates) {
+      const section = sectionByHref.get(normalizeHref(candidate?.href || ""));
+      if (!section) continue;
+
+      try {
+        await section.load(epub.load.bind(epub));
+        const sectionMatches = typeof section.find === "function" ? section.find(query) || [] : [];
+        for (const match of sectionMatches) {
+          matches.push({
+            cfi: match?.cfi || "",
+            excerpt: match?.excerpt || candidate?.preview || "",
+            chapterLabel: candidate?.chapterLabel || ""
+          });
+          if (matches.length >= maxMatches) break;
+        }
+      } finally {
+        section.unload();
+      }
+
+      if (matches.length >= maxMatches) break;
+    }
+  } catch (err) {
+    console.error(err);
+    return null;
   } finally {
     epub.destroy();
   }
@@ -442,6 +507,7 @@ export default function Home() {
   const [infoPopover, setInfoPopover] = useState(null);
   const [showCreateCollectionForm, setShowCreateCollectionForm] = useState(false);
   const [contentSearchMatches, setContentSearchMatches] = useState({});
+  const [contentIndexManifest, setContentIndexManifest] = useState({});
   const [searchIndexByBook, setSearchIndexByBook] = useState({});
   const [isContentSearching, setIsContentSearching] = useState(false);
   const contentSearchTokenRef = useRef(0);
@@ -548,7 +614,16 @@ export default function Home() {
 
       for (const book of targetBooks) {
         if (contentSearchTokenRef.current !== token) return;
-        const matches = await searchBookContent(book, query, 30);
+        const indexedMatches = await searchBookContentFromIndex(
+          book,
+          query,
+          contentIndexManifest[book.id],
+          30
+        );
+        const matches =
+          indexedMatches == null
+            ? await searchBookContentLegacy(book, query, 30)
+            : indexedMatches;
         if (contentSearchTokenRef.current !== token) return;
         if (matches.length) nextMatches[book.id] = matches;
       }
@@ -565,7 +640,54 @@ export default function Home() {
         setIsContentSearching(false);
       }
     };
-  }, [books, debouncedSearchQuery, librarySection]);
+  }, [books, contentIndexManifest, debouncedSearchQuery, librarySection]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const syncContentSearchIndex = async () => {
+      const activeBooks = books.filter((book) => !book?.isDeleted && book?.data);
+      if (!activeBooks.length) {
+        if (!isCancelled) setContentIndexManifest({});
+        return;
+      }
+
+      try {
+        const cachedManifest = await loadContentSearchManifest();
+        if (isCancelled) return;
+        setContentIndexManifest(cachedManifest.books || {});
+      } catch (err) {
+        console.error("Failed to load content search manifest", err);
+      }
+
+      const indexStartAt = getPerfNow();
+      try {
+        const result = await ensureContentSearchIndexes(activeBooks, {
+          isCancelled: () => isCancelled,
+          onBookIndexed: (bookId, manifestEntry) => {
+            if (isCancelled || !bookId || !manifestEntry) return;
+            setContentIndexManifest((current) => ({
+              ...current,
+              [bookId]: manifestEntry
+            }));
+          }
+        });
+        if (isCancelled) return;
+        setContentIndexManifest(result.books || {});
+        recordPerfMetric("content-index.sync", indexStartAt, {
+          indexedBooks: Object.keys(result.books || {}).length
+        });
+      } catch (err) {
+        console.error("Failed to sync content search indexes", err);
+      }
+    };
+
+    syncContentSearchIndex();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [books]);
 
   useEffect(() => {
     let isCancelled = false;
