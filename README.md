@@ -24,6 +24,11 @@ Smart Reader is built around real reading behavior:
   - Overall progress (`current/total` books in the batch)
   - Current file progress (green bar per active file)
 - Duplicate upload guard (single or batch): per-file prompt to ignore, replace (with data loss warning), or keep both with numbered duplicate titles (`Duplicate 1`, `Duplicate 2`, etc.)
+- Bulk upload path optimized for speed:
+  - One library refresh after the full batch (instead of reloading after each file)
+  - In-memory duplicate index while processing each file
+  - EPUB metadata extraction runs in a Web Worker to keep upload UI responsive on heavy files/batches
+  - Automatic fallback to main-thread parsing if Worker is unavailable
 - Yellow success toast after upload and a 10-second halo on newly added book cards
 - Clean cover-based library (grid or list)
 - Smart metadata (author, language, estimated pages, genre when available)
@@ -48,6 +53,16 @@ Smart Reader is built around real reading behavior:
 - Quick filter count chips (`To read`, `In progress`, `Finished`, `Favorites`) with one-click filtering
 - Combine `Status` filtering with quick `Favorites` filtering when needed
 - One-click `Reset filters` action to return search/filter/sort to default
+- Large-library rendering optimization:
+  - Incremental card rendering in grid/list views (books are loaded in chunks while scrolling)
+  - Helps keep scrolling smooth and initial render faster with heavy libraries
+  - Debounced library search and memoized heavy selectors to keep typing and filtering responsive at scale
+  - Persistent IndexedDB search index for metadata, highlights, notes, and bookmarks (faster repeat searches after reload)
+  - Persistent in-book content index stored in IndexedDB to reduce repeated full-EPUB scans during global content search
+  - Worker-assisted section candidate matching before EPUB CFI resolution (fewer sections searched per query)
+  - Route-level lazy loading (`Home` / `Reader`) to reduce initial bundle cost
+  - On-demand loading for export libraries (`jspdf`, `html2canvas`, `jszip`) only when export actions are used
+  - Render culling with `content-visibility: auto` on large repeated rows/cards (library, notes, highlights, global search)
 - Manual `TO READ` tagging (create your personal "read next" queue)
 - Favorites with cleaner, less cluttered library cards
 - Notes Center in Library with cross-book note browsing, inline editing, and jump-to-reader
@@ -63,6 +78,9 @@ Smart Reader is built around real reading behavior:
   - Multiple books: optional ZIP export with one folder per book (`PDF` + `JSON`)
   - If a book has no highlights/notes, no backup prompt is shown
 - Top-right `Dark mode / Light mode` toggle directly in the library header
+- Optional performance debug traces for heavy libraries:
+  - Set `localStorage.setItem("library-perf-debug", "1")` to log `load/upload` timings in DevTools
+  - Read session timings from `window.__smartReaderPerfHistory`
 
 ### Reader Built for Focus
 
@@ -133,6 +151,9 @@ Open the app at the local Vite URL (usually `http://localhost:5173`).
 - `src/pages/Reader.jsx` - Reading experience, contextual tools, highlights, bookmarks, export, and search handoff
 - `src/components/BookView.jsx` - EPUB rendering and navigation engine
 - `src/services/db.js` - Local-first persistence layer
+- `src/services/searchIndex.js` - Persistent search index builder/storage for fast library + global search
+- `src/services/contentSearchIndex.js` - Persistent in-book section text index for faster content searching
+- `src/services/contentSearchWorkerClient.js` - Worker client for fast candidate section matching during content search
 
 ---
 

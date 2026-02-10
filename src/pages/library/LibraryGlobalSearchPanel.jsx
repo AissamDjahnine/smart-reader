@@ -1,5 +1,8 @@
 import React from "react";
 
+const VIRTUAL_SEARCH_ITEM_STYLE = { contentVisibility: "auto", containIntrinsicSize: "92px" };
+const VIRTUAL_BOOK_ROW_STYLE = { contentVisibility: "auto", containIntrinsicSize: "560px" };
+
 export default function LibraryGlobalSearchPanel({
   showGlobalSearchSplitColumns,
   globalSearchTotal,
@@ -43,6 +46,7 @@ export default function LibraryGlobalSearchPanel({
                     key={`content-pair-${pair.bookId}`}
                     data-testid="global-search-content-book-row"
                     className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.65fr)_minmax(260px,0.95fr)] gap-3 items-start"
+                    style={VIRTUAL_BOOK_ROW_STYLE}
                   >
                     <div
                       data-testid="global-search-group-content"
@@ -61,6 +65,7 @@ export default function LibraryGlobalSearchPanel({
                             data-testid="global-search-result-content"
                             onClick={(e) => onOpenResult(e, item)}
                             className="w-full text-left rounded-lg border border-transparent hover:border-blue-200 hover:bg-blue-50 px-2 py-2 transition"
+                            style={VIRTUAL_SEARCH_ITEM_STYLE}
                           >
                             <div className="text-xs font-bold text-gray-900 line-clamp-1">{item.title}</div>
                             <div className="text-[11px] text-gray-500 line-clamp-1">{item.subtitle}</div>
@@ -95,6 +100,7 @@ export default function LibraryGlobalSearchPanel({
                           data-testid={`global-search-result-${group.key}`}
                           onClick={(e) => onOpenResult(e, item)}
                           className="w-full text-left rounded-lg border border-transparent hover:border-blue-200 hover:bg-blue-50 px-2 py-2 transition"
+                          style={VIRTUAL_SEARCH_ITEM_STYLE}
                         >
                           <div className="text-xs font-bold text-gray-900 line-clamp-1">{item.title}</div>
                           <div className="text-[11px] text-gray-500 line-clamp-1">{item.subtitle}</div>

@@ -3,8 +3,6 @@ import { useSearchParams, Link } from 'react-router-dom';
 import { getBook, updateBookProgress, saveHighlight, deleteHighlight, updateReadingStats, saveChapterSummary, savePageSummary, saveBookmark, deleteBookmark, updateHighlightNote, updateBookReaderSettings, markBookStarted } from '../services/db';
 import BookView from '../components/BookView';
 import { summarizeChapter } from '../services/ai'; 
-import html2canvas from 'html2canvas';
-import jsPDF from 'jspdf';
 
 import { 
   Moon, Sun, BookOpen, Scroll, Type, 
@@ -537,6 +535,12 @@ export default function Reader() {
     if (!targets.length || isExportingHighlights) return;
     setIsExportingHighlights(true);
     try {
+      const [{ default: html2canvasLib }, jsPdfModule] = await Promise.all([
+        import('html2canvas'),
+        import('jspdf'),
+      ]);
+      const JsPdfCtor = jsPdfModule.jsPDF || jsPdfModule.default;
+
       const exportRoot = document.createElement('div');
       exportRoot.style.position = 'fixed';
       exportRoot.style.left = '-10000px';
@@ -545,7 +549,7 @@ export default function Reader() {
       exportRoot.style.padding = '24px';
       document.body.appendChild(exportRoot);
 
-      const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+      const pdf = new JsPdfCtor({ unit: 'pt', format: 'a4' });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
       const margin = 36;
@@ -651,7 +655,7 @@ export default function Reader() {
         exportRoot.appendChild(card);
 
         await new Promise((resolve) => requestAnimationFrame(resolve));
-        const canvas = await html2canvas(card, { scale: 2, backgroundColor: null });
+        const canvas = await html2canvasLib(card, { scale: 2, backgroundColor: null });
         const imgData = canvas.toDataURL('image/png');
 
         const ratio = canvas.height / canvas.width;

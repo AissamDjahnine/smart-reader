@@ -1,5 +1,8 @@
 import React from "react";
 
+const VIRTUAL_HIGHLIGHT_ITEM_STYLE = { contentVisibility: "auto", containIntrinsicSize: "180px" };
+const VIRTUAL_BOOK_ROW_STYLE = { contentVisibility: "auto", containIntrinsicSize: "560px" };
+
 export default function LibraryHighlightsCenterPanel({
   highlightsCenterFilteredEntries,
   highlightsCenterPairs,
@@ -40,6 +43,7 @@ export default function LibraryHighlightsCenterPanel({
               key={`highlights-pair-${pair.bookId}`}
               data-testid="highlights-center-book-row"
               className="grid grid-cols-1 gap-3 items-start lg:grid-cols-[minmax(0,1.65fr)_minmax(260px,0.95fr)]"
+              style={VIRTUAL_BOOK_ROW_STYLE}
             >
               <div className={`rounded-xl border border-indigo-100 bg-white p-3 ${contentPanelHeightClass}`}>
                 <div className="mb-2 text-[11px] uppercase tracking-[0.16em] font-bold text-indigo-700">
@@ -47,7 +51,12 @@ export default function LibraryHighlightsCenterPanel({
                 </div>
                 <div className={`space-y-3 overflow-y-auto pr-1 pb-2 ${contentScrollHeightClass}`}>
                   {pair.entries.map((entry) => (
-                    <article key={entry.id} data-testid="highlights-center-item" className="rounded-xl border border-indigo-100 bg-white p-3">
+                    <article
+                      key={entry.id}
+                      data-testid="highlights-center-item"
+                      className="rounded-xl border border-indigo-100 bg-white p-3"
+                      style={VIRTUAL_HIGHLIGHT_ITEM_STYLE}
+                    >
                       <div className="flex items-center justify-between gap-3">
                         <div>
                           <div className="text-sm font-bold text-gray-900">{entry.bookTitle}</div>
