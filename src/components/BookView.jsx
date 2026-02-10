@@ -320,7 +320,71 @@ export default function BookView({
           }
           try {
             rendition.annotations.add(USER_HIGHLIGHT_ANNOTATION_TYPE, h.cfiRange, {}, (e) => {
-              if (onSelectionRef.current) onSelectionRef.current(h.text, h.cfiRange, { x: e.clientX, y: e.clientY }, true);
+              if (!onSelectionRef.current) return;
+              const toViewportAnchor = (x, y, doc = null) => {
+                let nextX = Number(x);
+                let nextY = Number(y);
+                if (!Number.isFinite(nextX) || !Number.isFinite(nextY)) return null;
+                const frame = doc?.defaultView?.frameElement || null;
+                if (frame) {
+                  const frameRect = frame.getBoundingClientRect();
+                  nextX += frameRect.left;
+                  nextY += frameRect.top;
+                }
+                if (!Number.isFinite(nextX) || !Number.isFinite(nextY)) return null;
+                return { x: nextX, y: nextY };
+              };
+
+              const emitSelection = (anchor) => {
+                if (!anchor || !onSelectionRef.current) return false;
+                onSelectionRef.current(h.text, h.cfiRange, anchor, true);
+                return true;
+              };
+
+              const getRenderedRangeAnchor = () => {
+                const contentsList = rendition.getContents?.() || [];
+                if (!contentsList.length) return null;
+
+                const ownerDoc = e?.target?.ownerDocument || null;
+                const preferred = ownerDoc
+                  ? contentsList.find((content) => content?.document === ownerDoc)
+                  : null;
+                const candidates = preferred
+                  ? [preferred, ...contentsList.filter((content) => content !== preferred)]
+                  : contentsList;
+
+                for (const content of candidates) {
+                  try {
+                    const range = content?.range ? content.range(h.cfiRange) : null;
+                    if (!range) continue;
+                    const rects = range.getClientRects?.() || [];
+                    const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect?.();
+                    if (!rect) continue;
+                    return toViewportAnchor(rect.right, rect.bottom, content?.document || null);
+                  } catch (error) {
+                    console.error('Highlight rendered-range anchor failed', error);
+                  }
+                }
+                return null;
+              };
+
+              if (emitSelection(getRenderedRangeAnchor())) return;
+
+              if (emitSelection(toViewportAnchor(e?.clientX, e?.clientY, e?.target?.ownerDocument || null))) return;
+
+              const rangeCandidate = book.getRange(h.cfiRange);
+              Promise.resolve(rangeCandidate)
+                .then((resolvedRange) => {
+                  if (!resolvedRange || !onSelectionRef.current) return;
+                  const rects = resolvedRange.getClientRects?.() || [];
+                  const rect = rects.length ? rects[rects.length - 1] : resolvedRange.getBoundingClientRect?.();
+                  if (!rect) return;
+                  const rangeDoc = resolvedRange?.startContainer?.ownerDocument || null;
+                  emitSelection(toViewportAnchor(rect.right, rect.bottom, rangeDoc));
+                })
+                .catch((error) => {
+                  console.error('Highlight anchor fallback failed', error);
+                });
             }, 'hl', {
               fill: h.color,
               'fill-opacity': fillOpacity,
