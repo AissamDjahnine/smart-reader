@@ -51,6 +51,9 @@ Smart Reader is built around real reading behavior:
 - Quick filter count chips (`To read`, `In progress`, `Finished`, `Favorites`) with one-click filtering
 - Combine `Status` filtering with quick `Favorites` filtering when needed
 - One-click `Reset filters` action to return search/filter/sort to default
+- Large-library rendering optimization:
+  - Incremental card rendering in grid/list views (books are loaded in chunks while scrolling)
+  - Helps keep scrolling smooth and initial render faster with heavy libraries
 - Manual `TO READ` tagging (create your personal "read next" queue)
 - Favorites with cleaner, less cluttered library cards
 - Notes Center in Library with cross-book note browsing, inline editing, and jump-to-reader
