@@ -884,6 +884,40 @@ test('clicking a highlight item triggers temporary in-book flash', async ({ page
   await expect.poll(async () => (await flashState.textContent())?.trim() || '', { timeout: 5000 }).toBe('');
 });
 
+test('post-highlight note prompt supports direct note entry and save', async ({ page }) => {
+  await openFixtureBook(page);
+  await selectTextInBook(page);
+
+  const toolbar = page.getByTestId('selection-toolbar');
+  await toolbar.getByRole('button', { name: 'Highlight' }).click();
+  await toolbar.getByTitle('Highlight Amber').click();
+
+  const notePrompt = page.getByTestId('post-highlight-note-prompt');
+  await expect(notePrompt).toBeVisible();
+  const noteInput = page.getByTestId('post-highlight-note-input');
+  await expect(noteInput).toBeFocused();
+  await expect(page.getByTestId('post-highlight-note-save')).toBeDisabled();
+  await noteInput.fill('Direct prompt note');
+  await expect(page.getByTestId('post-highlight-note-save')).toBeEnabled();
+
+  await page.getByTestId('post-highlight-note-save').click();
+  await expect(page.getByTestId('post-highlight-note-prompt')).toHaveCount(0);
+});
+
+test('post-highlight note prompt can be dismissed with Later', async ({ page }) => {
+  await openFixtureBook(page);
+  await selectTextInBook(page);
+
+  const toolbar = page.getByTestId('selection-toolbar');
+  await toolbar.getByRole('button', { name: 'Highlight' }).click();
+  await toolbar.getByTitle('Highlight Amber').click();
+
+  const notePrompt = page.getByTestId('post-highlight-note-prompt');
+  await expect(notePrompt).toBeVisible();
+  await notePrompt.getByRole('button', { name: 'Later' }).click();
+  await expect(page.getByTestId('post-highlight-note-prompt')).toHaveCount(0);
+});
+
 test('bookmarks panel supports jump-close and delete flow', async ({ page }) => {
   await page.addInitScript(() => {
     indexedDB.deleteDatabase('SmartReaderLib');

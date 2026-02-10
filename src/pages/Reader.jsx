@@ -126,6 +126,11 @@ export default function Reader() {
   const [bookmarks, setBookmarks] = useState([]);
   const [selection, setSelection] = useState(null);
   const [selectionMode, setSelectionMode] = useState('actions');
+  const [postHighlightPrompt, setPostHighlightPrompt] = useState(null);
+  const [postHighlightNoteDraft, setPostHighlightNoteDraft] = useState('');
+  const [postHighlightNoteError, setPostHighlightNoteError] = useState('');
+  const [isSavingPostHighlightNote, setIsSavingPostHighlightNote] = useState(false);
+  const postHighlightPromptRef = useRef(null);
   const [progressPct, setProgressPct] = useState(0);
   const [currentHref, setCurrentHref] = useState('');
   const [legacyReaderSettings] = useState(() => {
@@ -155,6 +160,13 @@ export default function Reader() {
 
   const aiUnavailableMessage = "AI features are not available now.";
 
+  const closePostHighlightPrompt = useCallback(() => {
+    setPostHighlightPrompt(null);
+    setPostHighlightNoteDraft('');
+    setPostHighlightNoteError('');
+    setIsSavingPostHighlightNote(false);
+  }, []);
+
   const clearHighlightFlashTimers = useCallback(() => {
     highlightFlashTimersRef.current.forEach((timerId) => clearTimeout(timerId));
     highlightFlashTimersRef.current = [];
@@ -181,6 +193,29 @@ export default function Reader() {
   useEffect(() => () => {
     clearHighlightFlashTimers();
   }, [clearHighlightFlashTimers]);
+
+  useEffect(() => {
+    if (!postHighlightPrompt) return;
+
+    const onPointerDown = (event) => {
+      if (!postHighlightPromptRef.current) return;
+      if (postHighlightPromptRef.current.contains(event.target)) return;
+      closePostHighlightPrompt();
+    };
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') closePostHighlightPrompt();
+    };
+
+    window.addEventListener('mousedown', onPointerDown);
+    window.addEventListener('touchstart', onPointerDown, { passive: true });
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', onPointerDown);
+      window.removeEventListener('touchstart', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [postHighlightPrompt, closePostHighlightPrompt]);
 
   useEffect(() => {
     if (showAIModal && rendition) {
@@ -1047,6 +1082,7 @@ export default function Reader() {
   };
 
   const openDictionaryForText = (text) => {
+    closePostHighlightPrompt();
     const trimmed = (text || '').trim();
     if (!trimmed) return;
     const wordCount = trimmed.split(/\s+/).length;
@@ -1068,6 +1104,7 @@ export default function Reader() {
   };
 
   const openTranslationForText = (text) => {
+    closePostHighlightPrompt();
     const trimmed = (text || '').trim();
     if (!trimmed) return;
     if (selection?.pos) {
@@ -1164,6 +1201,7 @@ export default function Reader() {
   };
 
   const handleSelection = useCallback((text, cfiRange, pos, isExisting = false) => {
+    closePostHighlightPrompt();
     const trimmed = (text || '').trim();
     if (!trimmed) {
       setSelection(null);
@@ -1177,7 +1215,7 @@ export default function Reader() {
       isExisting
     });
     setSelectionMode(isExisting ? 'delete' : 'actions');
-  }, []);
+  }, [closePostHighlightPrompt]);
 
   const jumpToCfi = (cfi) => {
     if (!cfi) return;
@@ -1212,6 +1250,7 @@ export default function Reader() {
   const addHighlight = async (color) => {
     const currentBook = bookRef.current;
     if (!currentBook || !selection?.cfiRange) return;
+    const selectionSnapshot = selection ? { ...selection } : null;
     const newHighlight = {
       cfiRange: selection.cfiRange,
       text: selection.text,
@@ -1224,6 +1263,16 @@ export default function Reader() {
       if (updated) {
         setHighlights(updated);
         setBook({ ...currentBook, highlights: updated });
+        if (selectionSnapshot?.pos) {
+          const savedHighlight = updated.find((item) => item?.cfiRange === newHighlight.cfiRange) || newHighlight;
+          setPostHighlightPrompt({
+            x: selectionSnapshot.pos.x,
+            y: selectionSnapshot.pos.y,
+            highlight: savedHighlight
+          });
+          setPostHighlightNoteDraft(savedHighlight?.note || '');
+          setPostHighlightNoteError('');
+        }
       }
     } catch (err) {
       console.error(err);
@@ -1249,6 +1298,7 @@ export default function Reader() {
   };
 
   const openNoteEditor = (highlight) => {
+    closePostHighlightPrompt();
     setEditingHighlight(highlight);
     setNoteDraft(highlight?.note || '');
   };
@@ -1271,6 +1321,32 @@ export default function Reader() {
       console.error(err);
     } finally {
       closeNoteEditor();
+    }
+  };
+
+  const savePostHighlightPromptNote = async () => {
+    const currentBook = bookRef.current;
+    const target = postHighlightPrompt?.highlight;
+    if (!currentBook || !target?.cfiRange) return;
+    const nextNote = postHighlightNoteDraft.trim();
+    if (!nextNote) {
+      setPostHighlightNoteError('Write a note first.');
+      return;
+    }
+    setIsSavingPostHighlightNote(true);
+    setPostHighlightNoteError('');
+    try {
+      const updated = await updateHighlightNote(currentBook.id, target.cfiRange, nextNote);
+      if (updated) {
+        setHighlights(updated);
+        setBook({ ...currentBook, highlights: updated });
+      }
+      closePostHighlightPrompt();
+    } catch (err) {
+      console.error(err);
+      setPostHighlightNoteError('Could not save note. Try again.');
+    } finally {
+      setIsSavingPostHighlightNote(false);
     }
   };
 
@@ -2811,6 +2887,97 @@ export default function Reader() {
             </button>
           </div>
         </div>
+        );
+      })()}
+
+      {postHighlightPrompt && (() => {
+        const padding = 12;
+        const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : postHighlightPrompt.x;
+        const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : postHighlightPrompt.y;
+        const promptWidth = 332;
+        const promptHeight = 132;
+        let left = (postHighlightPrompt.x || 0) + 8;
+        let top = (postHighlightPrompt.y || 0) + 28;
+
+        if (left + promptWidth > viewportWidth - padding) {
+          left = viewportWidth - promptWidth - padding;
+        }
+        if (left < padding) left = padding;
+
+        if (top + promptHeight > viewportHeight - padding) {
+          top = Math.max(padding, (postHighlightPrompt.y || 0) - promptHeight - 8);
+        }
+        if (top < padding) top = padding;
+
+        return (
+          <div
+            ref={postHighlightPromptRef}
+            data-testid="post-highlight-note-prompt"
+            className={`fixed z-[72] rounded-lg border p-3 shadow-lg ${
+              isReaderDark
+                ? 'bg-gray-800 border-gray-700 text-gray-100'
+                : 'bg-white border-gray-200 text-gray-800'
+            }`}
+            style={{ left, top, width: promptWidth }}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[10px] uppercase tracking-wider text-gray-400">
+                Highlight saved
+              </div>
+              <button
+                type="button"
+                aria-label="Close note prompt"
+                onClick={closePostHighlightPrompt}
+                className="text-gray-400 hover:text-red-500"
+              >
+                <X size={12} />
+              </button>
+            </div>
+
+            <textarea
+              data-testid="post-highlight-note-input"
+              value={postHighlightNoteDraft}
+              onChange={(event) => {
+                setPostHighlightNoteDraft(event.target.value);
+                if (postHighlightNoteError) setPostHighlightNoteError('');
+              }}
+              placeholder="Type your note..."
+              rows={2}
+              autoFocus
+              className={`mt-2 w-full resize-none rounded-lg border px-2 py-1.5 text-xs outline-none ${
+                isReaderDark
+                  ? 'border-gray-600 bg-gray-900/50 text-gray-100 placeholder:text-gray-400'
+                  : 'border-gray-300 bg-gray-50 text-gray-900 placeholder:text-gray-500'
+              }`}
+            />
+
+            {postHighlightNoteError && (
+              <div className="mt-1 text-[11px] text-red-500">{postHighlightNoteError}</div>
+            )}
+
+            <div className="mt-2 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closePostHighlightPrompt}
+                className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                  isReaderDark
+                    ? 'border border-gray-600 text-gray-200 hover:bg-gray-700'
+                    : 'border border-gray-300 text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                Later
+              </button>
+              <button
+                type="button"
+                data-testid="post-highlight-note-save"
+                onClick={savePostHighlightPromptNote}
+                disabled={isSavingPostHighlightNote || !postHighlightNoteDraft.trim()}
+                className="rounded-full bg-blue-600 px-3 py-1 text-[11px] font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isSavingPostHighlightNote ? 'Saving...' : 'Save note'}
+              </button>
+            </div>
+          </div>
         );
       })()}
 
