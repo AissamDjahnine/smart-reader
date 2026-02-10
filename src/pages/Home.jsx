@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   addBook,
-  readEpubMetadata,
   getAllBooks,
   deleteBook,
   toggleFavorite,
@@ -19,6 +18,7 @@ import {
   deleteCollection,
   toggleBookCollection
 } from '../services/db';
+import { readEpubMetadataFast } from '../services/epubMetadataWorkerClient';
 import ePub from 'epubjs';
 import {
   Plus,
@@ -1295,7 +1295,7 @@ export default function Home() {
 
         try {
           const metadataStartAt = getPerfNow();
-          const prepared = await readEpubMetadata(file);
+          const prepared = await readEpubMetadataFast(file);
           const metadataDuration = recordPerfMetric("upload.file.metadata", metadataStartAt, {
             fileName: file.name,
             index: index + 1,

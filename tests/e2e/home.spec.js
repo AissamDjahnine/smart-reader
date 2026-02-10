@@ -272,6 +272,27 @@ test('bulk upload applies duplicate rules per file and increments duplicate suff
   await expect(page.getByRole('link', { name: /Test Book/i })).toHaveCount(4);
 });
 
+test('upload metadata parsing falls back when worker is unavailable', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+    try {
+      Object.defineProperty(window, 'Worker', {
+        value: undefined,
+        configurable: true,
+      });
+    } catch (err) {
+      window.Worker = undefined;
+    }
+  });
+
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+});
+
 test('book info popover shows epub metadata', async ({ page }) => {
   await page.addInitScript(() => {
     indexedDB.deleteDatabase('SmartReaderLib');
