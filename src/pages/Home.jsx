@@ -373,6 +373,8 @@ const CONTENT_SCROLL_HEIGHT_CLASS = "h-[42vh]";
 const CONTENT_PANEL_HEIGHT_CLASS = "h-[calc(42vh+3rem)]";
 const FOUND_BOOK_COVER_PADDING_CLASS = "p-4";
 const LIBRARY_RENDER_BATCH_SIZE = 48;
+const VIRTUAL_GRID_CARD_STYLE = { contentVisibility: "auto", containIntrinsicSize: "620px" };
+const VIRTUAL_LIST_CARD_STYLE = { contentVisibility: "auto", containIntrinsicSize: "220px" };
 const COLLECTION_COLOR_OPTIONS = [
   "#2563eb",
   "#7c3aed",
@@ -2870,6 +2872,7 @@ export default function Home() {
                   className={`group bg-white rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden border border-gray-100 flex flex-col relative ${
                     isRecent ? "ring-2 ring-amber-400 ring-offset-2 ring-offset-white shadow-[0_0_0_3px_rgba(251,191,36,0.2)]" : ""
                   }`}
+                  style={VIRTUAL_GRID_CARD_STYLE}
                 >
                   <div className="aspect-[3/4] bg-gray-200 overflow-hidden relative">
                     {book.cover ? (
@@ -3119,6 +3122,7 @@ export default function Home() {
                   className={`group bg-white rounded-2xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden border border-gray-100 flex ${
                     isRecent ? "ring-2 ring-amber-400 ring-offset-2 ring-offset-white shadow-[0_0_0_3px_rgba(251,191,36,0.2)]" : ""
                   }`}
+                  style={VIRTUAL_LIST_CARD_STYLE}
                 >
                   <div className="w-24 sm:w-28 md:w-32 bg-gray-200 overflow-hidden relative shrink-0">
                     {book.cover ? (

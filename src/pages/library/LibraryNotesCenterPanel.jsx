@@ -1,5 +1,8 @@
 import React from "react";
 
+const VIRTUAL_NOTE_ITEM_STYLE = { contentVisibility: "auto", containIntrinsicSize: "190px" };
+const VIRTUAL_BOOK_ROW_STYLE = { contentVisibility: "auto", containIntrinsicSize: "560px" };
+
 export default function LibraryNotesCenterPanel({
   notesCenterFilteredEntries,
   notesCenterPairs,
@@ -50,6 +53,7 @@ export default function LibraryNotesCenterPanel({
               key={`notes-pair-${pair.bookId}`}
               data-testid="notes-center-book-row"
               className="grid grid-cols-1 gap-3 items-start lg:grid-cols-[minmax(0,1.65fr)_minmax(260px,0.95fr)]"
+              style={VIRTUAL_BOOK_ROW_STYLE}
             >
               <div className={`rounded-xl border border-blue-100 bg-white p-3 ${contentPanelHeightClass}`}>
                 <div className="mb-2 text-[11px] uppercase tracking-[0.16em] font-bold text-blue-700">
@@ -61,6 +65,7 @@ export default function LibraryNotesCenterPanel({
                       key={entry.id}
                       data-testid="notes-center-item"
                       className="rounded-xl border border-blue-100 bg-white p-3"
+                      style={VIRTUAL_NOTE_ITEM_STYLE}
                     >
                       <div className="flex items-center justify-between gap-3">
                         <div>
