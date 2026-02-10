@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { jsPDF } from "jspdf";
 import {
@@ -388,6 +388,7 @@ export default function Home() {
   
   // Search, filter & sort states
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [collectionFilter, setCollectionFilter] = useState("all");
   const [librarySection, setLibrarySection] = useState("library");
@@ -483,6 +484,13 @@ export default function Home() {
   }, [libraryLanguage]);
 
   useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 180);
+    return () => clearTimeout(timeoutId);
+  }, [searchQuery]);
+
+  useEffect(() => {
     if (!infoPopover) return;
     const handleMouseDown = (event) => {
       if (!infoPopoverRef.current) return;
@@ -503,7 +511,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const query = searchQuery.trim().toLowerCase();
+    const query = debouncedSearchQuery.trim().toLowerCase();
     const shouldSearchContent = query.length >= 2 && librarySection === "library";
 
     if (!shouldSearchContent) {
@@ -541,7 +549,7 @@ export default function Home() {
         setIsContentSearching(false);
       }
     };
-  }, [books, searchQuery, librarySection]);
+  }, [books, debouncedSearchQuery, librarySection]);
 
   useEffect(() => {
     if (librarySection !== "trash") return;
@@ -1479,7 +1487,10 @@ export default function Home() {
     );
   };
 
-  const collectionMap = new Map(collections.map((collection) => [collection.id, collection]));
+  const collectionMap = useMemo(
+    () => new Map(collections.map((collection) => [collection.id, collection])),
+    [collections]
+  );
   const hexToRgba = (hex, alpha = 0.16) => {
     const clean = (hex || "").replace("#", "").trim();
     if (clean.length !== 6) return `rgba(37, 99, 235, ${alpha})`;
@@ -1578,35 +1589,49 @@ export default function Home() {
     };
   };
 
-  const activeBooks = books.filter((book) => !book.isDeleted);
-  const trashedBooks = books.filter((book) => Boolean(book.isDeleted));
-  const trashedBooksCount = books.length - activeBooks.length;
-  const quickFilterStats = [
-    {
-      key: "to-read",
-      label: "To read",
-      count: activeBooks.filter((book) => isBookToRead(book)).length
-    },
-    {
-      key: "in-progress",
-      label: "In progress",
-      count: activeBooks.filter((book) => {
-        const progress = normalizeNumber(book.progress);
-        return progress > 0 && progress < 100;
-      }).length
-    },
-    {
-      key: "finished",
-      label: "Finished",
-      count: activeBooks.filter((book) => normalizeNumber(book.progress) >= 100).length
-    },
-    {
-      key: "favorites",
-      label: "Favorites",
-      count: activeBooks.filter((book) => Boolean(book.isFavorite)).length
-    }
-  ];
-  const notesCenterEntries = activeBooks
+  const activeBooks = useMemo(
+    () => books.filter((book) => !book.isDeleted),
+    [books]
+  );
+  const trashedBooks = useMemo(
+    () => books.filter((book) => Boolean(book.isDeleted)),
+    [books]
+  );
+  const trashedBooksCount = useMemo(
+    () => books.length - activeBooks.length,
+    [books.length, activeBooks.length]
+  );
+  const quickFilterStats = useMemo(
+    () => [
+      {
+        key: "to-read",
+        label: "To read",
+        count: activeBooks.filter((book) => isBookToRead(book)).length
+      },
+      {
+        key: "in-progress",
+        label: "In progress",
+        count: activeBooks.filter((book) => {
+          const progress = normalizeNumber(book.progress);
+          return progress > 0 && progress < 100;
+        }).length
+      },
+      {
+        key: "finished",
+        label: "Finished",
+        count: activeBooks.filter((book) => normalizeNumber(book.progress) >= 100).length
+      },
+      {
+        key: "favorites",
+        label: "Favorites",
+        count: activeBooks.filter((book) => Boolean(book.isFavorite)).length
+      }
+    ],
+    [activeBooks]
+  );
+  const normalizedDebouncedSearchQuery = normalizeString(debouncedSearchQuery.trim());
+  const notesCenterEntries = useMemo(
+    () => activeBooks
     .flatMap((book) => {
       const highlights = Array.isArray(book.highlights) ? book.highlights : [];
       return highlights
@@ -1622,18 +1647,23 @@ export default function Home() {
           lastRead: book.lastRead
         }));
     })
-    .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead));
-  const notesCenterFilteredEntries = notesCenterEntries.filter((entry) => {
-    const query = normalizeString(searchQuery.trim());
-    if (!query) return true;
-    return (
-      normalizeString(entry.bookTitle).includes(query) ||
-      normalizeString(entry.bookAuthor).includes(query) ||
-      normalizeString(entry.note).includes(query) ||
-      normalizeString(entry.highlightText).includes(query)
-    );
-  });
-  const highlightsCenterEntries = activeBooks
+    .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead)),
+    [activeBooks]
+  );
+  const notesCenterFilteredEntries = useMemo(
+    () => notesCenterEntries.filter((entry) => {
+      if (!normalizedDebouncedSearchQuery) return true;
+      return (
+        normalizeString(entry.bookTitle).includes(normalizedDebouncedSearchQuery) ||
+        normalizeString(entry.bookAuthor).includes(normalizedDebouncedSearchQuery) ||
+        normalizeString(entry.note).includes(normalizedDebouncedSearchQuery) ||
+        normalizeString(entry.highlightText).includes(normalizedDebouncedSearchQuery)
+      );
+    }),
+    [notesCenterEntries, normalizedDebouncedSearchQuery]
+  );
+  const highlightsCenterEntries = useMemo(
+    () => activeBooks
     .flatMap((book) => {
       const highlights = Array.isArray(book.highlights) ? book.highlights : [];
       return highlights
@@ -1650,18 +1680,25 @@ export default function Home() {
           lastRead: book.lastRead
         }));
     })
-    .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead));
-  const highlightsCenterFilteredEntries = highlightsCenterEntries.filter((entry) => {
-    const query = normalizeString(searchQuery.trim());
-    if (!query) return true;
-    return (
-      normalizeString(entry.bookTitle).includes(query) ||
-      normalizeString(entry.bookAuthor).includes(query) ||
-      normalizeString(entry.text).includes(query) ||
-      normalizeString(entry.note).includes(query)
-    );
-  });
-  const activeBooksById = new Map(activeBooks.map((book) => [book.id, book]));
+    .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead)),
+    [activeBooks]
+  );
+  const highlightsCenterFilteredEntries = useMemo(
+    () => highlightsCenterEntries.filter((entry) => {
+      if (!normalizedDebouncedSearchQuery) return true;
+      return (
+        normalizeString(entry.bookTitle).includes(normalizedDebouncedSearchQuery) ||
+        normalizeString(entry.bookAuthor).includes(normalizedDebouncedSearchQuery) ||
+        normalizeString(entry.text).includes(normalizedDebouncedSearchQuery) ||
+        normalizeString(entry.note).includes(normalizedDebouncedSearchQuery)
+      );
+    }),
+    [highlightsCenterEntries, normalizedDebouncedSearchQuery]
+  );
+  const activeBooksById = useMemo(
+    () => new Map(activeBooks.map((book) => [book.id, book])),
+    [activeBooks]
+  );
   const buildCenterPairs = (entries, prefix) => {
     const pairs = [];
     const pairMap = new Map();
@@ -1698,12 +1735,19 @@ export default function Home() {
 
     return pairs;
   };
-  const notesCenterPairs = buildCenterPairs(notesCenterFilteredEntries, "notes-book");
-  const highlightsCenterPairs = buildCenterPairs(highlightsCenterFilteredEntries, "highlights-book");
+  const notesCenterPairs = useMemo(
+    () => buildCenterPairs(notesCenterFilteredEntries, "notes-book"),
+    [notesCenterFilteredEntries, activeBooksById]
+  );
+  const highlightsCenterPairs = useMemo(
+    () => buildCenterPairs(highlightsCenterFilteredEntries, "highlights-book"),
+    [highlightsCenterFilteredEntries, activeBooksById]
+  );
 
-  const sortedBooks = [...activeBooks]
+  const sortedBooks = useMemo(
+    () => [...activeBooks]
     .filter((book) => {
-      const query = searchQuery.trim().toLowerCase();
+      const query = debouncedSearchQuery.trim().toLowerCase();
       const matchesSearch = !query || bookMatchesLibrarySearch(book, query);
 
       const highlightCount = Array.isArray(book.highlights) ? book.highlights.length : 0;
@@ -1744,10 +1788,21 @@ export default function Home() {
       if (sortBy === "author-asc") return normalizeString(left.author).localeCompare(normalizeString(right.author));
       if (sortBy === "author-desc") return normalizeString(right.author).localeCompare(normalizeString(left.author));
       return normalizeString(left.title).localeCompare(normalizeString(right.title));
-    });
+    }),
+    [
+      activeBooks,
+      debouncedSearchQuery,
+      statusFilter,
+      flagFilters,
+      collectionFilter,
+      sortBy,
+      contentSearchMatches
+    ]
+  );
 
-  const sortedTrashBooks = [...trashedBooks]
-    .filter((book) => bookMatchesTrashSearch(book, searchQuery))
+  const sortedTrashBooks = useMemo(
+    () => [...trashedBooks]
+    .filter((book) => bookMatchesTrashSearch(book, debouncedSearchQuery))
     .sort((left, right) => {
       if (trashSortBy === "deleted-desc") return normalizeTime(right.deletedAt) - normalizeTime(left.deletedAt);
       if (trashSortBy === "deleted-asc") return normalizeTime(left.deletedAt) - normalizeTime(right.deletedAt);
@@ -1757,7 +1812,9 @@ export default function Home() {
       if (trashSortBy === "added-desc") return normalizeTime(right.addedAt) - normalizeTime(left.addedAt);
       if (trashSortBy === "added-asc") return normalizeTime(left.addedAt) - normalizeTime(right.addedAt);
       return normalizeString(left.title).localeCompare(normalizeString(right.title));
-    });
+    }),
+    [trashedBooks, debouncedSearchQuery, trashSortBy]
+  );
 
   useEffect(() => {
     if (librarySection === "trash") {
@@ -1768,7 +1825,7 @@ export default function Home() {
   }, [
     librarySection,
     viewMode,
-    searchQuery,
+    debouncedSearchQuery,
     statusFilter,
     collectionFilter,
     sortBy,
@@ -1808,8 +1865,8 @@ export default function Home() {
     return () => observer.disconnect();
   }, [hasMoreBooksToRender, librarySection, sortedBooks.length, sortedTrashBooks.length, viewMode]);
 
-  const globalSearchQuery = searchQuery.trim().toLowerCase();
-  const globalSearchGroups = (() => {
+  const globalSearchQuery = debouncedSearchQuery.trim().toLowerCase();
+  const globalSearchGroups = useMemo(() => {
     if (!globalSearchQuery) return [];
     const nextGroups = {
       books: [],
@@ -1951,32 +2008,59 @@ export default function Home() {
         items: nextGroups[descriptor.key]
       }))
       .filter((group) => group.items.length > 0);
-  })();
-  const globalSearchBookGroup = globalSearchGroups.find((group) => group.key === "books");
+  }, [books, contentSearchMatches, globalSearchQuery]);
+  const globalSearchBookGroup = useMemo(
+    () => globalSearchGroups.find((group) => group.key === "books"),
+    [globalSearchGroups]
+  );
   const globalSearchBookItems = globalSearchBookGroup?.items || [];
-  const visibleGlobalSearchGroups = globalSearchGroups.filter((group) => group.key !== "books");
-  const globalContentGroup = visibleGlobalSearchGroups.find((group) => group.key === "content");
-  const globalOtherGroups = visibleGlobalSearchGroups.filter((group) => group.key !== "content");
-  const globalSearchTotal = visibleGlobalSearchGroups.reduce((total, group) => total + group.items.length, 0) + globalSearchBookItems.length;
-  const booksById = new Map(books.filter((book) => !book.isDeleted).map((book) => [book.id, book]));
-  const globalMatchedBooks = globalSearchBookItems
-    .map((item) => ({
-      ...item,
-      book: booksById.get(item.bookId)
-    }))
-    .filter((item) => Boolean(item.book));
-  const globalContentItemsByBook = (globalContentGroup?.items || []).reduce((acc, item) => {
-    if (!item?.bookId) return acc;
-    if (!acc[item.bookId]) acc[item.bookId] = [];
-    acc[item.bookId].push(item);
-    return acc;
-  }, {});
-  const globalMatchedBookPairs = globalMatchedBooks
-    .map((item) => ({
-      ...item,
-      contentItems: globalContentItemsByBook[item.bookId] || []
-    }))
-    .filter((item) => item.contentItems.length > 0);
+  const visibleGlobalSearchGroups = useMemo(
+    () => globalSearchGroups.filter((group) => group.key !== "books"),
+    [globalSearchGroups]
+  );
+  const globalContentGroup = useMemo(
+    () => visibleGlobalSearchGroups.find((group) => group.key === "content"),
+    [visibleGlobalSearchGroups]
+  );
+  const globalOtherGroups = useMemo(
+    () => visibleGlobalSearchGroups.filter((group) => group.key !== "content"),
+    [visibleGlobalSearchGroups]
+  );
+  const globalSearchTotal = useMemo(
+    () => visibleGlobalSearchGroups.reduce((total, group) => total + group.items.length, 0) + globalSearchBookItems.length,
+    [visibleGlobalSearchGroups, globalSearchBookItems.length]
+  );
+  const booksById = useMemo(
+    () => new Map(books.filter((book) => !book.isDeleted).map((book) => [book.id, book])),
+    [books]
+  );
+  const globalMatchedBooks = useMemo(
+    () => globalSearchBookItems
+      .map((item) => ({
+        ...item,
+        book: booksById.get(item.bookId)
+      }))
+      .filter((item) => Boolean(item.book)),
+    [globalSearchBookItems, booksById]
+  );
+  const globalContentItemsByBook = useMemo(
+    () => (globalContentGroup?.items || []).reduce((acc, item) => {
+      if (!item?.bookId) return acc;
+      if (!acc[item.bookId]) acc[item.bookId] = [];
+      acc[item.bookId].push(item);
+      return acc;
+    }, {}),
+    [globalContentGroup]
+  );
+  const globalMatchedBookPairs = useMemo(
+    () => globalMatchedBooks
+      .map((item) => ({
+        ...item,
+        contentItems: globalContentItemsByBook[item.bookId] || []
+      }))
+      .filter((item) => item.contentItems.length > 0),
+    [globalMatchedBooks, globalContentItemsByBook]
+  );
   const showGlobalSearchBooksColumn = Boolean(
     globalSearchQuery &&
     librarySection === "library" &&
@@ -1984,20 +2068,23 @@ export default function Home() {
   );
   const showGlobalSearchSplitColumns = showGlobalSearchBooksColumn && globalMatchedBookPairs.length === 0;
 
-  const continueReadingBooks = [...books]
-    .filter((book) => {
-      if (book.isDeleted) return false;
-      const progress = normalizeNumber(book.progress);
-      const hasStarted = isBookStarted(book);
-      return hasStarted && progress < 100;
-    })
-    .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead))
-    .slice(0, 8);
+  const continueReadingBooks = useMemo(
+    () => [...books]
+      .filter((book) => {
+        if (book.isDeleted) return false;
+        const progress = normalizeNumber(book.progress);
+        const hasStarted = isBookStarted(book);
+        return hasStarted && progress < 100;
+      })
+      .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead))
+      .slice(0, 8),
+    [books]
+  );
 
   const showContinueReading =
     statusFilter === "all" &&
     collectionFilter === "all" &&
-    !searchQuery.trim() &&
+    !debouncedSearchQuery.trim() &&
     continueReadingBooks.length > 0;
   const { streakCount, readToday } = getReadingStreak(books);
 

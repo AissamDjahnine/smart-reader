@@ -1015,12 +1015,12 @@ test('trash icon supports move to trash, restore, and permanent delete', async (
 
   await page.getByTestId('trash-toggle-button').click();
   await expect(page.getByTestId('trash-retention-note')).toContainText('30 days');
-  await expect(page.getByTestId('trash-back-button')).toBeVisible();
+  await expect(page.getByTestId('trash-toggle-button')).toBeVisible();
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
   await expect(page.getByTestId('book-restore').first()).toBeVisible();
 
   await page.getByTestId('book-restore').first().click();
-  await page.getByTestId('trash-back-button').click();
+  await page.getByTestId('trash-toggle-button').click();
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
 
   page.once('dialog', (dialog) => dialog.accept());
