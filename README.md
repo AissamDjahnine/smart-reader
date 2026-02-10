@@ -54,6 +54,7 @@ Smart Reader is built around real reading behavior:
 - Large-library rendering optimization:
   - Incremental card rendering in grid/list views (books are loaded in chunks while scrolling)
   - Helps keep scrolling smooth and initial render faster with heavy libraries
+  - Debounced library search and memoized heavy selectors to keep typing and filtering responsive at scale
 - Manual `TO READ` tagging (create your personal "read next" queue)
 - Favorites with cleaner, less cluttered library cards
 - Notes Center in Library with cross-book note browsing, inline editing, and jump-to-reader
