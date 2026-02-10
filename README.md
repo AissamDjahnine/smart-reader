@@ -27,6 +27,8 @@ Smart Reader is built around real reading behavior:
 - Bulk upload path optimized for speed:
   - One library refresh after the full batch (instead of reloading after each file)
   - In-memory duplicate index while processing each file
+  - EPUB metadata extraction runs in a Web Worker to keep upload UI responsive on heavy files/batches
+  - Automatic fallback to main-thread parsing if Worker is unavailable
 - Yellow success toast after upload and a 10-second halo on newly added book cards
 - Clean cover-based library (grid or list)
 - Smart metadata (author, language, estimated pages, genre when available)
