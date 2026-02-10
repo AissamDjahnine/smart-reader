@@ -2,6 +2,8 @@ import React, { useEffect, useRef } from 'react';
 import ePub from 'epubjs';
 
 const EPUB_THEME_KEY = 'reader-theme';
+const SEARCH_ANNOTATION_TYPE = 'mark';
+const USER_HIGHLIGHT_ANNOTATION_TYPE = 'highlight';
 
 export default function BookView({ 
   bookData, 
@@ -233,7 +235,6 @@ export default function BookView({
     const timer = setTimeout(() => {
       if (!renditionRef.current) return;
       const rendition = renditionRef.current;
-      const annotationType = 'highlight';
       const nextMap = new Map();
       if (showSearchHighlights) {
         if (focusedSearchCfi) {
@@ -255,13 +256,13 @@ export default function BookView({
         if (prevVariant !== variant) {
           if (prevVariant) {
             try {
-              rendition.annotations.remove(cfi, annotationType);
+              rendition.annotations.remove(cfi, SEARCH_ANNOTATION_TYPE);
             } catch (err) {
               console.error('Search highlight cleanup failed', err);
             }
           }
           try {
-            rendition.annotations.add(annotationType, cfi, {}, () => {
+            rendition.annotations.add(SEARCH_ANNOTATION_TYPE, cfi, {}, () => {
               if (variant === 'focus' && onSearchFocusDismissRef.current) {
                 onSearchFocusDismissRef.current();
               }
@@ -269,7 +270,9 @@ export default function BookView({
             }, variant === 'focus' ? 'search-hl-focus' : variant === 'active' ? 'search-hl-active' : 'search-hl', {
               fill: variant === 'focus' ? '#22c55e' : '#facc15',
               'fill-opacity': variant === 'focus' ? '0.78' : variant === 'active' ? '0.85' : '0.28',
-              'mix-blend-mode': 'normal'
+              'mix-blend-mode': 'normal',
+              'background-color': variant === 'focus' ? '#22c55e' : '#facc15',
+              opacity: variant === 'focus' ? '0.78' : variant === 'active' ? '0.85' : '0.28'
             });
           } catch (err) {
             console.error('Search highlight failed', err);
@@ -280,7 +283,7 @@ export default function BookView({
       appliedSearchRef.current.forEach((_, cfi) => {
         if (nextMap.has(cfi)) return;
         try {
-          rendition.annotations.remove(cfi, annotationType);
+          rendition.annotations.remove(cfi, SEARCH_ANNOTATION_TYPE);
         } catch (err) {
           console.error('Search highlight cleanup failed', err);
         }
@@ -304,13 +307,13 @@ export default function BookView({
         if (prevColor !== h.color) {
           if (prevColor) {
             try {
-              rendition.annotations.remove(h.cfiRange, 'highlight');
+              rendition.annotations.remove(h.cfiRange, USER_HIGHLIGHT_ANNOTATION_TYPE);
             } catch (err) {
               console.error('Highlight cleanup failed', err);
             }
           }
           try {
-            rendition.annotations.add('highlight', h.cfiRange, {}, (e) => {
+            rendition.annotations.add(USER_HIGHLIGHT_ANNOTATION_TYPE, h.cfiRange, {}, (e) => {
               if (onSelectionRef.current) onSelectionRef.current(h.text, h.cfiRange, { x: e.clientX, y: e.clientY }, true);
             }, 'hl', {
               fill: h.color,
@@ -325,7 +328,7 @@ export default function BookView({
       appliedHighlightsRef.current.forEach((_, cfi) => {
         if (!nextMap.has(cfi)) {
           try {
-            rendition.annotations.remove(cfi, 'highlight');
+            rendition.annotations.remove(cfi, USER_HIGHLIGHT_ANNOTATION_TYPE);
           } catch (err) {
             console.error('Highlight cleanup failed', err);
           }

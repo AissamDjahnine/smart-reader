@@ -104,6 +104,90 @@ test('search sets first result active and Enter cycles through results', async (
   await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 10000 }).not.toBe(progressBeforeEnter);
 });
 
+test('search highlighting does not remove saved highlights', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
+
+  const seeded = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs') ? 'keyvaluepairs' : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didSeed = false;
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          const payload = row?.value && typeof row.value === 'object' ? row.value : row;
+          const isTargetBook = payload && payload.title === 'Test Book' && Object.prototype.hasOwnProperty.call(payload, 'data');
+          if (!didSeed && isTargetBook) {
+            const highlights = [
+              {
+                cfiRange: 'epubcfi(/6/2[seed-highlight-persist]!/4/2/2,/4/2/14)',
+                text: 'Seeded persisted highlight',
+                color: '#fcd34d'
+              }
+            ];
+            const nextPayload = { ...payload, highlights };
+            if (row?.value && typeof row.value === 'object') {
+              cursor.update({ ...row, value: nextPayload });
+            } else {
+              cursor.update(nextPayload);
+            }
+            didSeed = true;
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didSeed);
+        };
+      };
+    });
+  });
+  expect(seeded).toBeTruthy();
+
+  await bookLink.click();
+  await expect(page.getByRole('button', { name: /Explain Page/i })).toBeVisible();
+
+  await page.getByTestId('reader-highlights-toggle').click();
+  await expect(page.getByTestId('highlight-item')).toHaveCount(1);
+  await page.mouse.click(16, 16);
+  await expect(page.getByTestId('highlights-panel')).toHaveCount(0);
+
+  await page.getByTitle('Search').click();
+  const searchInput = page.getByPlaceholder('Search inside this book...');
+  await searchInput.fill('wizard');
+  await searchInput.press('Enter');
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 15000 }).toMatch(/1\/\d+/);
+  await page.getByRole('button', { name: 'Clear' }).click();
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 10000 }).toBe('0/0');
+  await page.keyboard.press('Escape');
+  await expect(page.getByPlaceholder('Search inside this book...')).toHaveCount(0);
+
+  await page.getByTestId('reader-highlights-toggle').click();
+  await expect(page.getByTestId('highlight-item')).toHaveCount(1);
+});
+
 test('Ctrl/Cmd+F opens reader search and focuses input, Escape closes it', async ({ page }) => {
   await openFixtureBook(page);
 
