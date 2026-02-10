@@ -1,5 +1,6 @@
-const GEMINI_API_KEY = 'AIzaSyA2M--9WlwcgAYlmouZuYcvEUhfCCycnhs';
-const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+const GEMINI_API_KEY = (import.meta.env.VITE_GEMINI_API_KEY || '').trim();
+const GEMINI_MODEL = (import.meta.env.VITE_GEMINI_MODEL || 'gemini-2.5-flash').trim();
+const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`;
 
 /**
  * Generate a natural language summary for a portion of text.  The summarization
@@ -29,6 +30,10 @@ const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-
  * @param {string} mode             One of "cumulative", "snapshot", "contextual", "recap".
  */
 export async function summarizeChapter(text, previousMemory = "", mode = "cumulative") {
+  if (!GEMINI_API_KEY) {
+    return { text: '', error: 'Missing AI key. Set VITE_GEMINI_API_KEY in your environment.' };
+  }
+
   // Limit the amount of text sent to the API to avoid extremely long prompts.
   const safeText = typeof text === 'string' ? text : '';
   const truncatedText = safeText.substring(0, 12000);
@@ -69,7 +74,7 @@ Characters so far:
   `;
 
   try {
-    const response = await fetch(API_URL, {
+    const response = await fetch(`${API_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
