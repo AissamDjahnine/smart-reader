@@ -19,6 +19,7 @@ import {
   toggleBookCollection
 } from '../services/db';
 import { readEpubMetadataFast } from '../services/epubMetadataWorkerClient';
+import { buildBookSearchRecord, syncSearchIndexFromBooks } from "../services/searchIndex";
 import ePub from 'epubjs';
 import {
   Plus,
@@ -441,6 +442,7 @@ export default function Home() {
   const [infoPopover, setInfoPopover] = useState(null);
   const [showCreateCollectionForm, setShowCreateCollectionForm] = useState(false);
   const [contentSearchMatches, setContentSearchMatches] = useState({});
+  const [searchIndexByBook, setSearchIndexByBook] = useState({});
   const [isContentSearching, setIsContentSearching] = useState(false);
   const contentSearchTokenRef = useRef(0);
   const uploadTimerRef = useRef(null);
@@ -564,6 +566,41 @@ export default function Home() {
       }
     };
   }, [books, debouncedSearchQuery, librarySection]);
+
+  useEffect(() => {
+    let isCancelled = false;
+    const syncSearchIndex = async () => {
+      if (!books.length) {
+        if (!isCancelled) setSearchIndexByBook({});
+        return;
+      }
+
+      const syncStartAt = getPerfNow();
+      try {
+        const indexedBooks = await syncSearchIndexFromBooks(books);
+        if (isCancelled) return;
+        setSearchIndexByBook(indexedBooks || {});
+        recordPerfMetric("search-index.sync", syncStartAt, {
+          indexedBooks: Object.keys(indexedBooks || {}).length
+        });
+      } catch (err) {
+        console.error("Search index sync failed", err);
+        if (isCancelled) return;
+        const fallback = {};
+        books
+          .filter((book) => !book?.isDeleted)
+          .forEach((book) => {
+            fallback[book.id] = buildBookSearchRecord(book);
+          });
+        setSearchIndexByBook(fallback);
+      }
+    };
+
+    syncSearchIndex();
+    return () => {
+      isCancelled = true;
+    };
+  }, [books]);
 
   useEffect(() => {
     if (librarySection !== "trash") return;
@@ -1524,24 +1561,31 @@ export default function Home() {
     const normalizedQuery = normalizeString(query.trim());
     if (!normalizedQuery) return true;
 
-    const metadataFields = [
-      book.title,
-      book.author,
-      formatLanguageLabel(book.language),
-      formatGenreLabel(book.genre)
-    ];
-    if (metadataFields.some((field) => normalizeString(field).includes(normalizedQuery))) {
-      return true;
-    }
+    const searchRecord = searchIndexByBook[book.id];
+    if (searchRecord) {
+      if (typeof searchRecord.fullText === "string" && searchRecord.fullText.includes(normalizedQuery)) {
+        return true;
+      }
+    } else {
+      const metadataFields = [
+        book.title,
+        book.author,
+        formatLanguageLabel(book.language),
+        formatGenreLabel(book.genre)
+      ];
+      if (metadataFields.some((field) => normalizeString(field).includes(normalizedQuery))) {
+        return true;
+      }
 
-    const highlights = Array.isArray(book.highlights) ? book.highlights : [];
-    if (highlights.some((h) => normalizeString(h?.text).includes(normalizedQuery) || normalizeString(h?.note).includes(normalizedQuery))) {
-      return true;
-    }
+      const highlights = Array.isArray(book.highlights) ? book.highlights : [];
+      if (highlights.some((h) => normalizeString(h?.text).includes(normalizedQuery) || normalizeString(h?.note).includes(normalizedQuery))) {
+        return true;
+      }
 
-    const bookmarks = Array.isArray(book.bookmarks) ? book.bookmarks : [];
-    if (bookmarks.some((b) => normalizeString(b?.label).includes(normalizedQuery) || normalizeString(b?.text).includes(normalizedQuery))) {
-      return true;
+      const bookmarks = Array.isArray(book.bookmarks) ? book.bookmarks : [];
+      if (bookmarks.some((b) => normalizeString(b?.label).includes(normalizedQuery) || normalizeString(b?.text).includes(normalizedQuery))) {
+        return true;
+      }
     }
 
     if (Array.isArray(contentSearchMatches[book.id]) && contentSearchMatches[book.id].length > 0) {
@@ -1812,7 +1856,8 @@ export default function Home() {
       flagFilters,
       collectionFilter,
       sortBy,
-      contentSearchMatches
+      contentSearchMatches,
+      searchIndexByBook
     ]
   );
 
@@ -1894,15 +1939,10 @@ export default function Home() {
 
     books.forEach((book) => {
       if (book.isDeleted) return;
+      const searchRecord = searchIndexByBook[book.id] || buildBookSearchRecord(book);
       const existingBookResultIds = new Set();
 
-      const metadataFields = [
-        book.title,
-        book.author,
-        formatLanguageLabel(book.language),
-        formatGenreLabel(book.genre)
-      ];
-      if (metadataFields.some((field) => normalizeString(field).includes(globalSearchQuery))) {
+      if ((searchRecord?.metadataText || "").includes(globalSearchQuery)) {
         const resultId = `${book.id}-book`;
         nextGroups.books.push({
           id: resultId,
@@ -1917,55 +1957,50 @@ export default function Home() {
         existingBookResultIds.add(resultId);
       }
 
-      const highlights = Array.isArray(book.highlights) ? book.highlights : [];
-      highlights.forEach((highlight, index) => {
-        const textValue = compactWhitespace(highlight?.text);
-        if (normalizeString(textValue).includes(globalSearchQuery)) {
+      const highlightEntries = Array.isArray(searchRecord?.highlights) ? searchRecord.highlights : [];
+      highlightEntries.forEach((entry, index) => {
+        if ((entry?.normalized || "").includes(globalSearchQuery)) {
           nextGroups.highlights.push({
-            id: `${book.id}-highlight-${highlight?.cfiRange || index}`,
+            id: entry?.id || `${book.id}-highlight-${entry?.cfi || index}`,
             bookId: book.id,
             panel: "highlights",
-            cfi: highlight?.cfiRange || "",
+            cfi: entry?.cfi || "",
             query: globalSearchQuery,
             title: book.title,
             subtitle: book.author,
-            snippet: buildSnippet(textValue, globalSearchQuery)
-          });
-        }
-
-        const noteValue = compactWhitespace(highlight?.note);
-        if (normalizeString(noteValue).includes(globalSearchQuery)) {
-          nextGroups.notes.push({
-            id: `${book.id}-note-${highlight?.cfiRange || index}`,
-            bookId: book.id,
-            panel: "highlights",
-            cfi: highlight?.cfiRange || "",
-            query: globalSearchQuery,
-            title: book.title,
-            subtitle: book.author,
-            snippet: buildSnippet(noteValue, globalSearchQuery)
+            snippet: buildSnippet(entry?.text || "", globalSearchQuery)
           });
         }
       });
 
-      const bookmarks = Array.isArray(book.bookmarks) ? book.bookmarks : [];
-      bookmarks.forEach((bookmark, index) => {
-        const labelValue = compactWhitespace(bookmark?.label);
-        const textValue = compactWhitespace(bookmark?.text);
-        const hasMatch =
-          normalizeString(labelValue).includes(globalSearchQuery) ||
-          normalizeString(textValue).includes(globalSearchQuery);
-        if (!hasMatch) return;
+      const noteEntries = Array.isArray(searchRecord?.notes) ? searchRecord.notes : [];
+      noteEntries.forEach((entry, index) => {
+        if ((entry?.normalized || "").includes(globalSearchQuery)) {
+          nextGroups.notes.push({
+            id: entry?.id || `${book.id}-note-${entry?.cfi || index}`,
+            bookId: book.id,
+            panel: "highlights",
+            cfi: entry?.cfi || "",
+            query: globalSearchQuery,
+            title: book.title,
+            subtitle: book.author,
+            snippet: buildSnippet(entry?.text || "", globalSearchQuery)
+          });
+        }
+      });
 
+      const bookmarkEntries = Array.isArray(searchRecord?.bookmarks) ? searchRecord.bookmarks : [];
+      bookmarkEntries.forEach((entry, index) => {
+        if (!(entry?.normalized || "").includes(globalSearchQuery)) return;
         nextGroups.bookmarks.push({
-          id: `${book.id}-bookmark-${bookmark?.cfi || index}`,
+          id: entry?.id || `${book.id}-bookmark-${entry?.cfi || index}`,
           bookId: book.id,
           panel: "bookmarks",
-          cfi: bookmark?.cfi || "",
+          cfi: entry?.cfi || "",
           query: globalSearchQuery,
           title: book.title,
           subtitle: book.author,
-          snippet: buildSnippet(textValue || labelValue, globalSearchQuery)
+          snippet: buildSnippet(entry?.text || "", globalSearchQuery)
         });
       });
 
@@ -2024,7 +2059,7 @@ export default function Home() {
         items: nextGroups[descriptor.key]
       }))
       .filter((group) => group.items.length > 0);
-  }, [books, contentSearchMatches, globalSearchQuery]);
+  }, [books, contentSearchMatches, globalSearchQuery, searchIndexByBook]);
   const globalSearchBookGroup = useMemo(
     () => globalSearchGroups.find((group) => group.key === "books"),
     [globalSearchGroups]

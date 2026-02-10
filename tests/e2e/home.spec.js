@@ -1401,6 +1401,82 @@ test('global search results panel is scrollable and can show more than capped co
   expect(['auto', 'scroll']).toContain(overflowY);
 });
 
+test('persistent search index is stored in IndexedDB and includes uploaded book entries', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await page.getByTestId('library-search').fill('test');
+  await expect(page.getByTestId('global-search-panel')).toBeVisible();
+
+  await expect
+    .poll(async () => page.evaluate(() => new Promise((resolve) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => resolve(0);
+      request.onsuccess = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains('searchIndex')) {
+          db.close();
+          resolve(0);
+          return;
+        }
+        const tx = db.transaction('searchIndex', 'readonly');
+        const store = tx.objectStore('searchIndex');
+        const getRequest = store.get('global');
+        getRequest.onerror = () => {
+          db.close();
+          resolve(0);
+        };
+        getRequest.onsuccess = () => {
+          const snapshot = getRequest.result;
+          const count = snapshot?.books ? Object.keys(snapshot.books).length : 0;
+          db.close();
+          resolve(count);
+        };
+      };
+    })), { timeout: 15000 })
+    .toBeGreaterThan(0);
+
+  const snapshot = await page.evaluate(() => new Promise((resolve) => {
+    const request = indexedDB.open('SmartReaderLib');
+    request.onerror = () => resolve(null);
+    request.onsuccess = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains('searchIndex')) {
+        db.close();
+        resolve(null);
+        return;
+      }
+      const tx = db.transaction('searchIndex', 'readonly');
+      const store = tx.objectStore('searchIndex');
+      const getRequest = store.get('global');
+      getRequest.onerror = () => {
+        db.close();
+        resolve(null);
+      };
+      getRequest.onsuccess = () => {
+        const value = getRequest.result || null;
+        db.close();
+        resolve(value);
+      };
+    };
+  }));
+
+  expect(snapshot).toBeTruthy();
+  expect(snapshot.version).toBe(1);
+  const indexedEntries = Object.values(snapshot.books || {});
+  expect(indexedEntries.length).toBeGreaterThan(0);
+  const firstEntry = indexedEntries[0];
+  expect(typeof firstEntry.fullText).toBe('string');
+  expect(firstEntry.fullText).toContain('test book');
+});
+
 test('empty state reset button clears filters and restores results', async ({ page }) => {
   await page.addInitScript(() => {
     indexedDB.deleteDatabase('SmartReaderLib');
