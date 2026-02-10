@@ -57,6 +57,7 @@ Smart Reader is built around real reading behavior:
   - Incremental card rendering in grid/list views (books are loaded in chunks while scrolling)
   - Helps keep scrolling smooth and initial render faster with heavy libraries
   - Debounced library search and memoized heavy selectors to keep typing and filtering responsive at scale
+  - Persistent IndexedDB search index for metadata, highlights, notes, and bookmarks (faster repeat searches after reload)
   - Route-level lazy loading (`Home` / `Reader`) to reduce initial bundle cost
   - On-demand loading for export libraries (`jspdf`, `html2canvas`, `jszip`) only when export actions are used
   - Render culling with `content-visibility: auto` on large repeated rows/cards (library, notes, highlights, global search)
@@ -148,6 +149,7 @@ Open the app at the local Vite URL (usually `http://localhost:5173`).
 - `src/pages/Reader.jsx` - Reading experience, contextual tools, highlights, bookmarks, export, and search handoff
 - `src/components/BookView.jsx` - EPUB rendering and navigation engine
 - `src/services/db.js` - Local-first persistence layer
+- `src/services/searchIndex.js` - Persistent search index builder/storage for fast library + global search
 
 ---
 
