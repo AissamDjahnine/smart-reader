@@ -791,13 +791,9 @@ test('highlights selection controls drive export availability', async ({ page })
   const panel = page.getByTestId('highlights-panel');
   await expect(panel).toBeVisible();
   await expect(panel.getByText('2 highlights')).toBeVisible();
-  await expect(panel.getByText('2 selected')).toBeVisible();
+  await expect(panel.getByText('0 selected')).toBeVisible();
 
   const exportButton = panel.getByRole('button', { name: 'Export Selected' });
-  await expect(exportButton).toBeEnabled();
-
-  await panel.getByRole('button', { name: 'Clear', exact: true }).click();
-  await expect(panel.getByText('0 selected')).toBeVisible();
   await expect(exportButton).toBeDisabled();
 
   const firstItem = panel.getByTestId('highlight-item').first();
@@ -807,6 +803,85 @@ test('highlights selection controls drive export availability', async ({ page })
 
   await panel.getByRole('button', { name: 'Select all' }).click();
   await expect(panel.getByText('2 selected')).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Unselect all' })).toBeVisible();
+});
+
+test('clicking a highlight item triggers temporary in-book flash', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
+
+  const seeded = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs') ? 'keyvaluepairs' : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didSeed = false;
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          const payload = row?.value && typeof row.value === 'object' ? row.value : row;
+          const isTargetBook = payload && payload.title === 'Test Book' && Object.prototype.hasOwnProperty.call(payload, 'data');
+          if (!didSeed && isTargetBook) {
+            const cfiRange = 'epubcfi(/6/2[seed-hl-flash]!/4/2/2,/4/2/14)';
+            const highlights = [
+              {
+                cfiRange,
+                text: 'Seed highlight for flash behavior',
+                color: '#fcd34d'
+              }
+            ];
+            const nextPayload = { ...payload, highlights };
+            if (row?.value && typeof row.value === 'object') {
+              cursor.update({ ...row, value: nextPayload });
+            } else {
+              cursor.update(nextPayload);
+            }
+            didSeed = true;
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didSeed);
+        };
+      };
+    });
+  });
+  expect(seeded).toBeTruthy();
+
+  await bookLink.click();
+  await expect(page.getByRole('button', { name: /Explain Page/i })).toBeVisible();
+
+  await page.getByTestId('reader-highlights-toggle').click();
+  const panel = page.getByTestId('highlights-panel');
+  await expect(panel).toBeVisible();
+
+  await panel.getByTestId('highlight-item-jump').first().click();
+  await expect(panel).toHaveCount(0);
+
+  const flashState = page.getByTestId('highlight-flash-cfi');
+  await expect(flashState).not.toHaveText('', { timeout: 2000 });
+  await expect.poll(async () => (await flashState.textContent())?.trim() || '', { timeout: 5000 }).toBe('');
 });
 
 test('bookmarks panel supports jump-close and delete flow', async ({ page }) => {

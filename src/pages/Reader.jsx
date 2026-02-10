@@ -117,9 +117,11 @@ export default function Reader() {
   const isUpdatingStatsRef = useRef(false);
   const [highlights, setHighlights] = useState([]);
   const [selectedHighlights, setSelectedHighlights] = useState([]);
-  const selectionTouchedRef = useRef(false);
   const [editingHighlight, setEditingHighlight] = useState(null);
   const [noteDraft, setNoteDraft] = useState('');
+  const [flashingHighlightCfi, setFlashingHighlightCfi] = useState(null);
+  const [flashingHighlightPulse, setFlashingHighlightPulse] = useState(0);
+  const highlightFlashTimersRef = useRef([]);
   const [bookmarks, setBookmarks] = useState([]);
   const [selection, setSelection] = useState(null);
   const [selectionMode, setSelectionMode] = useState('actions');
@@ -150,6 +152,34 @@ export default function Reader() {
   });
 
   const aiUnavailableMessage = "AI features are not available now.";
+
+  const clearHighlightFlashTimers = useCallback(() => {
+    highlightFlashTimersRef.current.forEach((timerId) => clearTimeout(timerId));
+    highlightFlashTimersRef.current = [];
+  }, []);
+
+  const triggerHighlightFlash = useCallback((cfiRange) => {
+    if (!cfiRange) return;
+    clearHighlightFlashTimers();
+    const pulses = [1, 2, 3, 4, 5];
+    pulses.forEach((pulse, idx) => {
+      const id = setTimeout(() => {
+        setFlashingHighlightCfi(cfiRange);
+        setFlashingHighlightPulse(pulse);
+      }, idx * 120);
+      highlightFlashTimersRef.current.push(id);
+    });
+
+    const clearId = setTimeout(() => {
+      setFlashingHighlightCfi(null);
+      setFlashingHighlightPulse(0);
+    }, pulses.length * 120 + 20);
+    highlightFlashTimersRef.current.push(clearId);
+  }, [clearHighlightFlashTimers]);
+
+  useEffect(() => () => {
+    clearHighlightFlashTimers();
+  }, [clearHighlightFlashTimers]);
 
   useEffect(() => {
     if (showAIModal && rendition) {
@@ -1592,17 +1622,16 @@ export default function Reader() {
   useEffect(() => {
     if (!highlights.length) {
       setSelectedHighlights([]);
-      selectionTouchedRef.current = false;
+      setFlashingHighlightCfi(null);
+      setFlashingHighlightPulse(0);
       return;
     }
-
-    if (!selectionTouchedRef.current) {
-      setSelectedHighlights(highlights.map((h) => h.cfiRange));
-      return;
+    if (flashingHighlightCfi && !highlights.some((h) => h.cfiRange === flashingHighlightCfi)) {
+      setFlashingHighlightCfi(null);
+      setFlashingHighlightPulse(0);
     }
-
     setSelectedHighlights((prev) => prev.filter((cfi) => highlights.some((h) => h.cfiRange === cfi)));
-  }, [highlights]);
+  }, [highlights, flashingHighlightCfi]);
 
   useEffect(() => {
     const incoming = Array.isArray(book?.bookmarks) ? book.bookmarks : [];
@@ -1838,6 +1867,9 @@ export default function Reader() {
       </span>
       <span className="sr-only" data-testid="search-highlight-mode">
         {searchHighlightMode}
+      </span>
+      <span className="sr-only" data-testid="highlight-flash-cfi">
+        {flashingHighlightCfi || ''}
       </span>
       
       <style>{`
@@ -2431,24 +2463,17 @@ export default function Reader() {
                 {selectedHighlights.length} selected
               </span>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    selectionTouchedRef.current = true;
-                    setSelectedHighlights(highlights.map((h) => h.cfiRange));
-                  }}
-                  className="text-[10px] font-bold text-blue-500"
-                >
-                  Select all
-                </button>
-                <button
-                  onClick={() => {
-                    selectionTouchedRef.current = true;
-                    setSelectedHighlights([]);
-                  }}
-                  className={`text-[10px] font-bold ${isReaderDark ? 'text-gray-400 hover:text-gray-200' : 'text-gray-600 hover:text-gray-900'}`}
-                >
-                  Clear
-                </button>
+                {highlights.length > 0 && (
+                  <button
+                    onClick={() => {
+                      const allSelected = selectedHighlights.length === highlights.length;
+                      setSelectedHighlights(allSelected ? [] : highlights.map((h) => h.cfiRange));
+                    }}
+                    className="text-[10px] font-bold text-blue-500"
+                  >
+                    {selectedHighlights.length === highlights.length ? 'Unselect all' : 'Select all'}
+                  </button>
+                )}
               </div>
             </div>
 
@@ -2467,7 +2492,6 @@ export default function Reader() {
                   <div className="flex items-start gap-2">
                     <button
                       onClick={() => {
-                        selectionTouchedRef.current = true;
                         setSelectedHighlights((prev) => prev.includes(h.cfiRange)
                           ? prev.filter((cfi) => cfi !== h.cfiRange)
                           : [...prev, h.cfiRange]
@@ -2487,8 +2511,10 @@ export default function Reader() {
                     <button
                       onClick={() => {
                         jumpToCfi(h.cfiRange);
+                        triggerHighlightFlash(h.cfiRange);
                         setShowHighlightsPanel(false);
                       }}
+                      data-testid="highlight-item-jump"
                       className="text-left flex-1"
                     >
                       <div
@@ -2931,6 +2957,8 @@ export default function Reader() {
           activeSearchCfi={activeSearchCfi}
           focusedSearchCfi={focusedSearchCfi}
           showSearchHighlights={showSearchMenu || Boolean(focusedSearchCfi)}
+          flashingHighlightCfi={flashingHighlightCfi}
+          flashingHighlightPulse={flashingHighlightPulse}
           onSearchResultActivate={handleSearchResultActivate}
           onSearchFocusDismiss={dismissFocusedSearch}
           highlights={highlights}

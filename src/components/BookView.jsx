@@ -19,6 +19,8 @@ export default function BookView({
   activeSearchCfi = null,
   focusedSearchCfi = null,
   showSearchHighlights = true,
+  flashingHighlightCfi = null,
+  flashingHighlightPulse = 0,
   onSearchResultActivate,
   onSearchFocusDismiss,
   onChapterEnd // NEW: Callback for AI summarization
@@ -302,10 +304,14 @@ export default function BookView({
       const nextMap = new Map();
       highlights.forEach((h) => {
         if (!h?.cfiRange || !h?.color) return;
-        nextMap.set(h.cfiRange, h.color);
-        const prevColor = appliedHighlightsRef.current.get(h.cfiRange);
-        if (prevColor !== h.color) {
-          if (prevColor) {
+        const isFlashing = flashingHighlightCfi === h.cfiRange && flashingHighlightPulse > 0;
+        const flashOn = isFlashing && flashingHighlightPulse % 2 === 1;
+        const fillOpacity = flashOn ? '0.78' : '0.35';
+        const styleKey = `${h.color}|${fillOpacity}`;
+        nextMap.set(h.cfiRange, styleKey);
+        const prevStyle = appliedHighlightsRef.current.get(h.cfiRange);
+        if (prevStyle !== styleKey) {
+          if (prevStyle) {
             try {
               rendition.annotations.remove(h.cfiRange, USER_HIGHLIGHT_ANNOTATION_TYPE);
             } catch (err) {
@@ -317,7 +323,7 @@ export default function BookView({
               if (onSelectionRef.current) onSelectionRef.current(h.text, h.cfiRange, { x: e.clientX, y: e.clientY }, true);
             }, 'hl', {
               fill: h.color,
-              'fill-opacity': '0.35',
+              'fill-opacity': fillOpacity,
               'mix-blend-mode': 'normal'
             });
           } catch (err) {
@@ -337,7 +343,7 @@ export default function BookView({
       appliedHighlightsRef.current = nextMap;
     }, 40);
     return () => clearTimeout(timer);
-  }, [bookData, highlights, settings.fontSize, settings.fontFamily, settings.flow, settings.theme]);
+  }, [bookData, highlights, flashingHighlightCfi, flashingHighlightPulse, settings.fontSize, settings.fontFamily, settings.flow, settings.theme]);
 
 
   const prevPage = () => renditionRef.current?.prev();
