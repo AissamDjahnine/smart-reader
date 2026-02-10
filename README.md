@@ -94,11 +94,14 @@ Smart Reader is built around real reading behavior:
 - Light mode, dark mode, and sepia reading mode
 - Keyboard navigation support
 - Chapter menu + table of contents navigation
+- Reader search keyboard shortcuts (`Ctrl+F` to open search, `Esc` to close)
 - Dictionary lookup cancels stale responses when you close the panel
 
 ### Search That Works at Two Levels
 
 - In-reader search with result navigation (`X/N`, next/previous)
+- Active search result stays synchronized between text highlight and result list auto-scroll
+- Clicking a search result pins a temporary green focus marker at that exact reading location
 - Global search across:
   - Book metadata
   - Highlights
@@ -110,8 +113,10 @@ Smart Reader is built around real reading behavior:
 ### Highlights, Notes, and Study Workflow
 
 - Multi-color highlights
+- Highlights panel defaults to no pre-selected items (`Select all` / `Unselect all` workflow)
 - Add and edit notes on highlights
 - Jump to any saved highlight instantly
+- Highlight jumps use a single subtle flash cue (in panel and when opening from Highlights Center)
 - Bookmarks for key pages
 - Dictionary and translation from text selection
 - Export highlights to PDF (select all or specific items)
