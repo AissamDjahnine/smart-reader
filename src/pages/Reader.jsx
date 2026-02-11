@@ -134,6 +134,9 @@ export default function Reader() {
   const [selection, setSelection] = useState(null);
   const selectionRef = useRef(null);
   const [selectionMode, setSelectionMode] = useState('actions');
+  const [returnSpot, setReturnSpot] = useState(null);
+  const returnSpotTimerRef = useRef(null);
+  const currentLocationCfiRef = useRef('');
   const [footnotePreview, setFootnotePreview] = useState(null);
   const footnotePreviewPanelRef = useRef(null);
   const [postHighlightPrompt, setPostHighlightPrompt] = useState(null);
@@ -170,6 +173,34 @@ export default function Reader() {
   });
 
   const aiUnavailableMessage = "AI features are not available now.";
+
+  const clearReturnSpotTimer = useCallback(() => {
+    if (returnSpotTimerRef.current) {
+      clearTimeout(returnSpotTimerRef.current);
+      returnSpotTimerRef.current = null;
+    }
+  }, []);
+
+  const closeReturnSpot = useCallback(() => {
+    clearReturnSpotTimer();
+    setReturnSpot(null);
+  }, [clearReturnSpotTimer]);
+
+  const queueReturnSpot = useCallback((cfi, source = 'jump') => {
+    const normalized = (cfi || '').toString().replace(/\s+/g, '').trim();
+    if (!normalized) return;
+    clearReturnSpotTimer();
+    setReturnSpot((prev) => (
+      prev || {
+        cfi: normalized,
+        source
+      }
+    ));
+    returnSpotTimerRef.current = setTimeout(() => {
+      setReturnSpot(null);
+      returnSpotTimerRef.current = null;
+    }, 12000);
+  }, [clearReturnSpotTimer]);
 
   const closeFootnotePreview = useCallback(() => {
     setFootnotePreview(null);
@@ -208,6 +239,10 @@ export default function Reader() {
   useEffect(() => () => {
     clearHighlightFlashTimers();
   }, [clearHighlightFlashTimers]);
+
+  useEffect(() => () => {
+    clearReturnSpotTimer();
+  }, [clearReturnSpotTimer]);
 
   useEffect(() => {
     selectionRef.current = selection;
@@ -1023,7 +1058,7 @@ export default function Reader() {
     setActiveAnnotationSearchIndex(clamped);
     const target = sourceResults[clamped];
     if (!target?.cfi) return;
-    jumpToCfi(target.cfi);
+    jumpToCfi(target.cfi, { rememberReturnSpot: true, source: 'annotation' });
     if (target.kind === 'highlight' || target.kind === 'note') {
       triggerHighlightFlash(target.cfi);
     }
@@ -1101,14 +1136,15 @@ export default function Reader() {
   };
 
   const goToSearchIndex = (index, overrideResults = null, options = {}) => {
+    const { focus = false, rememberReturnSpot = true } = options;
     const sourceResults = Array.isArray(overrideResults) ? overrideResults : searchResults;
     if (!sourceResults.length) return;
     const clamped = Math.max(0, Math.min(index, sourceResults.length - 1));
     setActiveSearchIndex(clamped);
     const target = sourceResults[clamped];
     if (target?.cfi) {
-      setJumpTarget(target.cfi);
-      if (options.focus) {
+      jumpToCfi(target.cfi, { rememberReturnSpot, source: 'search' });
+      if (focus) {
         setFocusedSearchCfi(target.cfi);
       } else {
         setFocusedSearchCfi(null);
@@ -1134,7 +1170,7 @@ export default function Reader() {
   }, []);
 
   const handleSearchResultClick = (idx) => {
-    goToSearchIndex(idx, null, { focus: true });
+    goToSearchIndex(idx, null, { focus: true, rememberReturnSpot: true });
     closeSearchMenu({ preserveFocusedSearch: true });
   };
 
@@ -1581,8 +1617,18 @@ export default function Reader() {
     setSelectionMode('actions');
   }, [closeFootnotePreview, closePostHighlightPrompt]);
 
-  const jumpToCfi = (cfi) => {
+  const jumpToCfi = useCallback((cfi, options = {}) => {
+    const { rememberReturnSpot = false, source = 'jump' } = options;
     if (!cfi) return;
+    if (rememberReturnSpot) {
+      const runtimeCfi = rendition?.currentLocation?.()?.start?.cfi || '';
+      const fromCfi = (currentLocationCfiRef.current || runtimeCfi || bookRef.current?.lastLocation || '').toString().trim();
+      const normalizedFrom = fromCfi.replace(/\s+/g, '');
+      const normalizedTo = cfi.toString().replace(/\s+/g, '');
+      if (normalizedFrom && normalizedFrom !== normalizedTo) {
+        queueReturnSpot(normalizedFrom, source);
+      }
+    }
     if (rendition) {
       try {
         rendition.display(cfi);
@@ -1594,7 +1640,7 @@ export default function Reader() {
       setJumpTarget(cfi);
     }
     setTimeout(() => setJumpTarget(null), 0);
-  };
+  }, [queueReturnSpot, rendition]);
 
   const clearSelection = () => {
     setSelection(null);
@@ -1791,6 +1837,7 @@ export default function Reader() {
   const handleLocationChange = (loc) => {
     if (!loc?.start || !bookId) return;
     lastActiveRef.current = Date.now();
+    currentLocationCfiRef.current = loc.start.cfi || '';
     const nextProgress = Math.min(Math.max(Math.floor((loc.percentage || 0) * 100), 0), 100);
     queueProgressPersist(loc.start.cfi, loc.percentage || 0);
     setProgressPct(nextProgress);
@@ -1837,7 +1884,7 @@ export default function Reader() {
   const handleTocSelect = (href) => {
     if (!href) return;
     setShowSidebar(false);
-    jumpToCfi(href);
+    jumpToCfi(href, { rememberReturnSpot: true, source: 'toc' });
   };
 
   // NOTE: Intermediate summaries were previously generated after a fixed number
@@ -2177,6 +2224,12 @@ export default function Reader() {
   }, [book?.progress]);
 
   useEffect(() => {
+    if (typeof book?.lastLocation === 'string' && book.lastLocation.trim()) {
+      currentLocationCfiRef.current = book.lastLocation.trim();
+    }
+  }, [book?.id, book?.lastLocation]);
+
+  useEffect(() => {
     if (!bookId) return;
     const intervalMs = 15000;
     const activeWindowMs = 60000;
@@ -2397,6 +2450,18 @@ export default function Reader() {
     "";
   const isReaderDark = settings.theme === 'dark';
   const isReaderSepia = settings.theme === 'sepia';
+  const returnSpotSourceLabel = useMemo(() => {
+    if (!returnSpot?.source) return 'jump';
+    const labels = {
+      search: 'search',
+      annotation: 'annotation search',
+      highlight: 'highlight',
+      bookmark: 'bookmark',
+      footnote: 'note',
+      toc: 'contents'
+    };
+    return labels[returnSpot.source] || 'jump';
+  }, [returnSpot?.source]);
   const displayActiveSearchIndex = useMemo(() => {
     if (!searchResults.length) return -1;
     if (activeSearchCfi) {
@@ -3167,7 +3232,7 @@ export default function Reader() {
                   type="button"
                   onClick={() => {
                     if (!footnotePreview?.targetHref) return;
-                    jumpToCfi(footnotePreview.targetHref);
+                    jumpToCfi(footnotePreview.targetHref, { rememberReturnSpot: true, source: 'footnote' });
                     closeFootnotePreview();
                   }}
                   disabled={!footnotePreview?.targetHref}
@@ -3268,7 +3333,7 @@ export default function Reader() {
                     </button>
                     <button
                       onClick={() => {
-                        jumpToCfi(h.cfiRange);
+                        jumpToCfi(h.cfiRange, { rememberReturnSpot: true, source: 'highlight' });
                         triggerHighlightFlash(h.cfiRange);
                         setShowHighlightsPanel(false);
                       }}
@@ -3423,7 +3488,7 @@ export default function Reader() {
                   <div className="flex items-start justify-between gap-2">
                     <button
                       onClick={() => {
-                        jumpToCfi(b.cfi);
+                        jumpToCfi(b.cfi, { rememberReturnSpot: true, source: 'bookmark' });
                         setShowBookmarksPanel(false);
                       }}
                       className="text-left flex-1"
@@ -3673,6 +3738,44 @@ export default function Reader() {
           </div>
         );
       })()}
+
+      {returnSpot && (
+        <div
+          data-testid="return-to-spot-chip"
+          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[68]"
+        >
+          <div className={`flex items-center gap-2 rounded-full border px-3 py-2 shadow-xl backdrop-blur ${
+            isReaderDark
+              ? 'bg-gray-800/95 border-gray-700 text-gray-100'
+              : 'bg-white/95 border-gray-200 text-gray-800'
+          }`}>
+            <span className={`text-[11px] ${isReaderDark ? 'text-gray-300' : 'text-gray-600'}`}>
+              From {returnSpotSourceLabel}
+            </span>
+            <button
+              type="button"
+              data-testid="return-to-spot-action"
+              onClick={() => {
+                const targetCfi = returnSpot?.cfi;
+                closeReturnSpot();
+                if (targetCfi) jumpToCfi(targetCfi);
+              }}
+              className="rounded-full bg-blue-600 px-3 py-1 text-[11px] font-semibold text-white hover:bg-blue-700"
+            >
+              Back to previous spot
+            </button>
+            <button
+              type="button"
+              data-testid="return-to-spot-close"
+              onClick={closeReturnSpot}
+              className={`rounded-full p-1 ${isReaderDark ? 'text-gray-400 hover:text-red-400' : 'text-gray-500 hover:text-red-500'}`}
+              aria-label="Dismiss return spot"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        </div>
+      )}
 
       {showSidebar && (
         <div className="fixed inset-0 z-[65]" data-testid="chapters-panel">

@@ -348,6 +348,29 @@ test('search result list auto-scrolls to active item while navigating', async ({
   await expect.poll(async () => list.evaluate((el) => el.scrollTop), { timeout: 5000 }).toBeGreaterThan(initialScrollTop);
 });
 
+test('reader jump shows back-to-previous-spot chip and returns on click', async ({ page }) => {
+  await openFixtureBook(page);
+
+  await page.getByTitle('Search').click();
+  const searchInput = page.getByPlaceholder('Search inside this book...');
+  await searchInput.fill('wizard');
+  await searchInput.press('Enter');
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 15000 }).toMatch(/1\/\d+/);
+
+  const progressText = await page.getByTestId('search-progress').textContent();
+  const total = Number((progressText || '0/0').split('/')[1] || 0);
+  expect(total).toBeGreaterThan(1);
+
+  await page.getByTitle('Next result').click();
+
+  const returnChip = page.getByTestId('return-to-spot-chip');
+  await expect(returnChip).toBeVisible();
+  await expect(returnChip).toContainText('Back to previous spot');
+
+  await page.getByTestId('return-to-spot-action').click();
+  await expect(returnChip).toHaveCount(0);
+});
+
 test('dictionary ignores stale responses', async ({ page }) => {
   await page.route('https://api.dictionaryapi.dev/api/v2/entries/en/**', async (route) => {
     const url = route.request().url();
