@@ -108,6 +108,7 @@ Smart Reader is built around real reading behavior:
 - Active search result stays synchronized between text highlight and result list auto-scroll
 - In-book search markers are applied reliably while search is active and cleared cleanly on `Clear`/close
 - Clicking a search result pins a temporary green focus marker at that exact reading location
+- Recent query history in both reader search panels (book search + annotation search) with one-click re-run and reset
 - Dedicated in-reader **annotation search** (separate icon/panel) for current-book highlights, highlight notes, and bookmarks
 - Annotation search results jump directly to saved CFIs, with highlight/note matches flashing for quick visual confirmation
 - Global search across:
