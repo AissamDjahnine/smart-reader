@@ -2718,10 +2718,9 @@ export default function Home() {
         <>
         {shouldShowContinueReading && (
           <section className="mb-8" data-testid="continue-reading-rail">
-            <div className="flex items-center justify-between gap-3 mb-3">
+            <div className="flex items-center justify-between gap-3 mb-4">
               <div>
                 <h2 className="text-lg font-bold text-gray-900">Continue Reading</h2>
-                <p className="text-xs text-gray-500">Quick resume for books you already started.</p>
               </div>
               <button
                 type="button"
@@ -2732,44 +2731,59 @@ export default function Home() {
               </button>
             </div>
 
-            <div className="flex gap-4 overflow-x-auto pb-2">
-              {continueReadingBooks.map((book) => (
-                <Link
-                  to={buildReaderPath(book.id)}
-                  key={`continue-${book.id}`}
-                  data-testid="continue-reading-card"
-                  onClick={() => handleOpenBook(book.id)}
-                  className="min-w-[240px] max-w-[240px] rounded-2xl border border-gray-200 bg-white shadow-sm hover:shadow-md transition-all"
-                >
-                  <div className="p-3 flex gap-3">
-                    <div className="w-14 h-20 bg-gray-200 rounded-lg overflow-hidden shrink-0">
-                      {book.cover ? (
-                        <img src={book.cover} alt={book.title} className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-gray-300">
-                          <BookIcon size={16} />
-                        </div>
-                      )}
-                    </div>
+            <div className="grid [grid-template-columns:repeat(auto-fit,minmax(340px,1fr))] gap-x-4 gap-y-10 pb-3 pr-2">
+              {continueReadingBooks.map((book) => {
+                const progress = Math.max(0, Math.min(100, normalizeNumber(book.progress)));
+                return (
+                  <div key={`continue-${book.id}`} className="pl-[88px] sm:pl-[100px] py-1">
+                    <Link
+                      to={buildReaderPath(book.id)}
+                      data-testid="continue-reading-card"
+                      onClick={() => handleOpenBook(book.id)}
+                      className={`group relative block w-full min-h-[190px] sm:min-h-[196px] rounded-[24px] border transition-all hover:-translate-y-0.5 ${
+                        isDarkLibraryTheme
+                          ? "border-slate-700 bg-slate-800 shadow-[0_14px_34px_rgba(2,8,23,0.35)]"
+                          : "border-gray-200 bg-white shadow-[0_14px_34px_rgba(15,23,42,0.10)]"
+                      }`}
+                    >
+                      <div
+                        className={`absolute -left-[88px] sm:-left-[100px] top-1/2 h-[186px] w-[124px] sm:h-[206px] sm:w-[138px] -translate-y-1/2 overflow-hidden rounded-[16px] ${
+                          isDarkLibraryTheme
+                            ? "bg-slate-700 shadow-[0_14px_26px_rgba(2,8,23,0.45)]"
+                            : "bg-gray-200 shadow-[0_14px_26px_rgba(15,23,42,0.18)]"
+                        }`}
+                      >
+                        {book.cover ? (
+                          <img src={book.cover} alt={book.title} className="h-full w-full object-cover" />
+                        ) : (
+                          <div className={`h-full w-full flex items-center justify-center ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-300"}`}>
+                            <BookIcon size={18} />
+                          </div>
+                        )}
+                      </div>
 
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-bold text-gray-900 line-clamp-2">{book.title}</div>
-                      <div className="mt-1 text-xs text-gray-500 truncate">{book.author}</div>
-                      <div className="mt-2 text-[11px] text-blue-600 font-semibold">
-                        {normalizeNumber(book.progress)}% · {formatTime(book.readingTime)}
+                      <div className="ml-auto w-[75%] min-h-[178px] px-5 sm:px-6 py-5 sm:py-6 flex flex-col justify-between">
+                        <div className={`text-[14px] sm:text-[15px] font-normal leading-tight ${isDarkLibraryTheme ? "text-slate-400" : "text-[#666666]"}`}>
+                          {book.author}
+                        </div>
+                        <div className={`mt-1.5 text-[22px] sm:text-[24px] font-semibold leading-[1.12] tracking-tight line-clamp-2 ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+                          {book.title}
+                        </div>
+                        <div className="mt-3 inline-flex items-center gap-2 text-[#4CAF50]">
+                          <span className="relative inline-flex h-8 w-8 items-center justify-center" data-testid="continue-reading-ring">
+                            <span
+                              className="absolute inset-0 rounded-full"
+                              style={{ background: `conic-gradient(#4CAF50 ${progress * 3.6}deg, rgba(148, 163, 184, 0.28) 0deg)` }}
+                            />
+                            <span className={`absolute inset-[2px] rounded-full ${isDarkLibraryTheme ? "bg-slate-800" : "bg-white"}`} />
+                          </span>
+                          <span className="text-[16px] sm:text-[17px] font-medium leading-none">Continue</span>
+                        </div>
                       </div>
-                      {renderSessionTimeline(book, { compact: true })}
-                      <div className="mt-1 text-[10px] text-gray-400">{formatLastRead(book.lastRead)}</div>
-                      <div className="mt-2 w-full bg-gray-100 h-1.5 rounded-full overflow-hidden">
-                        <div
-                          className="bg-blue-600 h-full transition-all duration-700"
-                          style={{ width: `${normalizeNumber(book.progress)}%` }}
-                        />
-                      </div>
-                    </div>
+                    </Link>
                   </div>
-                </Link>
-              ))}
+                );
+              })}
             </div>
           </section>
         )}
