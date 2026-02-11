@@ -4,6 +4,70 @@ import ePub from 'epubjs';
 const EPUB_THEME_KEY = 'reader-theme';
 const SEARCH_ANNOTATION_TYPE = 'highlight';
 const USER_HIGHLIGHT_ANNOTATION_TYPE = 'highlight';
+const FOOTNOTE_HINT_RE = /(noteref|footnote|endnote|fn|note|doc-noteref|doc-endnote|doc-footnote)/i;
+
+const normalizeWhitespace = (value = '') => value.replace(/\s+/g, ' ').trim();
+
+const clampPreview = (value = '', max = 420) => {
+  const text = normalizeWhitespace(value);
+  if (!text) return '';
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1).trim()}…`;
+};
+
+const resolveRelativeHrefPath = (path, basePath = '') => {
+  if (!path) return '';
+  if (/^(https?:|mailto:|tel:)/i.test(path)) return '';
+
+  const cleanedPath = path.split('?')[0].replace(/^\/+/, '');
+  if (!cleanedPath || cleanedPath.startsWith('#')) return '';
+
+  const baseClean = (basePath || '').split('#')[0].replace(/^\/+/, '');
+  const baseDir = baseClean.includes('/') ? baseClean.split('/').slice(0, -1).join('/') : '';
+  const baseUrl = `https://reader.local/${baseDir ? `${baseDir}/` : ''}`;
+  try {
+    const resolved = new URL(cleanedPath, baseUrl);
+    return resolved.pathname.replace(/^\/+/, '');
+  } catch {
+    return cleanedPath;
+  }
+};
+
+const findFootnoteTargetInDoc = (doc, targetId) => {
+  if (!doc || !targetId) return null;
+  const byId = doc.getElementById(targetId);
+  if (byId) return byId;
+  const safeId = targetId.replace(/"/g, '\\"');
+  return doc.querySelector(`[name="${safeId}"]`);
+};
+
+const isLikelyFootnoteAnchor = (anchor) => {
+  if (!anchor) return false;
+  const href = (anchor.getAttribute('href') || '').trim();
+  if (!href || /^(https?:|mailto:|tel:)/i.test(href)) return false;
+
+  const epubType = anchor.getAttribute('epub:type') || '';
+  const role = anchor.getAttribute('role') || '';
+  const rel = anchor.getAttribute('rel') || '';
+  const className = typeof anchor.className === 'string' ? anchor.className : '';
+  const markerText = normalizeWhitespace(anchor.textContent || '');
+  const composite = `${epubType} ${role} ${rel} ${className} ${href}`.toLowerCase();
+  if (FOOTNOTE_HINT_RE.test(composite)) return true;
+
+  if (!href.includes('#')) return false;
+  if (!markerText || markerText.length > 8) return false;
+  return /^[\d*†‡§\[\]()]+$/.test(markerText);
+};
+
+const findSpineItemByHref = (book, hrefPath) => {
+  const target = (hrefPath || '').replace(/^\/+/, '');
+  if (!target) return null;
+  const spineItems = book?.spine?.spineItems || [];
+  return spineItems.find((item) => {
+    const itemHref = (item?.href || '').replace(/^\/+/, '');
+    return itemHref === target || itemHref.endsWith(`/${target}`) || target.endsWith(`/${itemHref}`);
+  }) || null;
+};
 
 const parseColorRgb = (color) => {
   if (typeof color !== 'string') return null;
@@ -62,6 +126,7 @@ export default function BookView({
   onSearchFocusDismiss,
   onSearchHighlightCountChange,
   onInlineNoteMarkerActivate,
+  onFootnotePreview,
   onChapterEnd // NEW: Callback for AI summarization
 }) {
   const viewerRef = useRef(null);
@@ -73,6 +138,7 @@ export default function BookView({
   const onSearchFocusDismissRef = useRef(onSearchFocusDismiss);
   const onSearchHighlightCountChangeRef = useRef(onSearchHighlightCountChange);
   const onInlineNoteMarkerActivateRef = useRef(onInlineNoteMarkerActivate);
+  const onFootnotePreviewRef = useRef(onFootnotePreview);
   const appliedHighlightsRef = useRef(new Map());
   const appliedSearchRef = useRef(new Map());
   const selectionCleanupRef = useRef([]);
@@ -98,6 +164,10 @@ export default function BookView({
   useEffect(() => {
     onInlineNoteMarkerActivateRef.current = onInlineNoteMarkerActivate;
   }, [onInlineNoteMarkerActivate]);
+
+  useEffect(() => {
+    onFootnotePreviewRef.current = onFootnotePreview;
+  }, [onFootnotePreview]);
 
   const applyTheme = (rendition, theme) => {
     if (!rendition) return;
@@ -214,10 +284,80 @@ export default function BookView({
         if (onSearchFocusDismissRef.current) {
           onSearchFocusDismissRef.current();
         }
+        if (onFootnotePreviewRef.current) {
+          onFootnotePreviewRef.current(null);
+        }
       };
 
       doc.addEventListener('mousedown', dismissFocusedSearch);
       doc.addEventListener('touchstart', dismissFocusedSearch);
+
+      const handleFootnoteClick = async (event) => {
+        const eventTarget = event?.target;
+        const targetElement = eventTarget?.nodeType === 1 ? eventTarget : eventTarget?.parentElement || null;
+        const target = targetElement?.closest?.('a') || null;
+        if (!target || !isLikelyFootnoteAnchor(target)) return;
+
+        const rawHref = (target.getAttribute('href') || '').trim();
+        const hashIndex = rawHref.indexOf('#');
+        const hashPart = hashIndex >= 0 ? rawHref.slice(hashIndex + 1) : '';
+        const hrefPath = hashIndex >= 0 ? rawHref.slice(0, hashIndex) : rawHref;
+        const targetId = hashPart ? decodeURIComponent(hashPart) : '';
+        if (!targetId) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+
+        let previewText = '';
+        const currentSectionHref = (contents?.section?.href || '').split('#')[0];
+        const resolvedPath = resolveRelativeHrefPath(hrefPath, currentSectionHref);
+        let targetHref = '';
+
+        try {
+          let noteNode = null;
+          if (!resolvedPath) {
+            noteNode = findFootnoteTargetInDoc(doc, targetId);
+            const currentPath = currentSectionHref || '';
+            targetHref = currentPath ? `${currentPath}#${targetId}` : `#${targetId}`;
+          } else {
+            const spineItem = findSpineItemByHref(bookRef.current, resolvedPath);
+            if (spineItem) {
+              await spineItem.load(bookRef.current.load.bind(bookRef.current));
+              noteNode = findFootnoteTargetInDoc(spineItem.document, targetId);
+              spineItem.unload();
+            }
+            targetHref = `${resolvedPath}#${targetId}`;
+          }
+
+          if (noteNode) {
+            const clone = noteNode.cloneNode(true);
+            clone.querySelectorAll?.('a[role="doc-backlink"], a[href*="back"], a[href*="return"], sup').forEach((el) => el.remove());
+            previewText = clampPreview(clone.textContent || noteNode.textContent || '');
+          }
+        } catch (err) {
+          console.error('Footnote preview resolve failed', err);
+        }
+
+        if (!previewText) {
+          previewText = 'Preview unavailable for this note.';
+        }
+
+        const rect = target.getBoundingClientRect();
+        const frameRect = win.frameElement?.getBoundingClientRect();
+        const x = (frameRect?.left || 0) + rect.right;
+        const y = (frameRect?.top || 0) + rect.bottom;
+        const label = normalizeWhitespace(target.textContent || '').slice(0, 24) || 'Note';
+
+        onFootnotePreviewRef.current?.({
+          x,
+          y,
+          label,
+          text: previewText,
+          targetHref
+        });
+      };
+
+      doc.addEventListener('click', handleFootnoteClick, true);
 
       selectionCleanupRef.current.push(() => {
         doc.removeEventListener('mouseup', notifyIfCleared);
@@ -225,6 +365,7 @@ export default function BookView({
         doc.removeEventListener('touchend', notifyIfCleared);
         doc.removeEventListener('mousedown', dismissFocusedSearch);
         doc.removeEventListener('touchstart', dismissFocusedSearch);
+        doc.removeEventListener('click', handleFootnoteClick, true);
       });
     };
 

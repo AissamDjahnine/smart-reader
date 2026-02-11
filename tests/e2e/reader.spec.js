@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import path from 'path';
 
 const fixturePath = path.resolve(process.cwd(), 'tests/fixtures/fixture.epub');
+const footnoteFixturePath = path.resolve(process.cwd(), 'test-books/footnote-demo.epub');
 
 async function openFixtureBook(page) {
   await page.addInitScript(() => {
@@ -59,6 +60,47 @@ test('ai toolbar actions are visibly disabled and orange', async ({ page }) => {
   await expect(explain).toHaveClass(/bg-orange-50/);
   await expect(story).toHaveClass(/text-orange-700/);
   await expect(story).toHaveClass(/bg-orange-50/);
+});
+
+test('footnote preview opens from marker and supports jump/close', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(footnoteFixturePath);
+  const bookLink = page.getByRole('link', { name: /Footnote Demo/i }).first();
+  await expect(bookLink).toBeVisible();
+  await bookLink.click();
+  await expect(page.getByTestId('reader-search-toggle')).toBeVisible();
+
+  const frame = page.frameLocator('iframe');
+  const marker = frame.locator('a', { hasText: '[1]' }).first();
+  await expect(marker).toBeVisible();
+  const preview = page.getByTestId('footnote-preview-panel');
+  let opened = false;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await marker.click();
+    if (await preview.isVisible()) {
+      opened = true;
+      break;
+    }
+    await page.waitForTimeout(200);
+  }
+
+  expect(opened).toBeTruthy();
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText('This is footnote number one');
+
+  await preview.getByRole('button', { name: 'Open full note' }).click();
+  await expect(preview).toHaveCount(0);
+
+  await marker.click();
+  await expect(preview).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(preview).toHaveCount(0);
 });
 
 

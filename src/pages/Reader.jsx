@@ -134,6 +134,8 @@ export default function Reader() {
   const [selection, setSelection] = useState(null);
   const selectionRef = useRef(null);
   const [selectionMode, setSelectionMode] = useState('actions');
+  const [footnotePreview, setFootnotePreview] = useState(null);
+  const footnotePreviewPanelRef = useRef(null);
   const [postHighlightPrompt, setPostHighlightPrompt] = useState(null);
   const postHighlightPromptStateRef = useRef(null);
   const [postHighlightNoteDraft, setPostHighlightNoteDraft] = useState('');
@@ -168,6 +170,10 @@ export default function Reader() {
   });
 
   const aiUnavailableMessage = "AI features are not available now.";
+
+  const closeFootnotePreview = useCallback(() => {
+    setFootnotePreview(null);
+  }, []);
 
   const closePostHighlightPrompt = useCallback(() => {
     setPostHighlightPrompt(null);
@@ -374,6 +380,39 @@ export default function Reader() {
       window.removeEventListener('keydown', onKeyDown);
     };
   }, [postHighlightPrompt, closePostHighlightPrompt]);
+
+  useEffect(() => {
+    if (!footnotePreview) return;
+
+    const onPointerDown = (event) => {
+      const node = footnotePreviewPanelRef.current;
+      if (!node) return;
+      if (node.contains(event.target)) return;
+      closeFootnotePreview();
+    };
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') closeFootnotePreview();
+    };
+
+    const onViewportChange = () => {
+      closeFootnotePreview();
+    };
+
+    window.addEventListener('mousedown', onPointerDown);
+    window.addEventListener('touchstart', onPointerDown, { passive: true });
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onViewportChange);
+    window.addEventListener('scroll', onViewportChange, true);
+
+    return () => {
+      window.removeEventListener('mousedown', onPointerDown);
+      window.removeEventListener('touchstart', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onViewportChange);
+      window.removeEventListener('scroll', onViewportChange, true);
+    };
+  }, [footnotePreview, closeFootnotePreview]);
 
   useEffect(() => {
     if (showAIModal && rendition) {
@@ -1351,6 +1390,7 @@ export default function Reader() {
   };
 
   const openDictionaryForText = (text) => {
+    closeFootnotePreview();
     closePostHighlightPrompt();
     const trimmed = (text || '').trim();
     if (!trimmed) return;
@@ -1373,6 +1413,7 @@ export default function Reader() {
   };
 
   const openTranslationForText = (text) => {
+    closeFootnotePreview();
     closePostHighlightPrompt();
     const trimmed = (text || '').trim();
     if (!trimmed) return;
@@ -1413,6 +1454,47 @@ export default function Reader() {
 
     return { left, top, width, maxHeight };
   };
+
+  const getFootnotePanelStyle = (anchor) => {
+    const padding = 12;
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1200;
+    const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
+    const width = Math.min(360, Math.max(260, viewportWidth - padding * 2));
+    const maxHeight = Math.min(280, Math.max(180, Math.floor(viewportHeight * 0.5)));
+
+    const safeAnchorX = anchor?.x ?? viewportWidth / 2;
+    const safeAnchorY = anchor?.y ?? viewportHeight / 2;
+
+    let left = safeAnchorX + 8;
+    let top = safeAnchorY + 8;
+
+    if (left + width > viewportWidth - padding) {
+      left = viewportWidth - width - padding;
+    }
+    if (left < padding) left = padding;
+
+    if (top + maxHeight > viewportHeight - padding) {
+      top = Math.max(padding, safeAnchorY - maxHeight - 8);
+    }
+    if (top < padding) top = padding;
+
+    return { left, top, width, maxHeight };
+  };
+
+  const handleFootnotePreview = useCallback((payload) => {
+    if (!payload) {
+      closeFootnotePreview();
+      return;
+    }
+    setShowDictionary(false);
+    setDictionaryAnchor(null);
+    setShowTranslation(false);
+    setTranslationAnchor(null);
+    closePostHighlightPrompt();
+    setSelection(null);
+    setSelectionMode('actions');
+    setFootnotePreview(payload);
+  }, [closeFootnotePreview, closePostHighlightPrompt]);
 
   const getChapterLabel = (loc) => {
     if (!loc?.start) return 'Bookmark';
@@ -1482,6 +1564,7 @@ export default function Reader() {
   }, [highlights]);
 
   const handleSelection = useCallback((text, cfiRange, pos, isExisting = false) => {
+    closeFootnotePreview();
     closePostHighlightPrompt();
     const trimmed = (text || '').trim();
     if (!trimmed) {
@@ -1496,7 +1579,7 @@ export default function Reader() {
       isExisting
     });
     setSelectionMode('actions');
-  }, [closePostHighlightPrompt]);
+  }, [closeFootnotePreview, closePostHighlightPrompt]);
 
   const jumpToCfi = (cfi) => {
     if (!cfi) return;
@@ -1516,6 +1599,7 @@ export default function Reader() {
   const clearSelection = () => {
     setSelection(null);
     setSelectionMode('actions');
+    closeFootnotePreview();
     if (rendition) {
       try {
         const contentsList = rendition.getContents?.() || [];
@@ -3038,6 +3122,65 @@ export default function Reader() {
         );
       })()}
 
+      {footnotePreview && (() => {
+        const panelStyle = getFootnotePanelStyle(footnotePreview);
+        return (
+          <div className="fixed inset-0 z-[74] pointer-events-none" data-testid="footnote-preview-overlay">
+            <div
+              ref={footnotePreviewPanelRef}
+              data-testid="footnote-preview-panel"
+              className={`absolute rounded-2xl shadow-2xl border p-3 pointer-events-auto ${
+                isReaderDark
+                  ? 'bg-gray-800 border-gray-700 text-gray-100'
+                  : 'bg-white border-gray-200 text-gray-900'
+              }`}
+              style={panelStyle}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className={`text-[10px] uppercase tracking-widest font-bold ${isReaderDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                  Note preview {footnotePreview?.label ? `· ${footnotePreview.label}` : ''}
+                </div>
+                <button
+                  onClick={closeFootnotePreview}
+                  className={`p-1 ${isReaderDark ? 'text-gray-400 hover:text-red-400' : 'text-gray-500 hover:text-red-500'}`}
+                  aria-label="Close note preview"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              <div className={`mt-2 max-h-40 overflow-y-auto pr-1 text-sm leading-relaxed ${isReaderDark ? 'text-gray-200' : 'text-gray-800'}`}>
+                {footnotePreview.text}
+              </div>
+              <div className="mt-3 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeFootnotePreview}
+                  className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                    isReaderDark
+                      ? 'border border-gray-600 text-gray-200 hover:bg-gray-700'
+                      : 'border border-gray-300 text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!footnotePreview?.targetHref) return;
+                    jumpToCfi(footnotePreview.targetHref);
+                    closeFootnotePreview();
+                  }}
+                  disabled={!footnotePreview?.targetHref}
+                  className="rounded-full bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Open full note
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {showHighlightsPanel && (
         <div className="fixed inset-0 z-[55]" data-testid="highlights-panel">
           <div
@@ -3712,6 +3855,7 @@ export default function Reader() {
           highlights={highlights}
           onSelection={handleSelection}
           onInlineNoteMarkerActivate={handleInlineNoteMarkerActivate}
+          onFootnotePreview={handleFootnotePreview}
         />
       </div>
     </div>
