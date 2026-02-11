@@ -1,9 +1,46 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import ePub from 'epubjs';
 
 const EPUB_THEME_KEY = 'reader-theme';
 const SEARCH_ANNOTATION_TYPE = 'highlight';
 const USER_HIGHLIGHT_ANNOTATION_TYPE = 'highlight';
+
+const parseColorRgb = (color) => {
+  if (typeof color !== 'string') return null;
+  const hex = color.trim();
+  if (/^#([0-9a-fA-F]{6})$/.test(hex)) {
+    const value = hex.slice(1);
+    return [
+      Number.parseInt(value.slice(0, 2), 16),
+      Number.parseInt(value.slice(2, 4), 16),
+      Number.parseInt(value.slice(4, 6), 16)
+    ];
+  }
+  if (/^#([0-9a-fA-F]{3})$/.test(hex)) {
+    const value = hex.slice(1);
+    return [
+      Number.parseInt(value[0] + value[0], 16),
+      Number.parseInt(value[1] + value[1], 16),
+      Number.parseInt(value[2] + value[2], 16)
+    ];
+  }
+  const rgbMatch = hex.match(/^rgba?\(([^)]+)\)$/i);
+  if (!rgbMatch) return null;
+  const [r, g, b] = rgbMatch[1]
+    .split(',')
+    .slice(0, 3)
+    .map((value) => Number.parseFloat(value.trim()));
+  if (![r, g, b].every(Number.isFinite)) return null;
+  return [r, g, b];
+};
+
+const getContrastTextColor = (color) => {
+  const rgb = parseColorRgb(color);
+  if (!rgb) return '#111827';
+  const [r, g, b] = rgb;
+  const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return luminance > 0.62 ? '#111827' : '#ffffff';
+};
 
 export default function BookView({ 
   bookData, 
@@ -24,6 +61,7 @@ export default function BookView({
   onSearchResultActivate,
   onSearchFocusDismiss,
   onSearchHighlightCountChange,
+  onInlineNoteMarkerActivate,
   onChapterEnd // NEW: Callback for AI summarization
 }) {
   const viewerRef = useRef(null);
@@ -34,9 +72,12 @@ export default function BookView({
   const onSearchResultActivateRef = useRef(onSearchResultActivate);
   const onSearchFocusDismissRef = useRef(onSearchFocusDismiss);
   const onSearchHighlightCountChangeRef = useRef(onSearchHighlightCountChange);
+  const onInlineNoteMarkerActivateRef = useRef(onInlineNoteMarkerActivate);
   const appliedHighlightsRef = useRef(new Map());
   const appliedSearchRef = useRef(new Map());
   const selectionCleanupRef = useRef([]);
+  const inlineNoteMarkersRef = useRef([]);
+  const [relocationTick, setRelocationTick] = useState(0);
 
   useEffect(() => {
     onSelectionRef.current = onSelection;
@@ -53,6 +94,10 @@ export default function BookView({
   useEffect(() => {
     onSearchHighlightCountChangeRef.current = onSearchHighlightCountChange;
   }, [onSearchHighlightCountChange]);
+
+  useEffect(() => {
+    onInlineNoteMarkerActivateRef.current = onInlineNoteMarkerActivate;
+  }, [onInlineNoteMarkerActivate]);
 
   const applyTheme = (rendition, theme) => {
     if (!rendition) return;
@@ -102,6 +147,22 @@ export default function BookView({
     rendition.themes.register(EPUB_THEME_KEY, bodyStyles);
     rendition.themes.select(EPUB_THEME_KEY);
     rendition.themes.fontSize(`${settings.fontSize}%`);
+  };
+
+  const clearInlineNoteMarkers = () => {
+    inlineNoteMarkersRef.current.forEach(({ element, cleanup }) => {
+      try {
+        cleanup?.();
+      } catch (err) {
+        console.error('Inline note marker cleanup callback failed', err);
+      }
+      try {
+        element?.remove?.();
+      } catch (err) {
+        console.error('Inline note marker removal failed', err);
+      }
+    });
+    inlineNoteMarkersRef.current = [];
   };
 
   useEffect(() => {
@@ -178,6 +239,7 @@ export default function BookView({
                 let val = book.locations.percentageFromCfi(loc.start.cfi) ?? loc.start.percentage;
                 let cleanPercentage = loc.atEnd ? 100 : Math.min(Math.max(Math.floor(val * 100), 0), 99);
                 if (onLocationChange) onLocationChange({ ...loc, percentage: cleanPercentage / 100 });
+                setRelocationTick((tick) => tick + 1);
 
                 // --- CHAPTER END DETECTION ---
                 const currentHref = loc.start.href;
@@ -230,6 +292,7 @@ export default function BookView({
     return () => {
       selectionCleanupRef.current.forEach((cleanup) => cleanup());
       selectionCleanupRef.current = [];
+      clearInlineNoteMarkers();
       if (book) book.destroy();
     };
   }, [bookData, settings.flow]); 
@@ -425,9 +488,89 @@ export default function BookView({
         }
       });
       appliedHighlightsRef.current = nextMap;
+
+      clearInlineNoteMarkers();
+      const renderedContents = rendition.getContents?.() || [];
+      highlights.forEach((h) => {
+        const noteValue = typeof h?.note === 'string' ? h.note.trim() : '';
+        if (!noteValue || !h?.cfiRange) return;
+
+        for (const content of renderedContents) {
+          try {
+            const doc = content?.document;
+            const win = content?.window;
+            if (!doc || !win || !content?.range) continue;
+
+            const range = content.range(h.cfiRange);
+            if (!range) continue;
+            const rects = range.getClientRects?.() || [];
+            const firstRect = rects.length ? rects[0] : range.getBoundingClientRect?.();
+            if (!firstRect) continue;
+
+            if (doc.defaultView?.getComputedStyle(doc.body).position === 'static') {
+              doc.body.style.position = 'relative';
+            }
+
+            const marker = doc.createElement('button');
+            marker.type = 'button';
+            marker.setAttribute('aria-label', 'Open highlight note');
+            marker.setAttribute('data-testid', 'inline-note-marker');
+            marker.className = 'sr-inline-note-marker';
+            marker.textContent = '✎';
+            marker.title = noteValue.slice(0, 180);
+            marker.style.position = 'absolute';
+            marker.style.left = `${firstRect.right + win.scrollX + 2}px`;
+            marker.style.top = `${firstRect.top + win.scrollY - 8}px`;
+            marker.style.width = '13px';
+            marker.style.height = '13px';
+            marker.style.display = 'flex';
+            marker.style.alignItems = 'center';
+            marker.style.justifyContent = 'center';
+            marker.style.borderRadius = '999px';
+            marker.style.border = '1px solid rgba(15, 23, 42, 0.28)';
+            marker.style.background = h.color || '#fca5a5';
+            marker.style.color = getContrastTextColor(h.color || '#fca5a5');
+            marker.style.fontSize = '9px';
+            marker.style.fontWeight = '700';
+            marker.style.fontFamily = "'Inter', Arial, sans-serif";
+            marker.style.lineHeight = '1';
+            marker.style.boxShadow = '0 1px 3px rgba(15, 23, 42, 0.35)';
+            marker.style.zIndex = '22';
+            marker.style.cursor = 'pointer';
+            marker.style.padding = '0';
+            marker.style.userSelect = 'none';
+
+            const clickHandler = (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (!onInlineNoteMarkerActivateRef.current) return;
+              const frameRect = win.frameElement?.getBoundingClientRect();
+              const anchor = frameRect
+                ? { x: frameRect.left + firstRect.right, y: frameRect.top + firstRect.bottom }
+                : { x: firstRect.right, y: firstRect.bottom };
+              onInlineNoteMarkerActivateRef.current({
+                highlight: h,
+                anchor
+              });
+            };
+            marker.addEventListener('click', clickHandler);
+            doc.body.appendChild(marker);
+            inlineNoteMarkersRef.current.push({
+              element: marker,
+              cleanup: () => marker.removeEventListener('click', clickHandler)
+            });
+            break;
+          } catch (err) {
+            // CFI may not exist in this rendered frame.
+          }
+        }
+      });
     }, 40);
-    return () => clearTimeout(timer);
-  }, [bookData, highlights, flashingHighlightCfi, flashingHighlightPulse, settings.fontSize, settings.fontFamily, settings.flow, settings.theme]);
+    return () => {
+      clearTimeout(timer);
+      clearInlineNoteMarkers();
+    };
+  }, [bookData, highlights, flashingHighlightCfi, flashingHighlightPulse, settings.fontSize, settings.fontFamily, settings.flow, settings.theme, relocationTick]);
 
 
   const prevPage = () => renditionRef.current?.prev();

@@ -1455,6 +1455,51 @@ export default function Reader() {
     setNoteDraft(highlight?.note || '');
   };
 
+  const applyHighlightNoteLocally = useCallback((cfiRange, note) => {
+    const normalizeCfi = (value) => (value || '').toString().replace(/\s+/g, '');
+    const target = normalizeCfi(cfiRange);
+    if (!target) return false;
+
+    let didUpdate = false;
+    setHighlights((prev) => prev.map((item) => {
+      const source = normalizeCfi(item?.cfiRange);
+      if (!source) return item;
+      const matches = source === target || source.includes(target) || target.includes(source);
+      if (!matches) return item;
+      didUpdate = true;
+      return { ...item, note };
+    }));
+
+    setBook((prev) => {
+      if (!prev) return prev;
+      const nextHighlights = Array.isArray(prev.highlights)
+        ? prev.highlights.map((item) => {
+          const source = normalizeCfi(item?.cfiRange);
+          if (!source) return item;
+          const matches = source === target || source.includes(target) || target.includes(source);
+          return matches ? { ...item, note } : item;
+        })
+        : prev.highlights;
+      return { ...prev, highlights: nextHighlights };
+    });
+
+    return didUpdate;
+  }, []);
+
+  const handleInlineNoteMarkerActivate = useCallback((payload) => {
+    const target = payload?.highlight;
+    if (!target?.cfiRange) return;
+    closePostHighlightPrompt();
+    setShowDictionary(false);
+    setDictionaryAnchor(null);
+    setShowTranslation(false);
+    setTranslationAnchor(null);
+    setSelection(null);
+    setSelectionMode('actions');
+    setEditingHighlight(target);
+    setNoteDraft(target?.note || '');
+  }, [closePostHighlightPrompt]);
+
   const closeNoteEditor = () => {
     setEditingHighlight(null);
     setNoteDraft('');
@@ -1463,8 +1508,10 @@ export default function Reader() {
   const saveHighlightNote = async () => {
     const currentBook = bookRef.current;
     if (!currentBook || !editingHighlight?.cfiRange) return;
+    const nextNote = noteDraft.trim();
+    applyHighlightNoteLocally(editingHighlight.cfiRange, nextNote);
     try {
-      const updated = await updateHighlightNote(currentBook.id, editingHighlight.cfiRange, noteDraft.trim());
+      const updated = await updateHighlightNote(currentBook.id, editingHighlight.cfiRange, nextNote);
       if (updated) {
         setHighlights(updated);
         setBook({ ...currentBook, highlights: updated });
@@ -1485,6 +1532,7 @@ export default function Reader() {
       setPostHighlightNoteError('Write a note first.');
       return;
     }
+    applyHighlightNoteLocally(target.cfiRange, nextNote);
     setIsSavingPostHighlightNote(true);
     setPostHighlightNoteError('');
     try {
@@ -2119,6 +2167,9 @@ export default function Reader() {
       </span>
       <span className="sr-only" data-testid="highlight-flash-cfi">
         {flashingHighlightCfi || ''}
+      </span>
+      <span className="sr-only" data-testid="selection-cfi">
+        {selection?.cfiRange || ''}
       </span>
       
       <style>{`
@@ -2819,6 +2870,7 @@ export default function Reader() {
             onClick={closeNoteEditor}
           />
           <div
+            data-testid="highlight-note-editor"
             className={`absolute left-1/2 top-24 -translate-x-1/2 w-[92vw] max-w-lg rounded-3xl shadow-2xl p-6 ${
               settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
             }`}
@@ -2836,6 +2888,7 @@ export default function Reader() {
               {editingHighlight.text}
             </div>
             <textarea
+              data-testid="highlight-note-editor-input"
               rows={4}
               value={noteDraft}
               onChange={(e) => setNoteDraft(e.target.value)}
@@ -2850,6 +2903,7 @@ export default function Reader() {
                 Cancel
               </button>
               <button
+                data-testid="highlight-note-editor-save"
                 onClick={saveHighlightNote}
                 className="px-4 py-2 rounded-full text-xs font-bold bg-blue-600 text-white"
               >
@@ -3316,6 +3370,7 @@ export default function Reader() {
           onSearchFocusDismiss={dismissFocusedSearch}
           highlights={highlights}
           onSelection={handleSelection}
+          onInlineNoteMarkerActivate={handleInlineNoteMarkerActivate}
         />
       </div>
     </div>
