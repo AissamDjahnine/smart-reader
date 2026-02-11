@@ -646,8 +646,7 @@ test('status and flag filters can be combined', async ({ page }) => {
   await expect(bookLink).toBeVisible();
 
   await page.getByTestId('book-toggle-to-read').first().click({ force: true });
-  await bookLink.hover();
-  await bookLink.locator('button[title="Favorite"]').click({ force: true });
+  await page.locator('button[title="Favorite"]').first().click({ force: true });
 
   const filterSelect = page.getByTestId('library-filter');
   const favoritesQuickFilter = page.getByTestId('library-quick-filter-favorites');
@@ -744,6 +743,94 @@ test('notes center edits note and syncs to reader highlights panel', async ({ pa
   await expect(page).toHaveURL(/panel=highlights/);
   await expect(page.getByTestId('highlights-panel')).toBeVisible();
   await expect(page.getByText('Updated note from Notes Center')).toBeVisible();
+});
+
+test('highlights center open in reader triggers highlight flash', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+  await page.waitForTimeout(1000);
+
+  const seeded = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs') ? 'keyvaluepairs' : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didSeed = false;
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          const payload = row?.value && typeof row.value === 'object' ? row.value : row;
+          const isTargetBook = payload && payload.title === 'Test Book' && Object.prototype.hasOwnProperty.call(payload, 'data');
+          if (!didSeed && isTargetBook) {
+            const cfiRange = 'epubcfi(/6/2[seed-home-center-flash]!/4/2/2,/4/2/16)';
+            const highlights = Array.isArray(payload.highlights) ? [...payload.highlights] : [];
+            const existingIndex = highlights.findIndex((item) => item?.cfiRange === cfiRange);
+            const seededHighlight = {
+              cfiRange,
+              text: 'Seeded highlight from highlights center',
+              color: '#fcd34d'
+            };
+            if (existingIndex >= 0) {
+              highlights[existingIndex] = { ...highlights[existingIndex], ...seededHighlight };
+            } else {
+              highlights.push(seededHighlight);
+            }
+
+            const nextPayload = { ...payload, highlights };
+            if (row?.value && typeof row.value === 'object') {
+              cursor.update({ ...row, value: nextPayload });
+            } else {
+              cursor.update(nextPayload);
+            }
+            didSeed = true;
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didSeed);
+        };
+      };
+    });
+  });
+  expect(seeded).toBeTruthy();
+  await page.reload();
+
+  await page.getByTestId('library-highlights-center-toggle').click();
+  await expect(page.getByTestId('highlights-center-panel')).toBeVisible();
+  await expect(page.getByTestId('highlights-center-item').first()).toBeVisible();
+
+  await page.getByTestId('highlights-center-open-reader').first().click();
+
+  await expect(page).toHaveURL(/flash=1/);
+  await expect(page).not.toHaveURL(/panel=highlights/);
+  await expect(page.getByTestId('highlights-panel')).toHaveCount(0);
+
+  const flashState = page.getByTestId('highlight-flash-cfi');
+  await expect(flashState).not.toHaveText('', { timeout: 3000 });
+  await expect
+    .poll(async () => (await flashState.textContent())?.trim() || '', { timeout: 7000 })
+    .toBe('');
 });
 
 test('notes and highlights sections hide home-only library content', async ({ page }) => {

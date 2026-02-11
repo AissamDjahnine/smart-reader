@@ -865,6 +865,7 @@ export default function Home() {
     if (options.cfi) params.set('cfi', options.cfi);
     if (options.query) params.set('q', options.query);
     if (options.openSearch) params.set('search', '1');
+    if (options.flash) params.set('flash', '1');
     return `/read?${params.toString()}`;
   };
 
@@ -1322,7 +1323,10 @@ export default function Home() {
   const handleOpenHighlightInReader = (entry) => {
     if (!entry?.bookId) return;
     handleOpenBook(entry.bookId);
-    navigate(buildReaderPath(entry.bookId, "highlights", { cfi: entry.cfiRange || "" }));
+    navigate(buildReaderPath(entry.bookId, "", {
+      cfi: entry.cfiRange || "",
+      flash: true
+    }));
   };
 
   const normalizeDuplicateValue = (value) => (value || "").toString().trim().toLowerCase();

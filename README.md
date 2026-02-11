@@ -92,13 +92,25 @@ Smart Reader is built around real reading behavior:
   - Font family
   - Reading flow
 - Light mode, dark mode, and sepia reading mode
-- Keyboard navigation support
+- Keyboard navigation support (Left/Right in paginated mode, Up/Down in infinite mode with gradual acceleration on hold)
 - Chapter menu + table of contents navigation
+- Reader search keyboard shortcuts (`Ctrl+F` to open search, `Esc` to close)
+- Return-to-previous-spot chip after navigation jumps (search, highlights, bookmarks, notes, TOC)
 - Dictionary lookup cancels stale responses when you close the panel
+- Footnote/endnote marker preview popup:
+  - Click in-book note marker links (for example `[1]`) to open an anchored preview
+  - Jump directly to the full note target with `Open full note`
+  - Quick dismiss on outside click, `Esc`, or viewport change
 
 ### Search That Works at Two Levels
 
 - In-reader search with result navigation (`X/N`, next/previous)
+- Active search result stays synchronized between text highlight and result list auto-scroll
+- In-book search markers are applied reliably while search is active and cleared cleanly on `Clear`/close
+- Clicking a search result pins a temporary green focus marker at that exact reading location
+- Recent query history in both reader search panels (book search + annotation search) with one-click re-run and reset
+- Dedicated in-reader **annotation search** (separate icon/panel) for current-book highlights, highlight notes, and bookmarks
+- Annotation search results jump directly to saved CFIs, with highlight/note matches flashing for quick visual confirmation
 - Global search across:
   - Book metadata
   - Highlights
@@ -110,8 +122,15 @@ Smart Reader is built around real reading behavior:
 ### Highlights, Notes, and Study Workflow
 
 - Multi-color highlights
+- Highlights panel defaults to no pre-selected items (`Select all` / `Unselect all` workflow)
+- Re-clicking an existing highlight opens a contextual action popup anchored next to that highlight (delete, dictionary, translate)
+- Existing highlights support in-place color changes from the same contextual popup (no delete/recreate needed)
+- Right after choosing a highlight color, an inline note composer opens near the selection so notes can be captured immediately
+- Highlights that include notes now show an inline note marker (`✎`) near the text; clicking it opens the note editor directly
+- Highlight deletion now includes a 5-second undo toast in the reader
 - Add and edit notes on highlights
 - Jump to any saved highlight instantly
+- Highlight jumps use a single subtle flash cue (in panel and when opening from Highlights Center)
 - Bookmarks for key pages
 - Dictionary and translation from text selection
 - Export highlights to PDF (select all or specific items)

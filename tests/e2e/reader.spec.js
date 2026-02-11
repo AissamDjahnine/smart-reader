@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import path from 'path';
 
 const fixturePath = path.resolve(process.cwd(), 'tests/fixtures/fixture.epub');
+const footnoteFixturePath = path.resolve(process.cwd(), 'test-books/footnote-demo.epub');
 
 async function openFixtureBook(page) {
   await page.addInitScript(() => {
@@ -13,6 +14,72 @@ async function openFixtureBook(page) {
   await fileInput.setInputFiles(fixturePath);
   const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
   await expect(bookLink).toBeVisible();
+  await bookLink.click();
+  await expect(page.getByRole('button', { name: /Explain Page/i })).toBeVisible();
+}
+
+async function openFixtureBookInScrolledMode(page) {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
+
+  const seeded = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs') ? 'keyvaluepairs' : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didSeed = false;
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          const payload = row?.value && typeof row.value === 'object' ? row.value : row;
+          if (!didSeed && payload && payload.title === 'Test Book' && Object.prototype.hasOwnProperty.call(payload, 'data')) {
+            const nextPayload = {
+              ...payload,
+              readerSettings: {
+                ...(payload.readerSettings || {}),
+                flow: 'scrolled',
+                theme: 'light',
+                fontSize: 100,
+                fontFamily: 'publisher'
+              }
+            };
+            if (row?.value && typeof row.value === 'object') {
+              cursor.update({ ...row, value: nextPayload });
+            } else {
+              cursor.update(nextPayload);
+            }
+            didSeed = true;
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didSeed);
+        };
+      };
+    });
+  });
+  expect(seeded).toBeTruthy();
+
   await bookLink.click();
   await expect(page.getByRole('button', { name: /Explain Page/i })).toBeVisible();
 }
@@ -34,6 +101,17 @@ test('selection toolbar closes automatically when selection is cleared', async (
   await expect(page.getByTestId('selection-toolbar')).toHaveCount(0);
 });
 
+test('dictionary action shows icon in selection toolbar', async ({ page }) => {
+  await openFixtureBook(page);
+  await selectTextInBook(page);
+
+  const toolbar = page.getByTestId('selection-toolbar');
+  await expect(toolbar).toBeVisible();
+  await expect(
+    toolbar.getByRole('button', { name: 'Dictionary' }).locator('svg')
+  ).toHaveCount(1);
+});
+
 test('ai toolbar actions are visibly disabled and orange', async ({ page }) => {
   await openFixtureBook(page);
 
@@ -48,6 +126,47 @@ test('ai toolbar actions are visibly disabled and orange', async ({ page }) => {
   await expect(explain).toHaveClass(/bg-orange-50/);
   await expect(story).toHaveClass(/text-orange-700/);
   await expect(story).toHaveClass(/bg-orange-50/);
+});
+
+test('footnote preview opens from marker and supports jump/close', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(footnoteFixturePath);
+  const bookLink = page.getByRole('link', { name: /Footnote Demo/i }).first();
+  await expect(bookLink).toBeVisible();
+  await bookLink.click();
+  await expect(page.getByTestId('reader-search-toggle')).toBeVisible();
+
+  const frame = page.frameLocator('iframe');
+  const marker = frame.locator('a', { hasText: '[1]' }).first();
+  await expect(marker).toBeVisible();
+  const preview = page.getByTestId('footnote-preview-panel');
+  let opened = false;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await marker.click();
+    if (await preview.isVisible()) {
+      opened = true;
+      break;
+    }
+    await page.waitForTimeout(200);
+  }
+
+  expect(opened).toBeTruthy();
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText('This is footnote number one');
+
+  await preview.getByRole('button', { name: 'Open full note' }).click();
+  await expect(preview).toHaveCount(0);
+
+  await marker.click();
+  await expect(preview).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(preview).toHaveCount(0);
 });
 
 
@@ -75,9 +194,23 @@ test('search clear removes in-book search markers', async ({ page }) => {
   await searchInput.fill('wizard');
   await searchInput.press('Enter');
   await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 15000 }).toMatch(/1\/\d+/);
+  await expect(page.getByTestId('search-highlight-count')).toHaveText('1');
 
   await page.getByRole('button', { name: 'Clear' }).click();
   await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 10000 }).toBe('0/0');
+  await expect(page.getByTestId('search-highlight-count')).toHaveText('0');
+});
+
+test('search renders in-book markers while results are active', async ({ page }) => {
+  await openFixtureBook(page);
+
+  await page.getByTitle('Search').click();
+  const searchInput = page.getByPlaceholder('Search inside this book...');
+  await searchInput.fill('wizard');
+  await searchInput.press('Enter');
+
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 15000 }).toMatch(/1\/\d+/);
+  await expect(page.getByTestId('search-highlight-count')).toHaveText('1');
 });
 
 test('search sets first result active and Enter cycles through results', async ({ page }) => {
@@ -102,6 +235,429 @@ test('search sets first result active and Enter cycles through results', async (
   const progressBeforeEnter = await page.getByTestId('search-progress').textContent();
   await searchInput.press('Enter');
   await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 10000 }).not.toBe(progressBeforeEnter);
+});
+
+test('search highlighting does not remove saved highlights', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
+
+  const seeded = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs') ? 'keyvaluepairs' : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didSeed = false;
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          const payload = row?.value && typeof row.value === 'object' ? row.value : row;
+          const isTargetBook = payload && payload.title === 'Test Book' && Object.prototype.hasOwnProperty.call(payload, 'data');
+          if (!didSeed && isTargetBook) {
+            const highlights = [
+              {
+                cfiRange: 'epubcfi(/6/2[seed-highlight-persist]!/4/2/2,/4/2/14)',
+                text: 'Seeded persisted highlight',
+                color: '#fcd34d'
+              }
+            ];
+            const nextPayload = { ...payload, highlights };
+            if (row?.value && typeof row.value === 'object') {
+              cursor.update({ ...row, value: nextPayload });
+            } else {
+              cursor.update(nextPayload);
+            }
+            didSeed = true;
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didSeed);
+        };
+      };
+    });
+  });
+  expect(seeded).toBeTruthy();
+
+  await bookLink.click();
+  await expect(page.getByRole('button', { name: /Explain Page/i })).toBeVisible();
+
+  await page.getByTestId('reader-highlights-toggle').click();
+  await expect(page.getByTestId('highlight-item')).toHaveCount(1);
+  await page.mouse.click(16, 16);
+  await expect(page.getByTestId('highlights-panel')).toHaveCount(0);
+
+  await page.getByTitle('Search').click();
+  const searchInput = page.getByPlaceholder('Search inside this book...');
+  await searchInput.fill('wizard');
+  await searchInput.press('Enter');
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 15000 }).toMatch(/1\/\d+/);
+  await page.getByRole('button', { name: 'Clear' }).click();
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 10000 }).toBe('0/0');
+  await page.keyboard.press('Escape');
+  await expect(page.getByPlaceholder('Search inside this book...')).toHaveCount(0);
+
+  await page.getByTestId('reader-highlights-toggle').click();
+  await expect(page.getByTestId('highlight-item')).toHaveCount(1);
+});
+
+test('Ctrl/Cmd+F opens reader search and focuses input, Escape closes it', async ({ page }) => {
+  await openFixtureBook(page);
+
+  const searchInput = page.getByPlaceholder('Search inside this book...');
+  await expect(searchInput).toHaveCount(0);
+
+  await page.keyboard.press('Control+f');
+  await expect(searchInput).toBeVisible();
+  await expect(searchInput).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(searchInput).toHaveCount(0);
+});
+
+test('ArrowRight and ArrowLeft navigate in paginated book mode', async ({ page }) => {
+  await openFixtureBook(page);
+
+  const currentCfi = page.getByTestId('reader-current-cfi');
+  await expect.poll(async () => (await currentCfi.textContent())?.trim() || '', { timeout: 10000 }).not.toBe('');
+  const initialCfi = ((await currentCfi.textContent()) || '').trim();
+
+  const frame = page.frameLocator('iframe');
+  await frame.locator('body').click({ position: { x: 80, y: 80 } });
+
+  await page.keyboard.press('ArrowRight');
+  await expect.poll(async () => (await currentCfi.textContent())?.trim() || '', { timeout: 10000 }).not.toBe(initialCfi);
+  const nextCfi = ((await currentCfi.textContent()) || '').trim();
+
+  await page.keyboard.press('ArrowLeft');
+  await expect.poll(async () => (await currentCfi.textContent())?.trim() || '', { timeout: 10000 }).not.toBe(nextCfi);
+});
+
+test('ArrowUp and ArrowDown scroll in infinite mode', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
+
+  const seeded = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs') ? 'keyvaluepairs' : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didSeed = false;
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          const payload = row?.value && typeof row.value === 'object' ? row.value : row;
+          if (!didSeed && payload && payload.title === 'Test Book' && Object.prototype.hasOwnProperty.call(payload, 'data')) {
+            const nextPayload = {
+              ...payload,
+              readerSettings: {
+                ...(payload.readerSettings || {}),
+                flow: 'scrolled',
+                theme: 'light',
+                fontSize: 100,
+                fontFamily: 'publisher'
+              }
+            };
+            if (row?.value && typeof row.value === 'object') {
+              cursor.update({ ...row, value: nextPayload });
+            } else {
+              cursor.update(nextPayload);
+            }
+            didSeed = true;
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didSeed);
+        };
+      };
+    });
+  });
+  expect(seeded).toBeTruthy();
+
+  await bookLink.click();
+  await expect(page.getByRole('button', { name: /Explain Page/i })).toBeVisible();
+  const currentCfi = page.getByTestId('reader-current-cfi');
+  await expect.poll(async () => (await currentCfi.textContent())?.trim() || '', { timeout: 10000 }).not.toBe('');
+  const initialCfi = ((await currentCfi.textContent()) || '').trim();
+
+  const frame = page.frameLocator('iframe').first();
+  await frame.locator('body').click({ position: { x: 80, y: 120 } });
+
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
+  await expect.poll(async () => (await currentCfi.textContent())?.trim() || '', { timeout: 10000 }).not.toBe(initialCfi);
+
+  const downCfi = ((await currentCfi.textContent()) || '').trim();
+  await page.keyboard.press('ArrowUp');
+  await page.keyboard.press('ArrowUp');
+  await page.keyboard.press('ArrowUp');
+  await expect.poll(async () => (await currentCfi.textContent())?.trim() || '', { timeout: 10000 }).not.toBe(downCfi);
+});
+
+test('holding ArrowDown increases infinite-mode scroll step', async ({ page }) => {
+  await openFixtureBookInScrolledMode(page);
+
+  const frame = page.frameLocator('iframe').first();
+  await frame.locator('body').click({ position: { x: 80, y: 120 } });
+
+  const stepValue = page.getByTestId('reader-last-arrow-scroll-step');
+  await page.keyboard.press('ArrowDown');
+  const singleStep = Number(((await stepValue.textContent()) || '0').trim());
+  expect(singleStep).toBeGreaterThan(0);
+
+  for (let i = 0; i < 4; i += 1) {
+    await page.evaluate(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        bubbles: true,
+        cancelable: true,
+        repeat: true
+      }));
+    });
+    await page.waitForTimeout(25);
+  }
+
+  const acceleratedStep = Number(((await stepValue.textContent()) || '0').trim());
+  expect(acceleratedStep).toBeGreaterThan(singleStep);
+
+  await page.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent('keyup', {
+      key: 'ArrowDown',
+      bubbles: true,
+      cancelable: true
+    }));
+  });
+});
+
+test('ArrowDown acceleration resets after key release', async ({ page }) => {
+  await openFixtureBookInScrolledMode(page);
+
+  const frame = page.frameLocator('iframe').first();
+  await frame.locator('body').click({ position: { x: 80, y: 120 } });
+
+  const stepValue = page.getByTestId('reader-last-arrow-scroll-step');
+  await page.keyboard.press('ArrowDown');
+  const baselineStep = Number(((await stepValue.textContent()) || '0').trim());
+  expect(baselineStep).toBeGreaterThan(0);
+
+  for (let i = 0; i < 3; i += 1) {
+    await page.evaluate(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        bubbles: true,
+        cancelable: true,
+        repeat: true
+      }));
+    });
+    await page.waitForTimeout(20);
+  }
+
+  const acceleratedStep = Number(((await stepValue.textContent()) || '0').trim());
+  expect(acceleratedStep).toBeGreaterThan(baselineStep);
+
+  await page.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent('keyup', {
+      key: 'ArrowDown',
+      bubbles: true,
+      cancelable: true
+    }));
+  });
+
+  await page.keyboard.press('ArrowDown');
+  const resetStep = Number(((await stepValue.textContent()) || '0').trim());
+  expect(resetStep).toBeLessThanOrEqual(acceleratedStep);
+});
+
+test('clicking a search result jumps and closes the search panel', async ({ page }) => {
+  await openFixtureBook(page);
+
+  await page.getByTitle('Search').click();
+  const searchInput = page.getByPlaceholder('Search inside this book...');
+  await searchInput.fill('wizard');
+  await searchInput.press('Enter');
+
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 15000 }).toMatch(/1\/\d+/);
+  await expect(page.getByTestId('search-result-item-1')).toBeVisible();
+
+  await page.getByTestId('search-result-item-1').click();
+  await expect(searchInput).toHaveCount(0);
+});
+
+test('clicking a search result enters focus-only mode and outside click clears it', async ({ page }) => {
+  await openFixtureBook(page);
+
+  await page.getByTitle('Search').click();
+  const searchInput = page.getByPlaceholder('Search inside this book...');
+  await searchInput.fill('wizard');
+  await searchInput.press('Enter');
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 15000 }).toMatch(/1\/\d+/);
+
+  await page.getByTestId('search-result-item-1').click();
+  await expect(searchInput).toHaveCount(0);
+  await expect(page.getByTestId('search-focus-state')).toHaveText('focused');
+  await expect(page.getByTestId('search-highlight-mode')).toHaveText('focus-only');
+
+  await page.mouse.click(20, 20);
+  await expect(page.getByTestId('search-focus-state')).toHaveText('none');
+  await expect(page.getByTestId('search-highlight-mode')).toHaveText('none');
+});
+
+test('Escape clears focused search highlight when panel is closed', async ({ page }) => {
+  await openFixtureBook(page);
+
+  await page.getByTitle('Search').click();
+  const searchInput = page.getByPlaceholder('Search inside this book...');
+  await searchInput.fill('wizard');
+  await searchInput.press('Enter');
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 15000 }).toMatch(/1\/\d+/);
+
+  await page.getByTestId('search-result-item-1').click();
+  await expect(page.getByTestId('search-focus-state')).toHaveText('focused');
+
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('search-focus-state')).toHaveText('none');
+  await expect(page.getByTestId('search-highlight-mode')).toHaveText('none');
+});
+
+test('search result list auto-scrolls to active item while navigating', async ({ page }) => {
+  await openFixtureBook(page);
+
+  await page.getByTitle('Search').click();
+  const searchInput = page.getByPlaceholder('Search inside this book...');
+  await searchInput.fill('the');
+  await searchInput.press('Enter');
+
+  await expect.poll(async () => {
+    const value = await page.getByTestId('search-progress').textContent();
+    return value || '0/0';
+  }, { timeout: 15000 }).toMatch(/1\/\d+/);
+
+  const progressText = await page.getByTestId('search-progress').textContent();
+  const total = Number((progressText || '0/0').split('/')[1] || 0);
+  expect(total).toBeGreaterThan(8);
+
+  const list = page.getByTestId('search-results-list');
+  const initialScrollTop = await list.evaluate((el) => el.scrollTop);
+
+  const steps = Math.min(12, total - 1);
+  for (let i = 0; i < steps; i += 1) {
+    await page.getByTitle('Next result').click();
+  }
+
+  await expect.poll(async () => list.evaluate((el) => el.scrollTop), { timeout: 5000 }).toBeGreaterThan(initialScrollTop);
+});
+
+test('reader search keeps recent queries and allows quick re-run', async ({ page }) => {
+  await openFixtureBook(page);
+
+  await page.getByTestId('reader-search-toggle').click();
+  const searchInput = page.getByPlaceholder('Search inside this book...');
+  await searchInput.fill('wizard');
+  await searchInput.press('Enter');
+
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 15000 }).toMatch(/1\/\d+/);
+  const historyItem = page.getByTestId('search-history-item-0');
+  await expect(historyItem).toBeVisible();
+  await expect(historyItem).toHaveText('wizard');
+
+  await page.getByRole('button', { name: 'Clear', exact: true }).click();
+  await expect(searchInput).toHaveValue('');
+
+  await historyItem.click();
+  await expect(searchInput).toHaveValue('wizard');
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 15000 }).toMatch(/1\/\d+/);
+
+  await page.getByTestId('search-history-clear').click();
+  await expect(page.getByTestId('search-history-item-0')).toHaveCount(0);
+});
+
+test('annotation search keeps recent queries and allows quick re-run', async ({ page }) => {
+  await openFixtureBook(page);
+
+  await page.getByTestId('reader-annotation-search-toggle').click();
+  const searchInput = page.getByPlaceholder('Search highlights, notes, bookmarks...');
+  await searchInput.fill('foobar');
+  await searchInput.press('Enter');
+  await expect(page.getByText('No annotation matches found.')).toBeVisible();
+
+  const historyItem = page.getByTestId('annotation-search-history-item-0');
+  await expect(historyItem).toBeVisible();
+  await expect(historyItem).toHaveText('foobar');
+
+  await page.getByRole('button', { name: 'Clear', exact: true }).click();
+  await expect(searchInput).toHaveValue('');
+
+  await historyItem.click();
+  await expect(searchInput).toHaveValue('foobar');
+  await expect(page.getByText('No annotation matches found.')).toBeVisible();
+
+  await page.getByTestId('annotation-search-history-clear').click();
+  await expect(page.getByTestId('annotation-search-history-item-0')).toHaveCount(0);
+});
+
+test('reader jump shows back-to-previous-spot chip and returns on click', async ({ page }) => {
+  await openFixtureBook(page);
+
+  await page.getByTitle('Search').click();
+  const searchInput = page.getByPlaceholder('Search inside this book...');
+  await searchInput.fill('wizard');
+  await searchInput.press('Enter');
+  await expect.poll(async () => page.getByTestId('search-progress').textContent(), { timeout: 15000 }).toMatch(/1\/\d+/);
+
+  const progressText = await page.getByTestId('search-progress').textContent();
+  const total = Number((progressText || '0/0').split('/')[1] || 0);
+  expect(total).toBeGreaterThan(1);
+
+  await page.getByTitle('Next result').click();
+
+  const returnChip = page.getByTestId('return-to-spot-chip');
+  await expect(returnChip).toBeVisible();
+  await expect(returnChip).toContainText('Back to previous spot');
+
+  await page.getByTestId('return-to-spot-action').click();
+  await expect(returnChip).toHaveCount(0);
 });
 
 test('dictionary ignores stale responses', async ({ page }) => {
@@ -614,13 +1170,9 @@ test('highlights selection controls drive export availability', async ({ page })
   const panel = page.getByTestId('highlights-panel');
   await expect(panel).toBeVisible();
   await expect(panel.getByText('2 highlights')).toBeVisible();
-  await expect(panel.getByText('2 selected')).toBeVisible();
+  await expect(panel.getByText('0 selected')).toBeVisible();
 
   const exportButton = panel.getByRole('button', { name: 'Export Selected' });
-  await expect(exportButton).toBeEnabled();
-
-  await panel.getByRole('button', { name: 'Clear', exact: true }).click();
-  await expect(panel.getByText('0 selected')).toBeVisible();
   await expect(exportButton).toBeDisabled();
 
   const firstItem = panel.getByTestId('highlight-item').first();
@@ -630,6 +1182,203 @@ test('highlights selection controls drive export availability', async ({ page })
 
   await panel.getByRole('button', { name: 'Select all' }).click();
   await expect(panel.getByText('2 selected')).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Unselect all' })).toBeVisible();
+});
+
+test('highlight delete supports undo in reader panel', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
+
+  const seeded = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs') ? 'keyvaluepairs' : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didSeed = false;
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          const payload = row?.value && typeof row.value === 'object' ? row.value : row;
+          const isTargetBook = payload && payload.title === 'Test Book' && Object.prototype.hasOwnProperty.call(payload, 'data');
+          if (!didSeed && isTargetBook) {
+            const highlights = [
+              {
+                cfiRange: 'epubcfi(/6/2[seed-hl-undo]!/4/2/2,/4/2/10)',
+                text: 'Seed highlight for undo delete test',
+                color: '#fcd34d'
+              }
+            ];
+            const nextPayload = { ...payload, highlights };
+            if (row?.value && typeof row.value === 'object') {
+              cursor.update({ ...row, value: nextPayload });
+            } else {
+              cursor.update(nextPayload);
+            }
+            didSeed = true;
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didSeed);
+        };
+      };
+    });
+  });
+  expect(seeded).toBeTruthy();
+
+  await bookLink.click();
+  await expect(page.getByRole('button', { name: /Explain Page/i })).toBeVisible();
+
+  await page.getByTestId('reader-highlights-toggle').click();
+  const panel = page.getByTestId('highlights-panel');
+  await expect(panel).toBeVisible();
+  await expect(panel.getByTestId('highlight-item')).toHaveCount(1);
+
+  await panel
+    .getByTestId('highlight-item')
+    .first()
+    .locator('button')
+    .filter({ hasText: /^Delete$/ })
+    .click();
+  await expect(page.getByTestId('highlight-undo-toast')).toBeVisible();
+  await expect(panel.getByTestId('highlight-item')).toHaveCount(0);
+
+  await page.getByTestId('highlight-undo-action').click();
+  await expect(page.getByTestId('highlight-undo-toast')).toHaveCount(0);
+  await expect(panel.getByTestId('highlight-item')).toHaveCount(1);
+});
+
+test('clicking a highlight item triggers temporary in-book flash', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
+
+  const seeded = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs') ? 'keyvaluepairs' : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didSeed = false;
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          const payload = row?.value && typeof row.value === 'object' ? row.value : row;
+          const isTargetBook = payload && payload.title === 'Test Book' && Object.prototype.hasOwnProperty.call(payload, 'data');
+          if (!didSeed && isTargetBook) {
+            const cfiRange = 'epubcfi(/6/2[seed-hl-flash]!/4/2/2,/4/2/14)';
+            const highlights = [
+              {
+                cfiRange,
+                text: 'Seed highlight for flash behavior',
+                color: '#fcd34d'
+              }
+            ];
+            const nextPayload = { ...payload, highlights };
+            if (row?.value && typeof row.value === 'object') {
+              cursor.update({ ...row, value: nextPayload });
+            } else {
+              cursor.update(nextPayload);
+            }
+            didSeed = true;
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didSeed);
+        };
+      };
+    });
+  });
+  expect(seeded).toBeTruthy();
+
+  await bookLink.click();
+  await expect(page.getByRole('button', { name: /Explain Page/i })).toBeVisible();
+
+  await page.getByTestId('reader-highlights-toggle').click();
+  const panel = page.getByTestId('highlights-panel');
+  await expect(panel).toBeVisible();
+
+  await panel.getByTestId('highlight-item-jump').first().click();
+  await expect(panel).toHaveCount(0);
+
+  const flashState = page.getByTestId('highlight-flash-cfi');
+  await expect(flashState).not.toHaveText('', { timeout: 2000 });
+  await expect.poll(async () => (await flashState.textContent())?.trim() || '', { timeout: 5000 }).toBe('');
+});
+
+test('post-highlight note prompt supports direct note entry and save', async ({ page }) => {
+  await openFixtureBook(page);
+  await selectTextInBook(page);
+
+  const toolbar = page.getByTestId('selection-toolbar');
+  await toolbar.getByRole('button', { name: 'Highlight' }).click();
+  await toolbar.getByTitle('Highlight Amber').click();
+
+  const notePrompt = page.getByTestId('post-highlight-note-prompt');
+  await expect(notePrompt).toBeVisible();
+  const noteInput = page.getByTestId('post-highlight-note-input');
+  await expect(noteInput).toBeFocused();
+  await expect(page.getByTestId('post-highlight-note-save')).toBeDisabled();
+  await noteInput.fill('Direct prompt note');
+  await expect(page.getByTestId('post-highlight-note-save')).toBeEnabled();
+
+  await page.getByTestId('post-highlight-note-save').click();
+  await expect(page.getByTestId('post-highlight-note-prompt')).toHaveCount(0);
+});
+
+test('post-highlight note prompt can be dismissed with Later', async ({ page }) => {
+  await openFixtureBook(page);
+  await selectTextInBook(page);
+
+  const toolbar = page.getByTestId('selection-toolbar');
+  await toolbar.getByRole('button', { name: 'Highlight' }).click();
+  await toolbar.getByTitle('Highlight Amber').click();
+
+  const notePrompt = page.getByTestId('post-highlight-note-prompt');
+  await expect(notePrompt).toBeVisible();
+  await notePrompt.getByRole('button', { name: 'Later' }).click();
+  await expect(page.getByTestId('post-highlight-note-prompt')).toHaveCount(0);
 });
 
 test('bookmarks panel supports jump-close and delete flow', async ({ page }) => {

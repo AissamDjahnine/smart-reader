@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { getBook, updateBookProgress, saveHighlight, deleteHighlight, updateReadingStats, saveChapterSummary, savePageSummary, saveBookmark, deleteBookmark, updateHighlightNote, updateBookReaderSettings, markBookStarted } from '../services/db';
 import BookView from '../components/BookView';
@@ -8,7 +8,7 @@ import {
   Moon, Sun, BookOpen, Scroll, Type, 
   ChevronLeft, Menu, X,
   Search as SearchIcon, Sparkles, Wand2, User,
-  BookOpenText, Highlighter, Languages, Bookmark
+  BookOpenText, Highlighter, Languages, Bookmark, BookText
 } from 'lucide-react';
 
 const DEFAULT_TRANSLATE_PROVIDER = 'mymemory';
@@ -23,6 +23,43 @@ const DEFAULT_READER_SETTINGS = {
   theme: 'light',
   flow: 'paginated',
   fontFamily: 'publisher'
+};
+const READER_SEARCH_HISTORY_KEY = 'reader-search-history-v1';
+const READER_ANNOTATION_HISTORY_KEY = 'reader-annotation-search-history-v1';
+const MAX_RECENT_QUERIES = 8;
+
+const parseStoredQueryHistory = (raw) => {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    const cleaned = [];
+    parsed.forEach((value) => {
+      if (typeof value !== 'string') return;
+      const term = value.trim();
+      if (!term) return;
+      const normalized = term.toLowerCase();
+      if (seen.has(normalized)) return;
+      seen.add(normalized);
+      cleaned.push(term);
+    });
+    return cleaned.slice(0, MAX_RECENT_QUERIES);
+  } catch (err) {
+    console.error(err);
+    return [];
+  }
+};
+
+const appendRecentQuery = (history, query) => {
+  const term = (query || '').trim();
+  if (!term) return history;
+  const normalized = term.toLowerCase();
+  const next = [
+    term,
+    ...history.filter((item) => item.toLowerCase() !== normalized)
+  ];
+  return next.slice(0, MAX_RECENT_QUERIES);
 };
 
 function OwlIcon({ size = 18, className = '' }) {
@@ -56,12 +93,14 @@ export default function Reader() {
   const panelParam = searchParams.get('panel');
   const cfiParam = searchParams.get('cfi');
   const searchTermParam = searchParams.get('q');
+  const flashParam = searchParams.get('flash');
   const [book, setBook] = useState(null);
   const bookRef = useRef(null);
   
   const [showFontMenu, setShowFontMenu] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
   const [showSearchMenu, setShowSearchMenu] = useState(false);
+  const [showAnnotationSearchMenu, setShowAnnotationSearchMenu] = useState(false);
   const [showAIModal, setShowAIModal] = useState(false);
   const [showHighlightsPanel, setShowHighlightsPanel] = useState(false);
   const [showBookmarksPanel, setShowBookmarksPanel] = useState(false);
@@ -93,6 +132,24 @@ export default function Reader() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
+  const [recentSearchQueries, setRecentSearchQueries] = useState(() => {
+    if (typeof window === 'undefined') return [];
+    return parseStoredQueryHistory(window.localStorage.getItem(READER_SEARCH_HISTORY_KEY));
+  });
+  const [annotationSearchQuery, setAnnotationSearchQuery] = useState('');
+  const [annotationSearchResults, setAnnotationSearchResults] = useState([]);
+  const [activeAnnotationSearchIndex, setActiveAnnotationSearchIndex] = useState(-1);
+  const [recentAnnotationSearchQueries, setRecentAnnotationSearchQueries] = useState(() => {
+    if (typeof window === 'undefined') return [];
+    return parseStoredQueryHistory(window.localStorage.getItem(READER_ANNOTATION_HISTORY_KEY));
+  });
+  const [focusedSearchCfi, setFocusedSearchCfi] = useState(null);
+  const [searchHighlightCount, setSearchHighlightCount] = useState(0);
+  const activeSearchCfi = activeSearchIndex >= 0 ? (searchResults[activeSearchIndex]?.cfi || null) : null;
+  const searchInputRef = useRef(null);
+  const searchResultsListRef = useRef(null);
+  const annotationSearchInputRef = useRef(null);
+  const annotationSearchResultsListRef = useRef(null);
   const searchTokenRef = useRef(0);
   const [showDictionary, setShowDictionary] = useState(false);
   const [dictionaryAnchor, setDictionaryAnchor] = useState(null);
@@ -113,12 +170,32 @@ export default function Reader() {
   const isUpdatingStatsRef = useRef(false);
   const [highlights, setHighlights] = useState([]);
   const [selectedHighlights, setSelectedHighlights] = useState([]);
-  const selectionTouchedRef = useRef(false);
   const [editingHighlight, setEditingHighlight] = useState(null);
   const [noteDraft, setNoteDraft] = useState('');
+  const [pendingHighlightDelete, setPendingHighlightDelete] = useState(null);
+  const pendingHighlightDeleteRef = useRef(null);
+  const pendingHighlightDeleteTimerRef = useRef(null);
+  const [flashingHighlightCfi, setFlashingHighlightCfi] = useState(null);
+  const [flashingHighlightPulse, setFlashingHighlightPulse] = useState(0);
+  const highlightFlashTimersRef = useRef([]);
   const [bookmarks, setBookmarks] = useState([]);
   const [selection, setSelection] = useState(null);
+  const selectionRef = useRef(null);
   const [selectionMode, setSelectionMode] = useState('actions');
+  const [returnSpot, setReturnSpot] = useState(null);
+  const returnSpotTimerRef = useRef(null);
+  const currentLocationCfiRef = useRef('');
+  const [currentLocationCfi, setCurrentLocationCfi] = useState('');
+  const [lastArrowScrollStep, setLastArrowScrollStep] = useState(0);
+  const arrowScrollStateRef = useRef({ key: '', streak: 0, lastAt: 0 });
+  const [footnotePreview, setFootnotePreview] = useState(null);
+  const footnotePreviewPanelRef = useRef(null);
+  const [postHighlightPrompt, setPostHighlightPrompt] = useState(null);
+  const postHighlightPromptStateRef = useRef(null);
+  const [postHighlightNoteDraft, setPostHighlightNoteDraft] = useState('');
+  const [postHighlightNoteError, setPostHighlightNoteError] = useState('');
+  const [isSavingPostHighlightNote, setIsSavingPostHighlightNote] = useState(false);
+  const postHighlightPromptRef = useRef(null);
   const [progressPct, setProgressPct] = useState(0);
   const [currentHref, setCurrentHref] = useState('');
   const [legacyReaderSettings] = useState(() => {
@@ -137,6 +214,7 @@ export default function Reader() {
   const initialPanelAppliedRef = useRef(false);
   const initialJumpAppliedRef = useRef(false);
   const initialSearchAppliedRef = useRef(false);
+  const initialFlashAppliedRef = useRef(false);
   const progressPersistRef = useRef({
     timer: null,
     lastWriteTs: 0,
@@ -146,6 +224,292 @@ export default function Reader() {
   });
 
   const aiUnavailableMessage = "AI features are not available now.";
+
+  const clearReturnSpotTimer = useCallback(() => {
+    if (returnSpotTimerRef.current) {
+      clearTimeout(returnSpotTimerRef.current);
+      returnSpotTimerRef.current = null;
+    }
+  }, []);
+
+  const closeReturnSpot = useCallback(() => {
+    clearReturnSpotTimer();
+    setReturnSpot(null);
+  }, [clearReturnSpotTimer]);
+
+  const queueReturnSpot = useCallback((cfi, source = 'jump') => {
+    const normalized = (cfi || '').toString().replace(/\s+/g, '').trim();
+    if (!normalized) return;
+    clearReturnSpotTimer();
+    setReturnSpot((prev) => (
+      prev || {
+        cfi: normalized,
+        source
+      }
+    ));
+    returnSpotTimerRef.current = setTimeout(() => {
+      setReturnSpot(null);
+      returnSpotTimerRef.current = null;
+    }, 12000);
+  }, [clearReturnSpotTimer]);
+
+  const closeFootnotePreview = useCallback(() => {
+    setFootnotePreview(null);
+  }, []);
+
+  const closePostHighlightPrompt = useCallback(() => {
+    setPostHighlightPrompt(null);
+    setPostHighlightNoteDraft('');
+    setPostHighlightNoteError('');
+    setIsSavingPostHighlightNote(false);
+  }, []);
+
+  const clearHighlightFlashTimers = useCallback(() => {
+    highlightFlashTimersRef.current.forEach((timerId) => clearTimeout(timerId));
+    highlightFlashTimersRef.current = [];
+  }, []);
+
+  const triggerHighlightFlash = useCallback((cfiRange) => {
+    if (!cfiRange) return;
+    clearHighlightFlashTimers();
+    // Single flash cycle: one emphasis pulse, then restore.
+    setFlashingHighlightCfi(cfiRange);
+    setFlashingHighlightPulse(1);
+
+    const settleId = setTimeout(() => {
+      setFlashingHighlightPulse(0);
+    }, 160);
+    highlightFlashTimersRef.current.push(settleId);
+
+    const clearId = setTimeout(() => {
+      setFlashingHighlightCfi(null);
+    }, 220);
+    highlightFlashTimersRef.current.push(clearId);
+  }, [clearHighlightFlashTimers]);
+
+  useEffect(() => () => {
+    clearHighlightFlashTimers();
+  }, [clearHighlightFlashTimers]);
+
+  useEffect(() => () => {
+    clearReturnSpotTimer();
+  }, [clearReturnSpotTimer]);
+
+  useEffect(() => () => {
+    if (pendingHighlightDeleteTimerRef.current) {
+      clearTimeout(pendingHighlightDeleteTimerRef.current);
+      pendingHighlightDeleteTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    selectionRef.current = selection;
+  }, [selection]);
+
+  useEffect(() => {
+    pendingHighlightDeleteRef.current = pendingHighlightDelete;
+  }, [pendingHighlightDelete]);
+
+  useEffect(() => {
+    postHighlightPromptStateRef.current = postHighlightPrompt;
+  }, [postHighlightPrompt]);
+
+  const resolveAnchorFromRange = useCallback((range, fallbackDocument = null) => {
+    if (!range) return null;
+    const rects = range.getClientRects?.() || [];
+    const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect?.();
+    if (!rect) return null;
+    let left = rect.left;
+    let right = rect.right;
+    let top = rect.top;
+    let bottom = rect.bottom;
+    let x = rect.right;
+    let y = rect.bottom;
+    const ownerDocument = fallbackDocument || range?.startContainer?.ownerDocument || null;
+    const frameElement = ownerDocument?.defaultView?.frameElement || null;
+    if (frameElement) {
+      const frameRect = frameElement.getBoundingClientRect();
+      x += frameRect.left;
+      y += frameRect.top;
+      left += frameRect.left;
+      right += frameRect.left;
+      top += frameRect.top;
+      bottom += frameRect.top;
+    }
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 0;
+    const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 0;
+    const isVisible = right >= 0 && left <= viewportWidth && bottom >= 0 && top <= viewportHeight;
+    if (!isVisible) return null;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y };
+  }, []);
+
+  const resolveAnchorFromCfi = useCallback((cfiRange) => {
+    if (!rendition || !cfiRange) return null;
+
+    const renderedContents = rendition.getContents?.() || [];
+    for (const content of renderedContents) {
+      try {
+        const range = content?.range ? content.range(cfiRange) : null;
+        const anchor = resolveAnchorFromRange(range, content?.document || null);
+        if (anchor) return anchor;
+      } catch (err) {
+        // CFI can legitimately belong to another rendered section.
+      }
+    }
+
+    try {
+      const rangeCandidate = rendition.book?.getRange?.(cfiRange);
+      if (rangeCandidate && typeof rangeCandidate.then !== 'function') {
+        const anchor = resolveAnchorFromRange(rangeCandidate);
+        if (anchor) return anchor;
+      }
+    } catch (err) {
+      // Ignore fallback failures; caller can keep previous anchor.
+    }
+    return null;
+  }, [rendition, resolveAnchorFromRange]);
+
+  useEffect(() => {
+    if (!rendition) return;
+    let rafId = null;
+
+    const syncAnchors = () => {
+      rafId = null;
+      const currentSelection = selectionRef.current;
+      if (currentSelection?.cfiRange) {
+        const nextAnchor = resolveAnchorFromCfi(currentSelection.cfiRange);
+        if (nextAnchor) {
+          setSelection((prev) => {
+            if (!prev || prev.cfiRange !== currentSelection.cfiRange) return prev;
+            const prevX = Number(prev?.pos?.x) || 0;
+            const prevY = Number(prev?.pos?.y) || 0;
+            const deltaX = Math.abs(prevX - nextAnchor.x);
+            const deltaY = Math.abs(prevY - nextAnchor.y);
+            if (deltaX <= 1 && deltaY <= 1) return prev;
+            return { ...prev, pos: nextAnchor };
+          });
+        } else {
+          setSelection((prev) => {
+            if (!prev || prev.cfiRange !== currentSelection.cfiRange) return prev;
+            return null;
+          });
+          setSelectionMode('actions');
+        }
+      }
+
+      const currentPrompt = postHighlightPromptStateRef.current;
+      const promptCfi = currentPrompt?.highlight?.cfiRange;
+      if (promptCfi) {
+        const nextAnchor = resolveAnchorFromCfi(promptCfi);
+        if (nextAnchor) {
+          setPostHighlightPrompt((prev) => {
+            if (!prev || prev?.highlight?.cfiRange !== promptCfi) return prev;
+            const prevX = Number(prev?.x) || 0;
+            const prevY = Number(prev?.y) || 0;
+            const deltaX = Math.abs(prevX - nextAnchor.x);
+            const deltaY = Math.abs(prevY - nextAnchor.y);
+            if (deltaX <= 1 && deltaY <= 1) return prev;
+            return { ...prev, x: nextAnchor.x, y: nextAnchor.y };
+          });
+        } else {
+          closePostHighlightPrompt();
+        }
+      }
+    };
+
+    const scheduleSync = () => {
+      if (rafId !== null) return;
+      rafId = window.requestAnimationFrame(syncAnchors);
+    };
+
+    const onViewportChange = () => {
+      scheduleSync();
+    };
+
+    window.addEventListener('resize', onViewportChange);
+    window.addEventListener('scroll', onViewportChange, true);
+
+    const contentListeners = (rendition.getContents?.() || [])
+      .map((content) => {
+        const contentWindow = content?.window;
+        if (!contentWindow) return null;
+        contentWindow.addEventListener('scroll', onViewportChange);
+        contentWindow.addEventListener('resize', onViewportChange);
+        return () => {
+          contentWindow.removeEventListener('scroll', onViewportChange);
+          contentWindow.removeEventListener('resize', onViewportChange);
+        };
+      })
+      .filter(Boolean);
+
+    scheduleSync();
+
+    return () => {
+      window.removeEventListener('resize', onViewportChange);
+      window.removeEventListener('scroll', onViewportChange, true);
+      contentListeners.forEach((dispose) => dispose());
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+      }
+    };
+  }, [rendition, currentHref, resolveAnchorFromCfi, closePostHighlightPrompt]);
+
+  useEffect(() => {
+    if (!postHighlightPrompt) return;
+
+    const onPointerDown = (event) => {
+      if (!postHighlightPromptRef.current) return;
+      if (postHighlightPromptRef.current.contains(event.target)) return;
+      closePostHighlightPrompt();
+    };
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') closePostHighlightPrompt();
+    };
+
+    window.addEventListener('mousedown', onPointerDown);
+    window.addEventListener('touchstart', onPointerDown, { passive: true });
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', onPointerDown);
+      window.removeEventListener('touchstart', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [postHighlightPrompt, closePostHighlightPrompt]);
+
+  useEffect(() => {
+    if (!footnotePreview) return;
+
+    const onPointerDown = (event) => {
+      const node = footnotePreviewPanelRef.current;
+      if (!node) return;
+      if (node.contains(event.target)) return;
+      closeFootnotePreview();
+    };
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') closeFootnotePreview();
+    };
+
+    const onViewportChange = () => {
+      closeFootnotePreview();
+    };
+
+    window.addEventListener('mousedown', onPointerDown);
+    window.addEventListener('touchstart', onPointerDown, { passive: true });
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onViewportChange);
+    window.addEventListener('scroll', onViewportChange, true);
+
+    return () => {
+      window.removeEventListener('mousedown', onPointerDown);
+      window.removeEventListener('touchstart', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onViewportChange);
+      window.removeEventListener('scroll', onViewportChange, true);
+    };
+  }, [footnotePreview, closeFootnotePreview]);
 
   useEffect(() => {
     if (showAIModal && rendition) {
@@ -720,20 +1084,188 @@ export default function Reader() {
     setSearchQuery("");
     setSearchResults([]);
     setActiveSearchIndex(-1);
+    setFocusedSearchCfi(null);
   };
 
-  const closeSearchMenu = () => {
+  const closeSearchMenu = (options = {}) => {
+    const { preserveFocusedSearch = false } = options;
     cancelSearch();
+    if (!preserveFocusedSearch) {
+      setFocusedSearchCfi(null);
+    }
     setShowSearchMenu(false);
   };
 
-  const goToSearchIndex = (index, overrideResults = null) => {
+  const clearAnnotationSearch = () => {
+    setAnnotationSearchQuery('');
+    setAnnotationSearchResults([]);
+    setActiveAnnotationSearchIndex(-1);
+  };
+
+  const closeAnnotationSearchMenu = () => {
+    setShowAnnotationSearchMenu(false);
+  };
+
+  const rememberSearchQuery = useCallback((query) => {
+    const term = (query || '').trim();
+    if (!term) return;
+    setRecentSearchQueries((prev) => appendRecentQuery(prev, term));
+  }, []);
+
+  const rememberAnnotationSearchQuery = useCallback((query) => {
+    const term = (query || '').trim();
+    if (!term) return;
+    setRecentAnnotationSearchQueries((prev) => appendRecentQuery(prev, term));
+  }, []);
+
+  const clearRecentSearchQueries = useCallback(() => {
+    setRecentSearchQueries([]);
+  }, []);
+
+  const clearRecentAnnotationSearchQueries = useCallback(() => {
+    setRecentAnnotationSearchQueries([]);
+  }, []);
+
+  const buildAnnotationExcerpt = (value) => {
+    const text = (value || '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    if (text.length <= 180) return text;
+    return `${text.slice(0, 179).trim()}…`;
+  };
+
+  const goToAnnotationSearchIndex = (index, overrideResults = null) => {
+    const sourceResults = Array.isArray(overrideResults) ? overrideResults : annotationSearchResults;
+    if (!sourceResults.length) return;
+    const clamped = Math.max(0, Math.min(index, sourceResults.length - 1));
+    setActiveAnnotationSearchIndex(clamped);
+    const target = sourceResults[clamped];
+    if (!target?.cfi) return;
+    jumpToCfi(target.cfi, { rememberReturnSpot: true, source: 'annotation' });
+    if (target.kind === 'highlight' || target.kind === 'note') {
+      triggerHighlightFlash(target.cfi);
+    }
+  };
+
+  const goToNextAnnotationResult = () => {
+    if (!annotationSearchResults.length) return;
+    const next = activeAnnotationSearchIndex + 1 >= annotationSearchResults.length ? 0 : activeAnnotationSearchIndex + 1;
+    goToAnnotationSearchIndex(next);
+  };
+
+  const goToPrevAnnotationResult = () => {
+    if (!annotationSearchResults.length) return;
+    const prev = activeAnnotationSearchIndex - 1 < 0 ? annotationSearchResults.length - 1 : activeAnnotationSearchIndex - 1;
+    goToAnnotationSearchIndex(prev);
+  };
+
+  const runAnnotationSearch = (query) => {
+    const term = (query || '').trim().toLowerCase();
+    if (!term) {
+      clearAnnotationSearch();
+      return;
+    }
+
+    rememberAnnotationSearchQuery(query);
+
+    const results = [];
+    highlights.forEach((item, idx) => {
+      const highlightText = (item?.text || '').toLowerCase();
+      const noteText = (item?.note || '').toLowerCase();
+      if (highlightText.includes(term)) {
+        results.push({
+          id: `h-${item.cfiRange}-${idx}`,
+          cfi: item.cfiRange,
+          kind: 'highlight',
+          label: 'Highlight',
+          excerpt: buildAnnotationExcerpt(item.text)
+        });
+      }
+      if (noteText.includes(term)) {
+        results.push({
+          id: `n-${item.cfiRange}-${idx}`,
+          cfi: item.cfiRange,
+          kind: 'note',
+          label: 'Note',
+          excerpt: buildAnnotationExcerpt(item.note)
+        });
+      }
+    });
+
+    bookmarks.forEach((item, idx) => {
+      const labelText = (item?.label || '').toLowerCase();
+      const snippetText = (item?.text || '').toLowerCase();
+      if (labelText.includes(term) || snippetText.includes(term)) {
+        results.push({
+          id: `b-${item.cfi}-${idx}`,
+          cfi: item.cfi,
+          kind: 'bookmark',
+          label: 'Bookmark',
+          excerpt: buildAnnotationExcerpt(item.text || item.label || 'Saved bookmark')
+        });
+      }
+    });
+
+    setAnnotationSearchQuery(query);
+    setAnnotationSearchResults(results);
+    if (results.length) {
+      goToAnnotationSearchIndex(0, results);
+    } else {
+      setActiveAnnotationSearchIndex(-1);
+    }
+  };
+
+  const handleAnnotationSearchResultClick = (idx) => {
+    goToAnnotationSearchIndex(idx);
+    closeAnnotationSearchMenu();
+  };
+
+  const handleRecentAnnotationSearchClick = (query) => {
+    setAnnotationSearchQuery(query);
+    runAnnotationSearch(query);
+  };
+
+  const goToSearchIndex = (index, overrideResults = null, options = {}) => {
+    const { focus = false, rememberReturnSpot = true } = options;
     const sourceResults = Array.isArray(overrideResults) ? overrideResults : searchResults;
     if (!sourceResults.length) return;
     const clamped = Math.max(0, Math.min(index, sourceResults.length - 1));
     setActiveSearchIndex(clamped);
     const target = sourceResults[clamped];
-    if (target?.cfi) setJumpTarget(target.cfi);
+    if (target?.cfi) {
+      jumpToCfi(target.cfi, { rememberReturnSpot, source: 'search' });
+      if (focus) {
+        setFocusedSearchCfi(target.cfi);
+      } else {
+        setFocusedSearchCfi(null);
+      }
+    } else {
+      setFocusedSearchCfi(null);
+    }
+  };
+
+  const handleSearchResultActivate = useCallback((cfi) => {
+    if (!cfi || !searchResults.length) return;
+    const index = searchResults.findIndex((result) => {
+      const matchCfi = result?.cfi || "";
+      return matchCfi === cfi || matchCfi.includes(cfi) || cfi.includes(matchCfi);
+    });
+    if (index >= 0) {
+      setActiveSearchIndex(index);
+    }
+  }, [searchResults]);
+
+  const dismissFocusedSearch = useCallback(() => {
+    setFocusedSearchCfi(null);
+  }, []);
+
+  const handleSearchResultClick = (idx) => {
+    goToSearchIndex(idx, null, { focus: true, rememberReturnSpot: true });
+    closeSearchMenu({ preserveFocusedSearch: true });
+  };
+
+  const handleRecentSearchClick = (query) => {
+    setSearchQuery(query);
+    runSearch(query);
   };
 
   const goToNextResult = () => {
@@ -754,6 +1286,8 @@ export default function Reader() {
       clearSearch();
       return;
     }
+
+    rememberSearchQuery(term);
 
     const token = searchTokenRef.current + 1;
     searchTokenRef.current = token;
@@ -861,6 +1395,16 @@ export default function Reader() {
       goToNextResult();
     } else {
       runSearch(searchQuery);
+    }
+  };
+
+  const handleAnnotationSearchInputKeyDown = (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    if (annotationSearchResults.length > 0) {
+      goToNextAnnotationResult();
+    } else {
+      runAnnotationSearch(annotationSearchQuery);
     }
   };
 
@@ -978,6 +1522,8 @@ export default function Reader() {
   };
 
   const openDictionaryForText = (text) => {
+    closeFootnotePreview();
+    closePostHighlightPrompt();
     const trimmed = (text || '').trim();
     if (!trimmed) return;
     const wordCount = trimmed.split(/\s+/).length;
@@ -999,6 +1545,8 @@ export default function Reader() {
   };
 
   const openTranslationForText = (text) => {
+    closeFootnotePreview();
+    closePostHighlightPrompt();
     const trimmed = (text || '').trim();
     if (!trimmed) return;
     if (selection?.pos) {
@@ -1038,6 +1586,47 @@ export default function Reader() {
 
     return { left, top, width, maxHeight };
   };
+
+  const getFootnotePanelStyle = (anchor) => {
+    const padding = 12;
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1200;
+    const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
+    const width = Math.min(360, Math.max(260, viewportWidth - padding * 2));
+    const maxHeight = Math.min(280, Math.max(180, Math.floor(viewportHeight * 0.5)));
+
+    const safeAnchorX = anchor?.x ?? viewportWidth / 2;
+    const safeAnchorY = anchor?.y ?? viewportHeight / 2;
+
+    let left = safeAnchorX + 8;
+    let top = safeAnchorY + 8;
+
+    if (left + width > viewportWidth - padding) {
+      left = viewportWidth - width - padding;
+    }
+    if (left < padding) left = padding;
+
+    if (top + maxHeight > viewportHeight - padding) {
+      top = Math.max(padding, safeAnchorY - maxHeight - 8);
+    }
+    if (top < padding) top = padding;
+
+    return { left, top, width, maxHeight };
+  };
+
+  const handleFootnotePreview = useCallback((payload) => {
+    if (!payload) {
+      closeFootnotePreview();
+      return;
+    }
+    setShowDictionary(false);
+    setDictionaryAnchor(null);
+    setShowTranslation(false);
+    setTranslationAnchor(null);
+    closePostHighlightPrompt();
+    setSelection(null);
+    setSelectionMode('actions');
+    setFootnotePreview(payload);
+  }, [closeFootnotePreview, closePostHighlightPrompt]);
 
   const getChapterLabel = (loc) => {
     if (!loc?.start) return 'Bookmark';
@@ -1094,7 +1683,21 @@ export default function Reader() {
     }
   };
 
+  const findHighlightByCfi = useCallback((cfiRange) => {
+    if (!cfiRange) return null;
+    const normalizeCfi = (value) => (value || '').toString().replace(/\s+/g, '');
+    const target = normalizeCfi(cfiRange);
+    if (!target) return null;
+    return highlights.find((item) => {
+      const source = normalizeCfi(item?.cfiRange);
+      if (!source) return false;
+      return source === target || source.includes(target) || target.includes(source);
+    }) || null;
+  }, [highlights]);
+
   const handleSelection = useCallback((text, cfiRange, pos, isExisting = false) => {
+    closeFootnotePreview();
+    closePostHighlightPrompt();
     const trimmed = (text || '').trim();
     if (!trimmed) {
       setSelection(null);
@@ -1107,11 +1710,21 @@ export default function Reader() {
       pos,
       isExisting
     });
-    setSelectionMode(isExisting ? 'delete' : 'actions');
-  }, []);
+    setSelectionMode('actions');
+  }, [closeFootnotePreview, closePostHighlightPrompt]);
 
-  const jumpToCfi = (cfi) => {
+  const jumpToCfi = useCallback((cfi, options = {}) => {
+    const { rememberReturnSpot = false, source = 'jump' } = options;
     if (!cfi) return;
+    if (rememberReturnSpot) {
+      const runtimeCfi = rendition?.currentLocation?.()?.start?.cfi || '';
+      const fromCfi = (currentLocationCfiRef.current || runtimeCfi || bookRef.current?.lastLocation || '').toString().trim();
+      const normalizedFrom = fromCfi.replace(/\s+/g, '');
+      const normalizedTo = cfi.toString().replace(/\s+/g, '');
+      if (normalizedFrom && normalizedFrom !== normalizedTo) {
+        queueReturnSpot(normalizedFrom, source);
+      }
+    }
     if (rendition) {
       try {
         rendition.display(cfi);
@@ -1123,11 +1736,12 @@ export default function Reader() {
       setJumpTarget(cfi);
     }
     setTimeout(() => setJumpTarget(null), 0);
-  };
+  }, [queueReturnSpot, rendition]);
 
   const clearSelection = () => {
     setSelection(null);
     setSelectionMode('actions');
+    closeFootnotePreview();
     if (rendition) {
       try {
         const contentsList = rendition.getContents?.() || [];
@@ -1143,6 +1757,7 @@ export default function Reader() {
   const addHighlight = async (color) => {
     const currentBook = bookRef.current;
     if (!currentBook || !selection?.cfiRange) return;
+    const selectionSnapshot = selection ? { ...selection } : null;
     const newHighlight = {
       cfiRange: selection.cfiRange,
       text: selection.text,
@@ -1155,6 +1770,41 @@ export default function Reader() {
       if (updated) {
         setHighlights(updated);
         setBook({ ...currentBook, highlights: updated });
+        if (selectionSnapshot?.pos) {
+          const savedHighlight = updated.find((item) => item?.cfiRange === newHighlight.cfiRange) || newHighlight;
+          setPostHighlightPrompt({
+            x: selectionSnapshot.pos.x,
+            y: selectionSnapshot.pos.y,
+            highlight: savedHighlight
+          });
+          setPostHighlightNoteDraft(savedHighlight?.note || '');
+          setPostHighlightNoteError('');
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      clearSelection();
+    }
+  };
+
+  const recolorExistingHighlight = async (color) => {
+    const currentBook = bookRef.current;
+    if (!currentBook || !selection?.cfiRange) return;
+    const existing = findHighlightByCfi(selection.cfiRange);
+    if (!existing?.cfiRange) return;
+
+    const nextHighlight = {
+      ...existing,
+      color
+    };
+
+    try {
+      const updated = await saveHighlight(currentBook.id, nextHighlight);
+      if (updated) {
+        setHighlights(updated);
+        setBook({ ...currentBook, highlights: updated });
+        triggerHighlightFlash(nextHighlight.cfiRange);
       }
     } catch (err) {
       console.error(err);
@@ -1164,25 +1814,150 @@ export default function Reader() {
   };
 
   const removeHighlight = async (cfiRange) => {
+    const normalizeCfi = (value) => (value || '').toString().replace(/\s+/g, '');
+    const clearPendingTimer = () => {
+      if (pendingHighlightDeleteTimerRef.current) {
+        clearTimeout(pendingHighlightDeleteTimerRef.current);
+        pendingHighlightDeleteTimerRef.current = null;
+      }
+    };
+
+    const clearPendingState = (payload = null) => {
+      clearPendingTimer();
+      if (!payload || pendingHighlightDeleteRef.current === payload) {
+        pendingHighlightDeleteRef.current = null;
+        setPendingHighlightDelete(null);
+      }
+    };
+
+    const finalizePendingDelete = async (payload = pendingHighlightDeleteRef.current) => {
+      if (!payload?.bookId || !payload?.highlight?.cfiRange) return;
+      clearPendingState(payload);
+      try {
+        const updated = await deleteHighlight(payload.bookId, payload.highlight.cfiRange);
+        if (updated) {
+          setHighlights(updated);
+          setBook((prev) => {
+            if (!prev || prev.id !== payload.bookId) return prev;
+            return { ...prev, highlights: updated };
+          });
+        }
+      } catch (err) {
+        console.error(err);
+        if (Array.isArray(payload.previousHighlights)) {
+          setHighlights(payload.previousHighlights);
+          setBook((prev) => {
+            if (!prev || prev.id !== payload.bookId) return prev;
+            return { ...prev, highlights: payload.previousHighlights };
+          });
+        }
+      }
+    };
+
     const currentBook = bookRef.current;
     if (!currentBook || !cfiRange) return;
-    try {
-      const updated = await deleteHighlight(currentBook.id, cfiRange);
-      if (updated) {
-        setHighlights(updated);
-        setBook({ ...currentBook, highlights: updated });
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      clearSelection();
+
+    if (pendingHighlightDeleteRef.current) {
+      await finalizePendingDelete();
     }
+
+    const target = findHighlightByCfi(cfiRange);
+    if (!target?.cfiRange) {
+      clearSelection();
+      return;
+    }
+
+    const targetKey = normalizeCfi(target.cfiRange);
+    const previousHighlights = Array.isArray(highlights) ? highlights : [];
+    const nextHighlights = previousHighlights.filter((item) => normalizeCfi(item?.cfiRange) !== targetKey);
+    const payload = {
+      bookId: currentBook.id,
+      highlight: target,
+      previousHighlights
+    };
+
+    setHighlights(nextHighlights);
+    setBook((prev) => {
+      if (!prev || prev.id !== currentBook.id) return prev;
+      return { ...prev, highlights: nextHighlights };
+    });
+
+    pendingHighlightDeleteRef.current = payload;
+    setPendingHighlightDelete(payload);
+    clearPendingTimer();
+    pendingHighlightDeleteTimerRef.current = setTimeout(() => {
+      finalizePendingDelete(payload);
+    }, 5000);
+
+    clearSelection();
   };
 
+  const undoPendingHighlightDelete = useCallback(() => {
+    const pending = pendingHighlightDeleteRef.current;
+    if (!pending?.highlight?.cfiRange || !Array.isArray(pending.previousHighlights)) return;
+    if (pendingHighlightDeleteTimerRef.current) {
+      clearTimeout(pendingHighlightDeleteTimerRef.current);
+      pendingHighlightDeleteTimerRef.current = null;
+    }
+    pendingHighlightDeleteRef.current = null;
+    setPendingHighlightDelete(null);
+    setHighlights(pending.previousHighlights);
+    setBook((prev) => {
+      if (!prev || prev.id !== pending.bookId) return prev;
+      return { ...prev, highlights: pending.previousHighlights };
+    });
+  }, []);
+
   const openNoteEditor = (highlight) => {
+    closePostHighlightPrompt();
     setEditingHighlight(highlight);
     setNoteDraft(highlight?.note || '');
   };
+
+  const applyHighlightNoteLocally = useCallback((cfiRange, note) => {
+    const normalizeCfi = (value) => (value || '').toString().replace(/\s+/g, '');
+    const target = normalizeCfi(cfiRange);
+    if (!target) return false;
+
+    let didUpdate = false;
+    setHighlights((prev) => prev.map((item) => {
+      const source = normalizeCfi(item?.cfiRange);
+      if (!source) return item;
+      const matches = source === target || source.includes(target) || target.includes(source);
+      if (!matches) return item;
+      didUpdate = true;
+      return { ...item, note };
+    }));
+
+    setBook((prev) => {
+      if (!prev) return prev;
+      const nextHighlights = Array.isArray(prev.highlights)
+        ? prev.highlights.map((item) => {
+          const source = normalizeCfi(item?.cfiRange);
+          if (!source) return item;
+          const matches = source === target || source.includes(target) || target.includes(source);
+          return matches ? { ...item, note } : item;
+        })
+        : prev.highlights;
+      return { ...prev, highlights: nextHighlights };
+    });
+
+    return didUpdate;
+  }, []);
+
+  const handleInlineNoteMarkerActivate = useCallback((payload) => {
+    const target = payload?.highlight;
+    if (!target?.cfiRange) return;
+    closePostHighlightPrompt();
+    setShowDictionary(false);
+    setDictionaryAnchor(null);
+    setShowTranslation(false);
+    setTranslationAnchor(null);
+    setSelection(null);
+    setSelectionMode('actions');
+    setEditingHighlight(target);
+    setNoteDraft(target?.note || '');
+  }, [closePostHighlightPrompt]);
 
   const closeNoteEditor = () => {
     setEditingHighlight(null);
@@ -1192,8 +1967,10 @@ export default function Reader() {
   const saveHighlightNote = async () => {
     const currentBook = bookRef.current;
     if (!currentBook || !editingHighlight?.cfiRange) return;
+    const nextNote = noteDraft.trim();
+    applyHighlightNoteLocally(editingHighlight.cfiRange, nextNote);
     try {
-      const updated = await updateHighlightNote(currentBook.id, editingHighlight.cfiRange, noteDraft.trim());
+      const updated = await updateHighlightNote(currentBook.id, editingHighlight.cfiRange, nextNote);
       if (updated) {
         setHighlights(updated);
         setBook({ ...currentBook, highlights: updated });
@@ -1205,9 +1982,38 @@ export default function Reader() {
     }
   };
 
+  const savePostHighlightPromptNote = async () => {
+    const currentBook = bookRef.current;
+    const target = postHighlightPrompt?.highlight;
+    if (!currentBook || !target?.cfiRange) return;
+    const nextNote = postHighlightNoteDraft.trim();
+    if (!nextNote) {
+      setPostHighlightNoteError('Write a note first.');
+      return;
+    }
+    applyHighlightNoteLocally(target.cfiRange, nextNote);
+    setIsSavingPostHighlightNote(true);
+    setPostHighlightNoteError('');
+    try {
+      const updated = await updateHighlightNote(currentBook.id, target.cfiRange, nextNote);
+      if (updated) {
+        setHighlights(updated);
+        setBook({ ...currentBook, highlights: updated });
+      }
+      closePostHighlightPrompt();
+    } catch (err) {
+      console.error(err);
+      setPostHighlightNoteError('Could not save note. Try again.');
+    } finally {
+      setIsSavingPostHighlightNote(false);
+    }
+  };
+
   const handleLocationChange = (loc) => {
     if (!loc?.start || !bookId) return;
     lastActiveRef.current = Date.now();
+    currentLocationCfiRef.current = loc.start.cfi || '';
+    setCurrentLocationCfi(currentLocationCfiRef.current);
     const nextProgress = Math.min(Math.max(Math.floor((loc.percentage || 0) * 100), 0), 100);
     queueProgressPersist(loc.start.cfi, loc.percentage || 0);
     setProgressPct(nextProgress);
@@ -1254,7 +2060,7 @@ export default function Reader() {
   const handleTocSelect = (href) => {
     if (!href) return;
     setShowSidebar(false);
-    jumpToCfi(href);
+    jumpToCfi(href, { rememberReturnSpot: true, source: 'toc' });
   };
 
   // NOTE: Intermediate summaries were previously generated after a fixed number
@@ -1498,7 +2304,14 @@ export default function Reader() {
     initialPanelAppliedRef.current = false;
     initialJumpAppliedRef.current = false;
     initialSearchAppliedRef.current = false;
-  }, [bookId, panelParam, cfiParam, searchTermParam]);
+    initialFlashAppliedRef.current = false;
+    pendingHighlightDeleteRef.current = null;
+    setPendingHighlightDelete(null);
+    if (pendingHighlightDeleteTimerRef.current) {
+      clearTimeout(pendingHighlightDeleteTimerRef.current);
+      pendingHighlightDeleteTimerRef.current = null;
+    }
+  }, [bookId, panelParam, cfiParam, searchTermParam, flashParam]);
 
   useEffect(() => {
     if (!book?.id || initialPanelAppliedRef.current) return;
@@ -1517,6 +2330,22 @@ export default function Reader() {
     jumpToCfi(cfiParam);
     initialJumpAppliedRef.current = true;
   }, [book?.id, cfiParam]);
+
+  useEffect(() => {
+    if (!book?.id || !cfiParam || initialFlashAppliedRef.current) return;
+    if (flashParam !== '1') return;
+    if (!Array.isArray(highlights) || highlights.length === 0) return;
+
+    const matched = highlights.find((item) => {
+      const target = (item?.cfiRange || '').trim();
+      if (!target) return false;
+      return target === cfiParam || target.includes(cfiParam) || cfiParam.includes(target);
+    });
+    if (!matched?.cfiRange) return;
+
+    triggerHighlightFlash(matched.cfiRange);
+    initialFlashAppliedRef.current = true;
+  }, [book?.id, cfiParam, panelParam, flashParam, highlights, triggerHighlightFlash]);
 
   useEffect(() => {
     if (!book?.id || !rendition || initialSearchAppliedRef.current) return;
@@ -1554,17 +2383,16 @@ export default function Reader() {
   useEffect(() => {
     if (!highlights.length) {
       setSelectedHighlights([]);
-      selectionTouchedRef.current = false;
+      setFlashingHighlightCfi(null);
+      setFlashingHighlightPulse(0);
       return;
     }
-
-    if (!selectionTouchedRef.current) {
-      setSelectedHighlights(highlights.map((h) => h.cfiRange));
-      return;
+    if (flashingHighlightCfi && !highlights.some((h) => h.cfiRange === flashingHighlightCfi)) {
+      setFlashingHighlightCfi(null);
+      setFlashingHighlightPulse(0);
     }
-
     setSelectedHighlights((prev) => prev.filter((cfi) => highlights.some((h) => h.cfiRange === cfi)));
-  }, [highlights]);
+  }, [highlights, flashingHighlightCfi]);
 
   useEffect(() => {
     const incoming = Array.isArray(book?.bookmarks) ? book.bookmarks : [];
@@ -1576,6 +2404,13 @@ export default function Reader() {
       setProgressPct(book.progress);
     }
   }, [book?.progress]);
+
+  useEffect(() => {
+    if (typeof book?.lastLocation === 'string' && book.lastLocation.trim()) {
+      currentLocationCfiRef.current = book.lastLocation.trim();
+      setCurrentLocationCfi(currentLocationCfiRef.current);
+    }
+  }, [book?.id, book?.lastLocation]);
 
   useEffect(() => {
     if (!bookId) return;
@@ -1613,7 +2448,180 @@ export default function Reader() {
   }, [bookId, settings]);
 
   useEffect(() => {
+    if (!searchResults.length) return;
+    if (activeSearchIndex >= 0 && activeSearchIndex < searchResults.length) return;
+    setActiveSearchIndex(0);
+  }, [searchResults, activeSearchIndex]);
+
+  useEffect(() => {
+    if (!searchResults.length || !activeSearchCfi) return;
+    const indexFromCfi = searchResults.findIndex((result) => {
+      const cfi = result?.cfi || "";
+      return cfi === activeSearchCfi || cfi.includes(activeSearchCfi) || activeSearchCfi.includes(cfi);
+    });
+    if (indexFromCfi >= 0 && indexFromCfi !== activeSearchIndex) {
+      setActiveSearchIndex(indexFromCfi);
+    }
+  }, [searchResults, activeSearchCfi, activeSearchIndex]);
+
+  useEffect(() => {
+    if (!showSearchMenu) return;
+    const list = searchResultsListRef.current;
+    if (!list) return;
+    if (!searchResults.length) return;
+
+    let targetIndex = -1;
+    if (activeSearchCfi) {
+      targetIndex = searchResults.findIndex((result) => {
+        const cfi = result?.cfi || "";
+        return cfi === activeSearchCfi || cfi.includes(activeSearchCfi) || activeSearchCfi.includes(cfi);
+      });
+    }
+    if (targetIndex < 0 && activeSearchIndex >= 0 && activeSearchIndex < searchResults.length) {
+      targetIndex = activeSearchIndex;
+    }
+    if (targetIndex < 0) {
+      targetIndex = 0;
+    }
+
+    // Wait for the active row class/ref assignment to complete before scrolling.
+    const id = window.requestAnimationFrame(() => {
+      const activeRow = list.querySelector(
+        `[data-search-result-index="${targetIndex}"]`
+      );
+      if (!activeRow) return;
+      activeRow.scrollIntoView({
+        block: 'nearest',
+        behavior: 'smooth'
+      });
+    });
+
+    return () => window.cancelAnimationFrame(id);
+  }, [showSearchMenu, searchResults, activeSearchIndex, activeSearchCfi]);
+
+  useEffect(() => {
+    if (!showAnnotationSearchMenu) return;
+    const list = annotationSearchResultsListRef.current;
+    if (!list) return;
+    if (!annotationSearchResults.length || activeAnnotationSearchIndex < 0) return;
+
+    const id = window.requestAnimationFrame(() => {
+      const activeRow = list.querySelector(
+        `[data-annotation-result-index="${activeAnnotationSearchIndex}"]`
+      );
+      if (!activeRow) return;
+      activeRow.scrollIntoView({
+        block: 'nearest',
+        behavior: 'smooth'
+      });
+    });
+
+    return () => window.cancelAnimationFrame(id);
+  }, [showAnnotationSearchMenu, annotationSearchResults, activeAnnotationSearchIndex]);
+
+  useEffect(() => {
+    if (!focusedSearchCfi) return;
+    const handlePointerDown = (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        setFocusedSearchCfi(null);
+        return;
+      }
+      // Allow clicking a result row to move focus to another match without clearing first.
+      if (target.closest('[data-search-result-index]')) return;
+      setFocusedSearchCfi(null);
+    };
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => document.removeEventListener('pointerdown', handlePointerDown, true);
+  }, [focusedSearchCfi]);
+
+  useEffect(() => {
+    if (!showSearchMenu) return;
+    const id = window.requestAnimationFrame(() => {
+      const input = searchInputRef.current;
+      if (!input) return;
+      input.focus();
+      const end = input.value?.length || 0;
+      if (typeof input.setSelectionRange === 'function') {
+        input.setSelectionRange(end, end);
+      }
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [showSearchMenu]);
+
+  useEffect(() => {
+    if (!showAnnotationSearchMenu) return;
+    const id = window.requestAnimationFrame(() => {
+      const input = annotationSearchInputRef.current;
+      if (!input) return;
+      input.focus();
+      const end = input.value?.length || 0;
+      if (typeof input.setSelectionRange === 'function') {
+        input.setSelectionRange(end, end);
+      }
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [showAnnotationSearchMenu]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(READER_SEARCH_HISTORY_KEY, JSON.stringify(recentSearchQueries));
+  }, [recentSearchQueries]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(READER_ANNOTATION_HISTORY_KEY, JSON.stringify(recentAnnotationSearchQueries));
+  }, [recentAnnotationSearchQueries]);
+
+  useEffect(() => {
+    const resetArrowScrollState = () => {
+      arrowScrollStateRef.current = { key: '', streak: 0, lastAt: 0 };
+    };
+
+    const computeArrowScrollDelta = (event, containerHeight) => {
+      const now = Date.now();
+      const prev = arrowScrollStateRef.current;
+      const sameDirection = prev.key === event.key;
+      const continuing = sameDirection && (event.repeat || now - prev.lastAt < 180);
+      const streak = continuing ? prev.streak + 1 : 1;
+      arrowScrollStateRef.current = { key: event.key, streak, lastAt: now };
+
+      const stepRatio = Math.min(0.16 + (streak - 1) * 0.06, 0.55);
+      return Math.max(36, Math.round(containerHeight * stepRatio));
+    };
+
     const handleKey = (event) => {
+      const isFindShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f';
+      if (isFindShortcut) {
+        event.preventDefault();
+        setShowSearchMenu(true);
+        const input = searchInputRef.current;
+        if (input) {
+          input.focus();
+          const end = input.value?.length || 0;
+          if (typeof input.setSelectionRange === 'function') {
+            input.setSelectionRange(end, end);
+          }
+        }
+        return;
+      }
+
+      if (event.key === 'Escape' && showSearchMenu) {
+        event.preventDefault();
+        closeSearchMenu();
+        return;
+      }
+      if (event.key === 'Escape' && showAnnotationSearchMenu) {
+        event.preventDefault();
+        closeAnnotationSearchMenu();
+        return;
+      }
+      if (event.key === 'Escape' && focusedSearchCfi) {
+        event.preventDefault();
+        setFocusedSearchCfi(null);
+        return;
+      }
+
       if (!rendition) return;
       if (event.altKey || event.ctrlKey || event.metaKey) return;
       const target = event.target;
@@ -1632,18 +2640,75 @@ export default function Reader() {
       } else {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
           event.preventDefault();
+          const direction = event.key === 'ArrowDown' ? 1 : -1;
+          const scrollContainer = rendition?.manager?.container;
+          if (scrollContainer && typeof scrollContainer.scrollBy === 'function') {
+            const delta = computeArrowScrollDelta(event, scrollContainer.clientHeight || window.innerHeight || 720);
+            setLastArrowScrollStep(delta);
+            scrollContainer.scrollBy({ top: direction * delta, left: 0, behavior: 'smooth' });
+            return;
+          }
+
+          const sourceWindow = event.view && typeof event.view.scrollBy === 'function'
+            ? event.view
+            : null;
+          if (sourceWindow) {
+            const delta = computeArrowScrollDelta(event, sourceWindow.innerHeight || window.innerHeight || 720);
+            setLastArrowScrollStep(delta);
+            sourceWindow.scrollBy({ top: direction * delta, left: 0, behavior: 'smooth' });
+            return;
+          }
+
           const content = rendition.getContents()[0];
           const win = content?.window;
           if (!win) return;
-          const delta = Math.round(win.innerHeight * 0.85);
-          win.scrollBy({ top: event.key === 'ArrowDown' ? delta : -delta, left: 0, behavior: 'smooth' });
+          const delta = computeArrowScrollDelta(event, win.innerHeight || window.innerHeight || 720);
+          setLastArrowScrollStep(delta);
+          win.scrollBy({ top: direction * delta, left: 0, behavior: 'smooth' });
         }
       }
     };
 
-    window.addEventListener('keydown', handleKey, { passive: false });
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [rendition, settings.flow]);
+    const handleKeyUp = (event) => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        resetArrowScrollState();
+      }
+    };
+
+    const keydownOptions = { passive: false };
+    const attachedContentWindows = new Set();
+
+    const attachContentWindowListeners = () => {
+      const contents = rendition?.getContents?.() || [];
+      contents.forEach((content) => {
+        const win = content?.window;
+        if (!win || attachedContentWindows.has(win)) return;
+        win.addEventListener('keydown', handleKey, keydownOptions);
+        win.addEventListener('keyup', handleKeyUp);
+        attachedContentWindows.add(win);
+      });
+    };
+
+    window.addEventListener('keydown', handleKey, keydownOptions);
+    window.addEventListener('keyup', handleKeyUp);
+    attachContentWindowListeners();
+
+    const onRendered = () => attachContentWindowListeners();
+    const onRelocated = () => attachContentWindowListeners();
+    rendition?.on?.('rendered', onRendered);
+    rendition?.on?.('relocated', onRelocated);
+
+    return () => {
+      window.removeEventListener('keydown', handleKey, keydownOptions);
+      window.removeEventListener('keyup', handleKeyUp);
+      attachedContentWindows.forEach((win) => {
+        win.removeEventListener('keydown', handleKey, keydownOptions);
+        win.removeEventListener('keyup', handleKeyUp);
+      });
+      rendition?.off?.('rendered', onRendered);
+      rendition?.off?.('relocated', onRelocated);
+    };
+  }, [rendition, settings.flow, showSearchMenu, showAnnotationSearchMenu, focusedSearchCfi]);
 
   const phoneticText =
     dictionaryEntry?.phonetic ||
@@ -1651,7 +2716,30 @@ export default function Reader() {
     "";
   const isReaderDark = settings.theme === 'dark';
   const isReaderSepia = settings.theme === 'sepia';
-  const activeSearchCfi = activeSearchIndex >= 0 ? (searchResults[activeSearchIndex]?.cfi || null) : null;
+  const returnSpotSourceLabel = useMemo(() => {
+    if (!returnSpot?.source) return 'jump';
+    const labels = {
+      search: 'search',
+      annotation: 'annotation search',
+      highlight: 'highlight',
+      bookmark: 'bookmark',
+      footnote: 'note',
+      toc: 'contents'
+    };
+    return labels[returnSpot.source] || 'jump';
+  }, [returnSpot?.source]);
+  const displayActiveSearchIndex = useMemo(() => {
+    if (!searchResults.length) return -1;
+    if (activeSearchCfi) {
+      const idx = searchResults.findIndex((result) => {
+        const cfi = result?.cfi || "";
+        return cfi === activeSearchCfi || cfi.includes(activeSearchCfi) || activeSearchCfi.includes(cfi);
+      });
+      if (idx >= 0) return idx;
+    }
+    if (activeSearchIndex >= 0 && activeSearchIndex < searchResults.length) return activeSearchIndex;
+    return 0;
+  }, [searchResults, activeSearchIndex, activeSearchCfi]);
   const toolbarIconButtonBaseClass = 'p-2 rounded-full transition hover:bg-gray-100 dark:hover:bg-gray-700';
   const toolbarUtilityInactiveClass = `${toolbarIconButtonBaseClass} text-inherit`;
   const toolbarUtilityActiveClass = `${toolbarIconButtonBaseClass} text-blue-600 bg-blue-50 dark:bg-blue-900/30`;
@@ -1666,11 +2754,37 @@ export default function Reader() {
     : isReaderSepia
       ? 'bg-amber-50 text-amber-950'
       : 'bg-gray-100 text-gray-800';
+  const searchHighlightMode = showSearchMenu
+    ? 'all-search'
+    : focusedSearchCfi
+      ? 'focus-only'
+      : 'none';
 
   if (!book) return <div className="p-10 text-center dark:bg-gray-900 dark:text-gray-400">Loading...</div>;
 
   return (
     <div className={`h-screen flex flex-col overflow-hidden transition-colors duration-200 ${readerThemeClass}`}>
+      <span className="sr-only" data-testid="search-focus-state">
+        {focusedSearchCfi ? 'focused' : 'none'}
+      </span>
+      <span className="sr-only" data-testid="search-highlight-mode">
+        {searchHighlightMode}
+      </span>
+      <span className="sr-only" data-testid="search-highlight-count">
+        {String(searchHighlightCount)}
+      </span>
+      <span className="sr-only" data-testid="highlight-flash-cfi">
+        {flashingHighlightCfi || ''}
+      </span>
+      <span className="sr-only" data-testid="selection-cfi">
+        {selection?.cfiRange || ''}
+      </span>
+      <span className="sr-only" data-testid="reader-current-cfi">
+        {currentLocationCfi || ''}
+      </span>
+      <span className="sr-only" data-testid="reader-last-arrow-scroll-step">
+        {String(lastArrowScrollStep)}
+      </span>
       
       <style>{`
         @keyframes orbit {
@@ -1908,6 +3022,7 @@ export default function Reader() {
             <div className="flex items-center gap-2">
               <SearchIcon size={18} className={isReaderDark ? 'text-gray-400' : 'text-gray-600'} />
               <input
+                ref={searchInputRef}
                 type="text"
                 placeholder="Search inside this book..."
                 value={searchQuery}
@@ -1930,12 +3045,12 @@ export default function Reader() {
                 {isSearching
                   ? 'Searching...'
                   : searchResults.length
-                    ? `${activeSearchIndex + 1 > 0 ? activeSearchIndex + 1 : 1}/${searchResults.length}`
+                    ? `${displayActiveSearchIndex + 1 > 0 ? displayActiveSearchIndex + 1 : 1}/${searchResults.length}`
                     : '0 results'}
               </span>
               <span className="sr-only" data-testid="search-progress">
                 {searchResults.length
-                  ? `${activeSearchIndex + 1 > 0 ? activeSearchIndex + 1 : 1}/${searchResults.length}`
+                  ? `${displayActiveSearchIndex + 1 > 0 ? displayActiveSearchIndex + 1 : 1}/${searchResults.length}`
                   : '0/0'}
               </span>
               <div className="flex items-center gap-1">
@@ -1985,16 +3100,59 @@ export default function Reader() {
               </button>
             </div>
 
-            <div className="mt-4 max-h-[45vh] overflow-y-auto pr-1 space-y-2">
+            {recentSearchQueries.length > 0 && (
+              <div className="mt-4">
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={`text-[10px] uppercase tracking-widest font-bold ${
+                      isReaderDark ? 'text-gray-400' : 'text-gray-600'
+                    }`}
+                  >
+                    Recent queries
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="search-history-clear"
+                    onClick={clearRecentSearchQueries}
+                    className={`text-[11px] font-semibold ${
+                      isReaderDark ? 'text-gray-300 hover:text-red-400' : 'text-gray-700 hover:text-red-600'
+                    }`}
+                  >
+                    Reset history
+                  </button>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {recentSearchQueries.map((term, idx) => (
+                    <button
+                      key={`${term}-${idx}`}
+                      type="button"
+                      data-testid={`search-history-item-${idx}`}
+                      onClick={() => handleRecentSearchClick(term)}
+                      className={`rounded-full px-3 py-1 text-xs font-semibold border transition ${
+                        isReaderDark
+                          ? 'border-gray-600 text-gray-200 hover:border-blue-400 hover:text-blue-200'
+                          : 'border-gray-300 text-gray-800 hover:border-blue-400 hover:text-blue-700'
+                      }`}
+                    >
+                      {term}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div ref={searchResultsListRef} data-testid="search-results-list" className="mt-4 max-h-[45vh] overflow-y-auto pr-1 space-y-2">
               {!isSearching && searchQuery && searchResults.length === 0 && (
                 <div className={`text-xs ${isReaderDark ? 'text-gray-400' : 'text-gray-700'}`}>No matches found.</div>
               )}
               {searchResults.map((result, idx) => (
                 <button
                   key={`${result.cfi}-${idx}`}
-                  onClick={() => goToSearchIndex(idx)}
+                  onClick={() => handleSearchResultClick(idx)}
+                  data-testid={`search-result-item-${idx}`}
+                  data-search-result-index={idx}
                   className={`w-full text-left p-3 rounded-2xl border transition ${
-                    activeSearchIndex === idx
+                    displayActiveSearchIndex === idx
                       ? isReaderDark
                         ? 'border-yellow-400 bg-yellow-900/30'
                         : 'border-yellow-500 bg-yellow-50'
@@ -2005,6 +3163,169 @@ export default function Reader() {
                 >
                   <div className={`text-[10px] uppercase tracking-widest mb-1 font-bold ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}>
                     Result {idx + 1}
+                  </div>
+                  <div className={`text-sm font-medium ${isReaderDark ? 'text-gray-100' : 'text-black'}`}>
+                    {result.excerpt}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAnnotationSearchMenu && (
+        <div className="fixed inset-0 z-[55]">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={closeAnnotationSearchMenu}
+          />
+          <div
+            className={`absolute right-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
+              isReaderDark ? 'bg-gray-800 border border-gray-700 text-gray-100' : 'bg-white border border-gray-200 text-gray-900'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <BookText size={18} className={isReaderDark ? 'text-gray-400' : 'text-gray-600'} />
+              <input
+                ref={annotationSearchInputRef}
+                type="text"
+                placeholder="Search highlights, notes, bookmarks..."
+                value={annotationSearchQuery}
+                onChange={(e) => setAnnotationSearchQuery(e.target.value)}
+                onKeyDown={handleAnnotationSearchInputKeyDown}
+                className={`flex-1 bg-transparent outline-none text-sm font-semibold ${
+                  isReaderDark ? 'text-gray-100 placeholder:text-gray-400' : 'text-black placeholder:text-gray-500'
+                }`}
+              />
+              <button
+                onClick={closeAnnotationSearchMenu}
+                className={`p-1 hover:text-red-500 ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className={`mt-3 flex items-center justify-between text-[11px] font-semibold ${isReaderDark ? 'text-gray-300' : 'text-gray-800'}`}>
+              <span>
+                {annotationSearchResults.length
+                  ? `${activeAnnotationSearchIndex + 1 > 0 ? activeAnnotationSearchIndex + 1 : 1}/${annotationSearchResults.length}`
+                  : '0 results'}
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={goToPrevAnnotationResult}
+                  disabled={!annotationSearchResults.length}
+                  className={`px-2 py-1 rounded-full border disabled:opacity-40 ${
+                    isReaderDark
+                      ? 'border-gray-700 hover:bg-gray-700'
+                      : 'border-gray-300 hover:bg-gray-100'
+                  }`}
+                  title="Previous result"
+                >
+                  <span className="text-xs font-bold">&lt;</span>
+                </button>
+                <button
+                  onClick={goToNextAnnotationResult}
+                  disabled={!annotationSearchResults.length}
+                  className={`px-2 py-1 rounded-full border disabled:opacity-40 ${
+                    isReaderDark
+                      ? 'border-gray-700 hover:bg-gray-700'
+                      : 'border-gray-300 hover:bg-gray-100'
+                  }`}
+                  title="Next result"
+                >
+                  <span className="text-xs font-bold">&gt;</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={() => runAnnotationSearch(annotationSearchQuery)}
+                className="flex-1 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700"
+              >
+                Search
+              </button>
+              <button
+                onClick={clearAnnotationSearch}
+                className={`flex-1 py-2 rounded-xl text-xs font-bold ${
+                  isReaderDark
+                    ? 'border border-gray-700 text-gray-100'
+                    : 'border border-gray-300 text-gray-900'
+                }`}
+              >
+                Clear
+              </button>
+            </div>
+
+            {recentAnnotationSearchQueries.length > 0 && (
+              <div className="mt-4">
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={`text-[10px] uppercase tracking-widest font-bold ${
+                      isReaderDark ? 'text-gray-400' : 'text-gray-600'
+                    }`}
+                  >
+                    Recent queries
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="annotation-search-history-clear"
+                    onClick={clearRecentAnnotationSearchQueries}
+                    className={`text-[11px] font-semibold ${
+                      isReaderDark ? 'text-gray-300 hover:text-red-400' : 'text-gray-700 hover:text-red-600'
+                    }`}
+                  >
+                    Reset history
+                  </button>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {recentAnnotationSearchQueries.map((term, idx) => (
+                    <button
+                      key={`${term}-${idx}`}
+                      type="button"
+                      data-testid={`annotation-search-history-item-${idx}`}
+                      onClick={() => handleRecentAnnotationSearchClick(term)}
+                      className={`rounded-full px-3 py-1 text-xs font-semibold border transition ${
+                        isReaderDark
+                          ? 'border-gray-600 text-gray-200 hover:border-blue-400 hover:text-blue-200'
+                          : 'border-gray-300 text-gray-800 hover:border-blue-400 hover:text-blue-700'
+                      }`}
+                    >
+                      {term}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div
+              ref={annotationSearchResultsListRef}
+              data-testid="annotation-search-results-list"
+              className="mt-4 max-h-[45vh] overflow-y-auto pr-1 space-y-2"
+            >
+              {annotationSearchQuery && annotationSearchResults.length === 0 && (
+                <div className={`text-xs ${isReaderDark ? 'text-gray-400' : 'text-gray-700'}`}>No annotation matches found.</div>
+              )}
+              {annotationSearchResults.map((result, idx) => (
+                <button
+                  key={result.id}
+                  onClick={() => handleAnnotationSearchResultClick(idx)}
+                  data-testid={`annotation-search-result-item-${idx}`}
+                  data-annotation-result-index={idx}
+                  className={`w-full text-left p-3 rounded-2xl border transition ${
+                    activeAnnotationSearchIndex === idx
+                      ? isReaderDark
+                        ? 'border-yellow-400 bg-yellow-900/30'
+                        : 'border-yellow-500 bg-yellow-50'
+                      : isReaderDark
+                        ? 'border-transparent hover:border-gray-700'
+                        : 'border-transparent hover:border-gray-200'
+                  }`}
+                >
+                  <div className={`text-[10px] uppercase tracking-widest mb-1 font-bold ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}>
+                    {result.label} {idx + 1}
                   </div>
                   <div className={`text-sm font-medium ${isReaderDark ? 'text-gray-100' : 'text-black'}`}>
                     {result.excerpt}
@@ -2220,6 +3541,65 @@ export default function Reader() {
         );
       })()}
 
+      {footnotePreview && (() => {
+        const panelStyle = getFootnotePanelStyle(footnotePreview);
+        return (
+          <div className="fixed inset-0 z-[74] pointer-events-none" data-testid="footnote-preview-overlay">
+            <div
+              ref={footnotePreviewPanelRef}
+              data-testid="footnote-preview-panel"
+              className={`absolute rounded-2xl shadow-2xl border p-3 pointer-events-auto ${
+                isReaderDark
+                  ? 'bg-gray-800 border-gray-700 text-gray-100'
+                  : 'bg-white border-gray-200 text-gray-900'
+              }`}
+              style={panelStyle}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className={`text-[10px] uppercase tracking-widest font-bold ${isReaderDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                  Note preview {footnotePreview?.label ? `· ${footnotePreview.label}` : ''}
+                </div>
+                <button
+                  onClick={closeFootnotePreview}
+                  className={`p-1 ${isReaderDark ? 'text-gray-400 hover:text-red-400' : 'text-gray-500 hover:text-red-500'}`}
+                  aria-label="Close note preview"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              <div className={`mt-2 max-h-40 overflow-y-auto pr-1 text-sm leading-relaxed ${isReaderDark ? 'text-gray-200' : 'text-gray-800'}`}>
+                {footnotePreview.text}
+              </div>
+              <div className="mt-3 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeFootnotePreview}
+                  className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                    isReaderDark
+                      ? 'border border-gray-600 text-gray-200 hover:bg-gray-700'
+                      : 'border border-gray-300 text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!footnotePreview?.targetHref) return;
+                    jumpToCfi(footnotePreview.targetHref, { rememberReturnSpot: true, source: 'footnote' });
+                    closeFootnotePreview();
+                  }}
+                  disabled={!footnotePreview?.targetHref}
+                  className="rounded-full bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Open full note
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {showHighlightsPanel && (
         <div className="fixed inset-0 z-[55]" data-testid="highlights-panel">
           <div
@@ -2260,24 +3640,17 @@ export default function Reader() {
                 {selectedHighlights.length} selected
               </span>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    selectionTouchedRef.current = true;
-                    setSelectedHighlights(highlights.map((h) => h.cfiRange));
-                  }}
-                  className="text-[10px] font-bold text-blue-500"
-                >
-                  Select all
-                </button>
-                <button
-                  onClick={() => {
-                    selectionTouchedRef.current = true;
-                    setSelectedHighlights([]);
-                  }}
-                  className={`text-[10px] font-bold ${isReaderDark ? 'text-gray-400 hover:text-gray-200' : 'text-gray-600 hover:text-gray-900'}`}
-                >
-                  Clear
-                </button>
+                {highlights.length > 0 && (
+                  <button
+                    onClick={() => {
+                      const allSelected = selectedHighlights.length === highlights.length;
+                      setSelectedHighlights(allSelected ? [] : highlights.map((h) => h.cfiRange));
+                    }}
+                    className="text-[10px] font-bold text-blue-500"
+                  >
+                    {selectedHighlights.length === highlights.length ? 'Unselect all' : 'Select all'}
+                  </button>
+                )}
               </div>
             </div>
 
@@ -2296,7 +3669,6 @@ export default function Reader() {
                   <div className="flex items-start gap-2">
                     <button
                       onClick={() => {
-                        selectionTouchedRef.current = true;
                         setSelectedHighlights((prev) => prev.includes(h.cfiRange)
                           ? prev.filter((cfi) => cfi !== h.cfiRange)
                           : [...prev, h.cfiRange]
@@ -2315,9 +3687,11 @@ export default function Reader() {
                     </button>
                     <button
                       onClick={() => {
-                        jumpToCfi(h.cfiRange);
+                        jumpToCfi(h.cfiRange, { rememberReturnSpot: true, source: 'highlight' });
+                        triggerHighlightFlash(h.cfiRange);
                         setShowHighlightsPanel(false);
                       }}
+                      data-testid="highlight-item-jump"
                       className="text-left flex-1"
                     >
                       <div
@@ -2373,6 +3747,7 @@ export default function Reader() {
             onClick={closeNoteEditor}
           />
           <div
+            data-testid="highlight-note-editor"
             className={`absolute left-1/2 top-24 -translate-x-1/2 w-[92vw] max-w-lg rounded-3xl shadow-2xl p-6 ${
               settings.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white'
             }`}
@@ -2390,6 +3765,7 @@ export default function Reader() {
               {editingHighlight.text}
             </div>
             <textarea
+              data-testid="highlight-note-editor-input"
               rows={4}
               value={noteDraft}
               onChange={(e) => setNoteDraft(e.target.value)}
@@ -2404,6 +3780,7 @@ export default function Reader() {
                 Cancel
               </button>
               <button
+                data-testid="highlight-note-editor-save"
                 onClick={saveHighlightNote}
                 className="px-4 py-2 rounded-full text-xs font-bold bg-blue-600 text-white"
               >
@@ -2465,7 +3842,7 @@ export default function Reader() {
                   <div className="flex items-start justify-between gap-2">
                     <button
                       onClick={() => {
-                        jumpToCfi(b.cfi);
+                        jumpToCfi(b.cfi, { rememberReturnSpot: true, source: 'bookmark' });
                         setShowBookmarksPanel(false);
                       }}
                       className="text-left flex-1"
@@ -2514,13 +3891,42 @@ export default function Reader() {
         return (
         <div
           className="fixed z-[70] pointer-events-auto"
-          style={{ left: clampedX, top: clampedY, transform }}
+          style={{
+            left: clampedX,
+            top: clampedY,
+            transform,
+            transition: 'left 140ms ease-out, top 140ms ease-out'
+          }}
           data-testid="selection-toolbar"
         >
           <div className={`flex items-center gap-2 px-3 py-2 rounded-2xl shadow-xl border ${
             settings.theme === 'dark' ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-800'
           }`}>
-            {selection.isExisting ? (
+            {selectionMode === 'colors' ? (
+              <>
+                {highlightColors.map((c) => (
+                  <button
+                    key={c.name}
+                    onClick={() => {
+                      if (selection.isExisting) {
+                        recolorExistingHighlight(c.value);
+                        return;
+                      }
+                      addHighlight(c.value);
+                    }}
+                    className="w-5 h-5 rounded-full border border-white/40 shadow"
+                    title={`${selection.isExisting ? 'Recolor' : 'Highlight'} ${c.name}`}
+                    style={{ background: c.value }}
+                  />
+                ))}
+                <button
+                  onClick={() => setSelectionMode('actions')}
+                  className="ml-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                >
+                  Back
+                </button>
+              </>
+            ) : selection.isExisting ? (
               <>
                 <button
                   onClick={() => removeHighlight(selection.cfiRange)}
@@ -2530,9 +3936,18 @@ export default function Reader() {
                 </button>
                 <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
                 <button
-                  onClick={() => openDictionaryForText(selection.text)}
-                  className="text-xs font-bold text-blue-600 dark:text-blue-400"
+                  onClick={() => setSelectionMode('colors')}
+                  className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1"
                 >
+                  <Highlighter size={12} />
+                  Color
+                </button>
+                <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
+                <button
+                  onClick={() => openDictionaryForText(selection.text)}
+                  className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1"
+                >
+                  <BookText size={12} />
                   Dictionary
                 </button>
                 <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
@@ -2544,30 +3959,13 @@ export default function Reader() {
                   Translate
                 </button>
               </>
-            ) : selectionMode === 'colors' ? (
-              <>
-                {highlightColors.map((c) => (
-                  <button
-                    key={c.name}
-                    onClick={() => addHighlight(c.value)}
-                    className="w-5 h-5 rounded-full border border-white/40 shadow"
-                    title={`Highlight ${c.name}`}
-                    style={{ background: c.value }}
-                  />
-                ))}
-                <button
-                  onClick={() => setSelectionMode('actions')}
-                  className="ml-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                >
-                  Back
-                </button>
-              </>
             ) : (
               <>
                 <button
                   onClick={() => openDictionaryForText(selection.text)}
-                  className="text-xs font-bold text-blue-600 dark:text-blue-400"
+                  className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1"
                 >
+                  <BookText size={12} />
                   Dictionary
                 </button>
                 <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
@@ -2598,6 +3996,165 @@ export default function Reader() {
         </div>
         );
       })()}
+
+      {postHighlightPrompt && (() => {
+        const padding = 12;
+        const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : postHighlightPrompt.x;
+        const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : postHighlightPrompt.y;
+        const promptWidth = 332;
+        const promptHeight = 132;
+        let left = (postHighlightPrompt.x || 0) + 8;
+        let top = (postHighlightPrompt.y || 0) + 28;
+
+        if (left + promptWidth > viewportWidth - padding) {
+          left = viewportWidth - promptWidth - padding;
+        }
+        if (left < padding) left = padding;
+
+        if (top + promptHeight > viewportHeight - padding) {
+          top = Math.max(padding, (postHighlightPrompt.y || 0) - promptHeight - 8);
+        }
+        if (top < padding) top = padding;
+
+        return (
+          <div
+            ref={postHighlightPromptRef}
+            data-testid="post-highlight-note-prompt"
+            className={`fixed z-[72] rounded-lg border p-3 shadow-lg ${
+              isReaderDark
+                ? 'bg-gray-800 border-gray-700 text-gray-100'
+                : 'bg-white border-gray-200 text-gray-800'
+            }`}
+            style={{
+              left,
+              top,
+              width: promptWidth,
+              transition: 'left 140ms ease-out, top 140ms ease-out'
+            }}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[10px] uppercase tracking-wider text-gray-400">
+                Highlight saved
+              </div>
+              <button
+                type="button"
+                aria-label="Close note prompt"
+                onClick={closePostHighlightPrompt}
+                className="text-gray-400 hover:text-red-500"
+              >
+                <X size={12} />
+              </button>
+            </div>
+
+            <textarea
+              data-testid="post-highlight-note-input"
+              value={postHighlightNoteDraft}
+              onChange={(event) => {
+                setPostHighlightNoteDraft(event.target.value);
+                if (postHighlightNoteError) setPostHighlightNoteError('');
+              }}
+              placeholder="Type your note..."
+              rows={2}
+              autoFocus
+              className={`mt-2 w-full resize-none rounded-lg border px-2 py-1.5 text-xs outline-none ${
+                isReaderDark
+                  ? 'border-gray-600 bg-gray-900/50 text-gray-100 placeholder:text-gray-400'
+                  : 'border-gray-300 bg-gray-50 text-gray-900 placeholder:text-gray-500'
+              }`}
+            />
+
+            {postHighlightNoteError && (
+              <div className="mt-1 text-[11px] text-red-500">{postHighlightNoteError}</div>
+            )}
+
+            <div className="mt-2 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closePostHighlightPrompt}
+                className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                  isReaderDark
+                    ? 'border border-gray-600 text-gray-200 hover:bg-gray-700'
+                    : 'border border-gray-300 text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                Later
+              </button>
+              <button
+                type="button"
+                data-testid="post-highlight-note-save"
+                onClick={savePostHighlightPromptNote}
+                disabled={isSavingPostHighlightNote || !postHighlightNoteDraft.trim()}
+                className="rounded-full bg-blue-600 px-3 py-1 text-[11px] font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isSavingPostHighlightNote ? 'Saving...' : 'Save note'}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {returnSpot && (
+        <div
+          data-testid="return-to-spot-chip"
+          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[68]"
+        >
+          <div className={`flex items-center gap-2 rounded-full border px-3 py-2 shadow-xl backdrop-blur ${
+            isReaderDark
+              ? 'bg-gray-800/95 border-gray-700 text-gray-100'
+              : 'bg-white/95 border-gray-200 text-gray-800'
+          }`}>
+            <span className={`text-[11px] ${isReaderDark ? 'text-gray-300' : 'text-gray-600'}`}>
+              From {returnSpotSourceLabel}
+            </span>
+            <button
+              type="button"
+              data-testid="return-to-spot-action"
+              onClick={() => {
+                const targetCfi = returnSpot?.cfi;
+                closeReturnSpot();
+                if (targetCfi) jumpToCfi(targetCfi);
+              }}
+              className="rounded-full bg-blue-600 px-3 py-1 text-[11px] font-semibold text-white hover:bg-blue-700"
+            >
+              Back to previous spot
+            </button>
+            <button
+              type="button"
+              data-testid="return-to-spot-close"
+              onClick={closeReturnSpot}
+              className={`rounded-full p-1 ${isReaderDark ? 'text-gray-400 hover:text-red-400' : 'text-gray-500 hover:text-red-500'}`}
+              aria-label="Dismiss return spot"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pendingHighlightDelete && (
+        <div
+          data-testid="highlight-undo-toast"
+          className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[69]"
+        >
+          <div className={`flex items-center gap-2 rounded-full border px-3 py-2 shadow-xl backdrop-blur ${
+            isReaderDark
+              ? 'bg-gray-800/95 border-gray-700 text-gray-100'
+              : 'bg-white/95 border-gray-200 text-gray-800'
+          }`}>
+            <span className={`text-xs font-medium ${isReaderDark ? 'text-gray-200' : 'text-gray-700'}`}>
+              Highlight deleted
+            </span>
+            <button
+              type="button"
+              data-testid="highlight-undo-action"
+              onClick={undoPendingHighlightDelete}
+              className="rounded-full bg-blue-600 px-3 py-1 text-[11px] font-semibold text-white hover:bg-blue-700"
+            >
+              Undo
+            </button>
+          </div>
+        </div>
+      )}
 
       {showSidebar && (
         <div className="fixed inset-0 z-[65]" data-testid="chapters-panel">
@@ -2699,12 +4256,34 @@ export default function Reader() {
             <span className="hidden md:inline text-xs font-black uppercase">Story</span>
           </button>
           <button
-            onClick={() => setShowSearchMenu((s) => !s)}
+            onClick={() => {
+              if (showSearchMenu) {
+                closeSearchMenu();
+              } else {
+                closeAnnotationSearchMenu();
+                setShowSearchMenu(true);
+              }
+            }}
             className={showSearchMenu ? toolbarUtilityActiveClass : toolbarUtilityInactiveClass}
             title="Search"
             data-testid="reader-search-toggle"
           >
             <SearchIcon size={18} />
+          </button>
+          <button
+            onClick={() => {
+              if (showAnnotationSearchMenu) {
+                closeAnnotationSearchMenu();
+              } else {
+                closeSearchMenu();
+                setShowAnnotationSearchMenu(true);
+              }
+            }}
+            className={showAnnotationSearchMenu ? toolbarUtilityActiveClass : toolbarUtilityInactiveClass}
+            title="Annotations"
+            data-testid="reader-annotation-search-toggle"
+          >
+            <BookText size={18} />
           </button>
           <button
             onClick={() => setShowHighlightsPanel((s) => !s)}
@@ -2739,10 +4318,6 @@ export default function Reader() {
         </div>
       </div>
 
-      <div className={`px-4 py-2 text-[11px] tracking-wide uppercase font-bold ${settings.theme === 'dark' ? 'bg-yellow-900/30 text-yellow-300' : 'bg-yellow-50 text-yellow-700'}`}>
-        AI FEATURES: NOT AVAILABLE NOW
-      </div>
-
       <div className="flex-1 overflow-hidden relative">
         <BookView 
           bookData={book.data} settings={settings} initialLocation={book.lastLocation}
@@ -2752,8 +4327,17 @@ export default function Reader() {
           onChapterEnd={handleChapterEnd}
           searchResults={searchResults}
           activeSearchCfi={activeSearchCfi}
+          focusedSearchCfi={focusedSearchCfi}
+          showSearchHighlights={showSearchMenu || Boolean(focusedSearchCfi)}
+          onSearchHighlightCountChange={setSearchHighlightCount}
+          flashingHighlightCfi={flashingHighlightCfi}
+          flashingHighlightPulse={flashingHighlightPulse}
+          onSearchResultActivate={handleSearchResultActivate}
+          onSearchFocusDismiss={dismissFocusedSearch}
           highlights={highlights}
           onSelection={handleSelection}
+          onInlineNoteMarkerActivate={handleInlineNoteMarkerActivate}
+          onFootnotePreview={handleFootnotePreview}
         />
       </div>
     </div>

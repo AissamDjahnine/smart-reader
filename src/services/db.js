@@ -557,7 +557,17 @@ export const saveHighlight = async (bookId, highlight) => {
 export const updateHighlightNote = async (bookId, cfiRange, note) => {
   const updatedBook = await runBookMutation(bookId, (book) => {
     if (!book.highlights) book.highlights = [];
-    const idx = book.highlights.findIndex(h => h.cfiRange === cfiRange);
+    const normalizeCfi = (value) => (value || '').toString().replace(/\s+/g, '');
+    const targetCfi = normalizeCfi(cfiRange);
+    const idx = book.highlights.findIndex((h) => {
+      const sourceCfi = normalizeCfi(h?.cfiRange);
+      if (!sourceCfi || !targetCfi) return false;
+      return (
+        sourceCfi === targetCfi ||
+        sourceCfi.includes(targetCfi) ||
+        targetCfi.includes(sourceCfi)
+      );
+    });
     if (idx > -1) {
       book.highlights[idx].note = note;
     }
