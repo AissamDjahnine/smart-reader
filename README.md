@@ -31,7 +31,8 @@ Smart Reader is built around real reading behavior:
   - Automatic fallback to main-thread parsing if Worker is unavailable
 - Yellow success toast after upload and a 10-second halo on newly added book cards
 - Clean cover-based library (grid or list)
-- Smart metadata (author, language, estimated pages, genre when available)
+- Smart metadata (author, language, estimated pages, year, and genre when available)
+- Genre auto-detection improved from EPUB metadata (`subject`, `dc:subject`, `type`, `dc:type`, and related fields) with normalized labels
 - Book Info popover on each card (hover/click) with cleaned EPUB metadata:
   - Prioritized order for key fields (`Title`, `Author`, `Language`)
   - Hidden noisy/empty entries (for example `modified`, `identifier`, and blank values)
@@ -66,7 +67,7 @@ Smart Reader is built around real reading behavior:
 - Manual `TO READ` tagging (create your personal "read next" queue)
 - Favorites with cleaner, less cluttered library cards
 - Notes Center in Library with cross-book note browsing, inline editing, and jump-to-reader
-- Continue Reading rail with progress and session context
+- Continue Reading rail redesigned with layered cover cards, progress ring, optional favorite marker, and estimated time-left hint
 - Dedicated Trash workspace (independent from library filters):
   - Trash-specific search and sort
   - Grid/list views
@@ -139,7 +140,7 @@ Smart Reader is built around real reading behavior:
 
 - Accurate per-book progress tracking
 - Estimated time left
-- Reading sessions and “last session” snapshot
+- Reading sessions and “last session” snapshot (with inline icon cues in library cards)
 - Reading streak badge on home
 
 ## Current Status
