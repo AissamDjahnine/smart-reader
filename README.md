@@ -39,6 +39,12 @@ Smart Reader is built around real reading behavior:
   - Language labels shown in full form (`English`, `French`, etc.)
 - Clean inline metadata rows on cards (lightweight language/pages display)
 - Workspace sidebar for fast section switching: `My Library`, `My Collections`, `Notes Center`, `Highlights Center`, `Account`
+- Reading Snapshot panel above the workspace sidebar:
+  - Completion donut (`finished / total`)
+  - Total hours spent across all books
+  - Total pages from completed books only
+  - Reading time for today
+- Sidebar + snapshot visuals aligned with the same card language as Continue Reading (rounded cards, stronger hierarchy, cleaner iconography)
 - Search, filter, and sort to find the right book fast
 - Custom shelves (collections): create, rename, delete, and color-code your own reading buckets
 - Assign books to one or many shelves directly from each card
