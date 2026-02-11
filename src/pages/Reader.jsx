@@ -63,6 +63,7 @@ export default function Reader() {
   const [showFontMenu, setShowFontMenu] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
   const [showSearchMenu, setShowSearchMenu] = useState(false);
+  const [showAnnotationSearchMenu, setShowAnnotationSearchMenu] = useState(false);
   const [showAIModal, setShowAIModal] = useState(false);
   const [showHighlightsPanel, setShowHighlightsPanel] = useState(false);
   const [showBookmarksPanel, setShowBookmarksPanel] = useState(false);
@@ -94,11 +95,16 @@ export default function Reader() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
+  const [annotationSearchQuery, setAnnotationSearchQuery] = useState('');
+  const [annotationSearchResults, setAnnotationSearchResults] = useState([]);
+  const [activeAnnotationSearchIndex, setActiveAnnotationSearchIndex] = useState(-1);
   const [focusedSearchCfi, setFocusedSearchCfi] = useState(null);
   const [searchHighlightCount, setSearchHighlightCount] = useState(0);
   const activeSearchCfi = activeSearchIndex >= 0 ? (searchResults[activeSearchIndex]?.cfi || null) : null;
   const searchInputRef = useRef(null);
   const searchResultsListRef = useRef(null);
+  const annotationSearchInputRef = useRef(null);
+  const annotationSearchResultsListRef = useRef(null);
   const searchTokenRef = useRef(0);
   const [showDictionary, setShowDictionary] = useState(false);
   const [dictionaryAnchor, setDictionaryAnchor] = useState(null);
@@ -954,6 +960,107 @@ export default function Reader() {
     setShowSearchMenu(false);
   };
 
+  const clearAnnotationSearch = () => {
+    setAnnotationSearchQuery('');
+    setAnnotationSearchResults([]);
+    setActiveAnnotationSearchIndex(-1);
+  };
+
+  const closeAnnotationSearchMenu = () => {
+    setShowAnnotationSearchMenu(false);
+  };
+
+  const buildAnnotationExcerpt = (value) => {
+    const text = (value || '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    if (text.length <= 180) return text;
+    return `${text.slice(0, 179).trim()}…`;
+  };
+
+  const goToAnnotationSearchIndex = (index, overrideResults = null) => {
+    const sourceResults = Array.isArray(overrideResults) ? overrideResults : annotationSearchResults;
+    if (!sourceResults.length) return;
+    const clamped = Math.max(0, Math.min(index, sourceResults.length - 1));
+    setActiveAnnotationSearchIndex(clamped);
+    const target = sourceResults[clamped];
+    if (!target?.cfi) return;
+    jumpToCfi(target.cfi);
+    if (target.kind === 'highlight' || target.kind === 'note') {
+      triggerHighlightFlash(target.cfi);
+    }
+  };
+
+  const goToNextAnnotationResult = () => {
+    if (!annotationSearchResults.length) return;
+    const next = activeAnnotationSearchIndex + 1 >= annotationSearchResults.length ? 0 : activeAnnotationSearchIndex + 1;
+    goToAnnotationSearchIndex(next);
+  };
+
+  const goToPrevAnnotationResult = () => {
+    if (!annotationSearchResults.length) return;
+    const prev = activeAnnotationSearchIndex - 1 < 0 ? annotationSearchResults.length - 1 : activeAnnotationSearchIndex - 1;
+    goToAnnotationSearchIndex(prev);
+  };
+
+  const runAnnotationSearch = (query) => {
+    const term = (query || '').trim().toLowerCase();
+    if (!term) {
+      clearAnnotationSearch();
+      return;
+    }
+
+    const results = [];
+    highlights.forEach((item, idx) => {
+      const highlightText = (item?.text || '').toLowerCase();
+      const noteText = (item?.note || '').toLowerCase();
+      if (highlightText.includes(term)) {
+        results.push({
+          id: `h-${item.cfiRange}-${idx}`,
+          cfi: item.cfiRange,
+          kind: 'highlight',
+          label: 'Highlight',
+          excerpt: buildAnnotationExcerpt(item.text)
+        });
+      }
+      if (noteText.includes(term)) {
+        results.push({
+          id: `n-${item.cfiRange}-${idx}`,
+          cfi: item.cfiRange,
+          kind: 'note',
+          label: 'Note',
+          excerpt: buildAnnotationExcerpt(item.note)
+        });
+      }
+    });
+
+    bookmarks.forEach((item, idx) => {
+      const labelText = (item?.label || '').toLowerCase();
+      const snippetText = (item?.text || '').toLowerCase();
+      if (labelText.includes(term) || snippetText.includes(term)) {
+        results.push({
+          id: `b-${item.cfi}-${idx}`,
+          cfi: item.cfi,
+          kind: 'bookmark',
+          label: 'Bookmark',
+          excerpt: buildAnnotationExcerpt(item.text || item.label || 'Saved bookmark')
+        });
+      }
+    });
+
+    setAnnotationSearchQuery(query);
+    setAnnotationSearchResults(results);
+    if (results.length) {
+      goToAnnotationSearchIndex(0, results);
+    } else {
+      setActiveAnnotationSearchIndex(-1);
+    }
+  };
+
+  const handleAnnotationSearchResultClick = (idx) => {
+    goToAnnotationSearchIndex(idx);
+    closeAnnotationSearchMenu();
+  };
+
   const goToSearchIndex = (index, overrideResults = null, options = {}) => {
     const sourceResults = Array.isArray(overrideResults) ? overrideResults : searchResults;
     if (!sourceResults.length) return;
@@ -1117,6 +1224,16 @@ export default function Reader() {
       goToNextResult();
     } else {
       runSearch(searchQuery);
+    }
+  };
+
+  const handleAnnotationSearchInputKeyDown = (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    if (annotationSearchResults.length > 0) {
+      goToNextAnnotationResult();
+    } else {
+      runAnnotationSearch(annotationSearchQuery);
     }
   };
 
@@ -2063,6 +2180,26 @@ export default function Reader() {
   }, [showSearchMenu, searchResults, activeSearchIndex, activeSearchCfi]);
 
   useEffect(() => {
+    if (!showAnnotationSearchMenu) return;
+    const list = annotationSearchResultsListRef.current;
+    if (!list) return;
+    if (!annotationSearchResults.length || activeAnnotationSearchIndex < 0) return;
+
+    const id = window.requestAnimationFrame(() => {
+      const activeRow = list.querySelector(
+        `[data-annotation-result-index="${activeAnnotationSearchIndex}"]`
+      );
+      if (!activeRow) return;
+      activeRow.scrollIntoView({
+        block: 'nearest',
+        behavior: 'smooth'
+      });
+    });
+
+    return () => window.cancelAnimationFrame(id);
+  }, [showAnnotationSearchMenu, annotationSearchResults, activeAnnotationSearchIndex]);
+
+  useEffect(() => {
     if (!focusedSearchCfi) return;
     const handlePointerDown = (event) => {
       const target = event.target;
@@ -2093,6 +2230,20 @@ export default function Reader() {
   }, [showSearchMenu]);
 
   useEffect(() => {
+    if (!showAnnotationSearchMenu) return;
+    const id = window.requestAnimationFrame(() => {
+      const input = annotationSearchInputRef.current;
+      if (!input) return;
+      input.focus();
+      const end = input.value?.length || 0;
+      if (typeof input.setSelectionRange === 'function') {
+        input.setSelectionRange(end, end);
+      }
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [showAnnotationSearchMenu]);
+
+  useEffect(() => {
     const handleKey = (event) => {
       const isFindShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f';
       if (isFindShortcut) {
@@ -2112,6 +2263,11 @@ export default function Reader() {
       if (event.key === 'Escape' && showSearchMenu) {
         event.preventDefault();
         closeSearchMenu();
+        return;
+      }
+      if (event.key === 'Escape' && showAnnotationSearchMenu) {
+        event.preventDefault();
+        closeAnnotationSearchMenu();
         return;
       }
       if (event.key === 'Escape' && focusedSearchCfi) {
@@ -2149,7 +2305,7 @@ export default function Reader() {
 
     window.addEventListener('keydown', handleKey, { passive: false });
     return () => window.removeEventListener('keydown', handleKey);
-  }, [rendition, settings.flow, showSearchMenu, focusedSearchCfi]);
+  }, [rendition, settings.flow, showSearchMenu, showAnnotationSearchMenu, focusedSearchCfi]);
 
   const phoneticText =
     dictionaryEntry?.phonetic ||
@@ -2545,6 +2701,128 @@ export default function Reader() {
                 >
                   <div className={`text-[10px] uppercase tracking-widest mb-1 font-bold ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}>
                     Result {idx + 1}
+                  </div>
+                  <div className={`text-sm font-medium ${isReaderDark ? 'text-gray-100' : 'text-black'}`}>
+                    {result.excerpt}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAnnotationSearchMenu && (
+        <div className="fixed inset-0 z-[55]">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={closeAnnotationSearchMenu}
+          />
+          <div
+            className={`absolute right-4 top-20 w-[92vw] max-w-md rounded-3xl shadow-2xl p-5 ${
+              isReaderDark ? 'bg-gray-800 border border-gray-700 text-gray-100' : 'bg-white border border-gray-200 text-gray-900'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <BookText size={18} className={isReaderDark ? 'text-gray-400' : 'text-gray-600'} />
+              <input
+                ref={annotationSearchInputRef}
+                type="text"
+                placeholder="Search highlights, notes, bookmarks..."
+                value={annotationSearchQuery}
+                onChange={(e) => setAnnotationSearchQuery(e.target.value)}
+                onKeyDown={handleAnnotationSearchInputKeyDown}
+                className={`flex-1 bg-transparent outline-none text-sm font-semibold ${
+                  isReaderDark ? 'text-gray-100 placeholder:text-gray-400' : 'text-black placeholder:text-gray-500'
+                }`}
+              />
+              <button
+                onClick={closeAnnotationSearchMenu}
+                className={`p-1 hover:text-red-500 ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className={`mt-3 flex items-center justify-between text-[11px] font-semibold ${isReaderDark ? 'text-gray-300' : 'text-gray-800'}`}>
+              <span>
+                {annotationSearchResults.length
+                  ? `${activeAnnotationSearchIndex + 1 > 0 ? activeAnnotationSearchIndex + 1 : 1}/${annotationSearchResults.length}`
+                  : '0 results'}
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={goToPrevAnnotationResult}
+                  disabled={!annotationSearchResults.length}
+                  className={`px-2 py-1 rounded-full border disabled:opacity-40 ${
+                    isReaderDark
+                      ? 'border-gray-700 hover:bg-gray-700'
+                      : 'border-gray-300 hover:bg-gray-100'
+                  }`}
+                  title="Previous result"
+                >
+                  <span className="text-xs font-bold">&lt;</span>
+                </button>
+                <button
+                  onClick={goToNextAnnotationResult}
+                  disabled={!annotationSearchResults.length}
+                  className={`px-2 py-1 rounded-full border disabled:opacity-40 ${
+                    isReaderDark
+                      ? 'border-gray-700 hover:bg-gray-700'
+                      : 'border-gray-300 hover:bg-gray-100'
+                  }`}
+                  title="Next result"
+                >
+                  <span className="text-xs font-bold">&gt;</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={() => runAnnotationSearch(annotationSearchQuery)}
+                className="flex-1 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700"
+              >
+                Search
+              </button>
+              <button
+                onClick={clearAnnotationSearch}
+                className={`flex-1 py-2 rounded-xl text-xs font-bold ${
+                  isReaderDark
+                    ? 'border border-gray-700 text-gray-100'
+                    : 'border border-gray-300 text-gray-900'
+                }`}
+              >
+                Clear
+              </button>
+            </div>
+
+            <div
+              ref={annotationSearchResultsListRef}
+              data-testid="annotation-search-results-list"
+              className="mt-4 max-h-[45vh] overflow-y-auto pr-1 space-y-2"
+            >
+              {annotationSearchQuery && annotationSearchResults.length === 0 && (
+                <div className={`text-xs ${isReaderDark ? 'text-gray-400' : 'text-gray-700'}`}>No annotation matches found.</div>
+              )}
+              {annotationSearchResults.map((result, idx) => (
+                <button
+                  key={result.id}
+                  onClick={() => handleAnnotationSearchResultClick(idx)}
+                  data-testid={`annotation-search-result-item-${idx}`}
+                  data-annotation-result-index={idx}
+                  className={`w-full text-left p-3 rounded-2xl border transition ${
+                    activeAnnotationSearchIndex === idx
+                      ? isReaderDark
+                        ? 'border-yellow-400 bg-yellow-900/30'
+                        : 'border-yellow-500 bg-yellow-50'
+                      : isReaderDark
+                        ? 'border-transparent hover:border-gray-700'
+                        : 'border-transparent hover:border-gray-200'
+                  }`}
+                >
+                  <div className={`text-[10px] uppercase tracking-widest mb-1 font-bold ${isReaderDark ? 'text-gray-400' : 'text-gray-600'}`}>
+                    {result.label} {idx + 1}
                   </div>
                   <div className={`text-sm font-medium ${isReaderDark ? 'text-gray-100' : 'text-black'}`}>
                     {result.excerpt}
@@ -3357,6 +3635,7 @@ export default function Reader() {
               if (showSearchMenu) {
                 closeSearchMenu();
               } else {
+                closeAnnotationSearchMenu();
                 setShowSearchMenu(true);
               }
             }}
@@ -3365,6 +3644,21 @@ export default function Reader() {
             data-testid="reader-search-toggle"
           >
             <SearchIcon size={18} />
+          </button>
+          <button
+            onClick={() => {
+              if (showAnnotationSearchMenu) {
+                closeAnnotationSearchMenu();
+              } else {
+                closeSearchMenu();
+                setShowAnnotationSearchMenu(true);
+              }
+            }}
+            className={showAnnotationSearchMenu ? toolbarUtilityActiveClass : toolbarUtilityInactiveClass}
+            title="Annotations"
+            data-testid="reader-annotation-search-toggle"
+          >
+            <BookText size={18} />
           </button>
           <button
             onClick={() => setShowHighlightsPanel((s) => !s)}
