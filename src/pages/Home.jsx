@@ -3651,6 +3651,9 @@ const formatNotificationTimeAgo = (value) => {
         {isStatisticsSection && (
           <LibraryReadingStatisticsSection
             isDarkLibraryTheme={isDarkLibraryTheme}
+            books={activeBooks}
+            buildReaderPath={buildReaderPath}
+            onOpenBook={handleOpenBook}
           />
         )}
 
