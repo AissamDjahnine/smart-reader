@@ -159,7 +159,7 @@ export function LibraryWorkspaceSidebar({
             />
           )}
           <CircleUserRound size={17} className={librarySection === "account" ? "" : (isDarkLibraryTheme ? "text-slate-400 group-hover:text-blue-300" : "text-gray-500 group-hover:text-blue-600")} />
-          <span>Account</span>
+          <span>Settings</span>
         </button>
       </nav>
     </aside>
@@ -240,7 +240,7 @@ export function LibraryWorkspaceMobileNav({ librarySection, onSelectSection }) {
           }`}
         >
           <CircleUserRound size={13} />
-          <span>Account</span>
+          <span>Settings</span>
         </button>
       </div>
     </div>

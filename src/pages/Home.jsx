@@ -35,6 +35,7 @@ import {
   Calendar,
   Trash2,
   Clock,
+  Bell,
   History,
   Heart,
   Tag,
@@ -51,6 +52,10 @@ import {
   ArrowUpDown,
   LayoutGrid,
   List,
+  CircleHelp,
+  LogOut,
+  BarChart3,
+  Settings2,
 } from 'lucide-react';
 import LibraryAccountSection from './library/LibraryAccountSection';
 import { LibraryWorkspaceSidebar, LibraryWorkspaceMobileNav } from './library/LibraryWorkspaceNav';
@@ -511,6 +516,8 @@ export default function Home() {
   const [contentIndexManifest, setContentIndexManifest] = useState({});
   const [searchIndexByBook, setSearchIndexByBook] = useState({});
   const [isContentSearching, setIsContentSearching] = useState(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const contentSearchTokenRef = useRef(0);
   const uploadTimerRef = useRef(null);
   const uploadSuccessTimerRef = useRef(null);
@@ -519,6 +526,7 @@ export default function Home() {
   const infoPopoverCloseTimerRef = useRef(null);
   const infoPopoverRef = useRef(null);
   const duplicateDecisionResolverRef = useRef(null);
+  const notificationsMenuRef = useRef(null);
 
   const openInfoPopover = (book, rect, pinned = false) => {
     if (!book || !rect) return;
@@ -583,6 +591,35 @@ export default function Home() {
     window.addEventListener("mousedown", handleMouseDown);
     return () => window.removeEventListener("mousedown", handleMouseDown);
   }, [infoPopover]);
+
+  useEffect(() => {
+    if (!isNotificationsOpen && !isProfileMenuOpen) return;
+
+    const handleMouseDown = (event) => {
+      if (!notificationsMenuRef.current) return;
+      if (notificationsMenuRef.current.contains(event.target)) return;
+      setIsNotificationsOpen(false);
+      setIsProfileMenuOpen(false);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setIsNotificationsOpen(false);
+        setIsProfileMenuOpen(false);
+      }
+    };
+
+    window.addEventListener("mousedown", handleMouseDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handleMouseDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isNotificationsOpen, isProfileMenuOpen]);
+
+  useEffect(() => {
+    setIsNotificationsOpen(false);
+    setIsProfileMenuOpen(false);
+  }, [librarySection]);
 
   useEffect(() => {
     return () => {
@@ -2407,6 +2444,13 @@ export default function Home() {
     return `${hours}h ${remainingMinutes}m left`;
   };
 
+  const getEstimatedRemainingSeconds = (book) => {
+    const progress = Math.max(0, Math.min(100, normalizeNumber(book?.progress)));
+    const spentSeconds = Math.max(0, Number(book?.readingTime) || 0);
+    if (progress <= 0 || progress >= 100 || spentSeconds <= 0) return 0;
+    return Math.round((spentSeconds * (100 - progress)) / progress);
+  };
+
   const getCalendarDayDiff = (dateString) => {
     const date = new Date(dateString || 0);
     if (!Number.isFinite(date.getTime())) return 0;
@@ -2628,6 +2672,71 @@ export default function Home() {
   const readingSnapshotProgress = readingSnapshot.totalBooks > 0
     ? Math.max(0, Math.min(100, Math.round((readingSnapshot.finishedBooks / readingSnapshot.totalBooks) * 100)))
     : 0;
+  const finishSoonNotifications = useMemo(() => (
+    continueReadingBooks
+      .map((book) => {
+        const remainingSeconds = getEstimatedRemainingSeconds(book);
+        return {
+          id: `finish-soon-${book.id}`,
+          kind: "finish-soon",
+          bookId: book.id,
+          title: book.title,
+          author: book.author,
+          remainingSeconds
+        };
+      })
+      .filter((item) => item.remainingSeconds > 0 && item.remainingSeconds <= 30 * 60)
+      .sort((left, right) => left.remainingSeconds - right.remainingSeconds)
+  ), [continueReadingBooks]);
+  const notificationCount = finishSoonNotifications.length;
+  const profileLabel = (accountProfile?.firstName || accountProfile?.email || "Reader").trim();
+  const profileInitials = (() => {
+    const firstName = (accountProfile?.firstName || "").trim();
+    if (firstName) {
+      const parts = firstName.split(/\s+/).filter(Boolean).slice(0, 2);
+      const initials = parts.map((part) => part[0]?.toUpperCase() || "").join("");
+      if (initials) return initials;
+    }
+    const fromEmail = (accountProfile?.email || "R").trim().charAt(0).toUpperCase();
+    return fromEmail || "R";
+  })();
+  const profileMenuItems = [
+    { key: "profile", label: "Profile", icon: User },
+    { key: "reading-statistics", label: "Reading Statistics", icon: BarChart3 },
+    { key: "settings", label: "Settings", icon: Settings2 },
+    { key: "faq", label: "FAQ", icon: CircleHelp },
+    { key: "sign-out", label: "Sign out", icon: LogOut },
+  ];
+
+  const handleProfileMenuAction = (actionKey) => {
+    setIsProfileMenuOpen(false);
+    setIsNotificationsOpen(false);
+    if (actionKey === "settings" || actionKey === "profile") {
+      handleSidebarSectionSelect("account");
+      return;
+    }
+    if (actionKey === "reading-statistics") {
+      handleSidebarSectionSelect("library");
+      if (typeof window !== "undefined") {
+        window.requestAnimationFrame(() => {
+          const target = document.querySelector('[data-testid="reading-snapshot-card"]');
+          if (target && typeof target.scrollIntoView === "function") {
+            target.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        });
+      }
+      return;
+    }
+    if (actionKey === "faq") {
+      if (typeof window !== "undefined") {
+        window.open("https://github.com/AissamDjahnine/smart-reader#faq", "_blank", "noopener,noreferrer");
+      }
+      return;
+    }
+    if (actionKey === "sign-out") {
+      handleSidebarSectionSelect("library");
+    }
+  };
 
   return (
     <div className={`min-h-screen p-6 md:p-12 font-sans ${isDarkLibraryTheme ? "bg-slate-950 text-slate-100" : "bg-gray-50 text-gray-900"}`}>
@@ -2713,7 +2822,7 @@ export default function Home() {
             {isAccountSection ? (
               <>
                 <h1 className={`text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                  Account
+                  Settings
                 </h1>
                 <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
                   Manage your profile details and account preferences.
@@ -2797,7 +2906,31 @@ export default function Home() {
           </div>
 
           {!isAccountSection && (
-          <div className="flex w-full flex-wrap items-center gap-3 md:w-auto md:justify-end">
+          <div className="relative flex w-full flex-wrap items-center gap-3 md:w-auto md:justify-end" ref={notificationsMenuRef}>
+            <button
+              type="button"
+              data-testid="library-notifications-toggle"
+              onClick={() => setIsNotificationsOpen((open) => !open)}
+              className={`relative inline-flex h-12 w-12 items-center justify-center rounded-full border transition ${
+                isDarkLibraryTheme
+                  ? "border-slate-500 bg-slate-800 text-slate-100 hover:bg-slate-700"
+                  : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
+              }`}
+              title="Notifications"
+              aria-label="Open notifications"
+              aria-expanded={isNotificationsOpen}
+            >
+              <Bell size={17} />
+              {notificationCount > 0 && (
+                <span
+                  data-testid="library-notifications-badge"
+                  className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center"
+                >
+                  {notificationCount}
+                </span>
+              )}
+            </button>
+
             <button
               type="button"
               data-testid="library-theme-toggle"
@@ -2813,6 +2946,100 @@ export default function Home() {
               {isDarkLibraryTheme ? <Sun size={16} /> : <Moon size={16} />}
             </button>
 
+            <button
+              type="button"
+              data-testid="library-profile-avatar"
+              onClick={() => {
+                setIsNotificationsOpen(false);
+                setIsProfileMenuOpen((open) => !open);
+              }}
+              className={`inline-flex h-12 w-12 items-center justify-center rounded-full border text-sm font-bold transition ${
+                isDarkLibraryTheme
+                  ? "border-slate-500 bg-slate-800 text-slate-100 hover:bg-slate-700"
+                  : "border-gray-200 bg-white text-[#1A1A2E] hover:border-blue-200 hover:text-blue-700"
+              }`}
+              title={profileLabel}
+              aria-label="Open profile menu"
+              aria-expanded={isProfileMenuOpen}
+            >
+              {profileInitials}
+            </button>
+
+            {isProfileMenuOpen && (
+              <div
+                data-testid="library-profile-menu"
+                className={`absolute right-0 top-[56px] z-30 w-[230px] max-w-[calc(100vw-2rem)] rounded-2xl border p-2 shadow-xl ${
+                  isDarkLibraryTheme ? "border-slate-700 bg-slate-900 text-slate-100" : "border-gray-200 bg-white text-[#1A1A2E]"
+                }`}
+              >
+                {profileMenuItems.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      data-testid={`library-profile-menu-item-${item.key}`}
+                      onClick={() => handleProfileMenuAction(item.key)}
+                      className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm font-semibold transition ${
+                        isDarkLibraryTheme
+                          ? "text-slate-100 hover:bg-slate-800"
+                          : "text-[#1A1A2E] hover:bg-gray-50"
+                      }`}
+                    >
+                      <Icon size={15} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"} />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {isNotificationsOpen && (
+              <div
+                data-testid="library-notifications-panel"
+                className={`absolute right-0 top-[56px] z-30 w-[360px] max-w-[calc(100vw-2rem)] rounded-2xl border p-3 shadow-xl ${
+                  isDarkLibraryTheme ? "border-slate-700 bg-slate-900 text-slate-100" : "border-gray-200 bg-white text-gray-900"
+                }`}
+              >
+                <div className={`flex items-center justify-between gap-3 border-b pb-2 ${
+                  isDarkLibraryTheme ? "border-slate-700" : "border-gray-200"
+                }`}>
+                  <div className="text-sm font-semibold">Notifications</div>
+                  <div className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                    {notificationCount} alert{notificationCount === 1 ? "" : "s"}
+                  </div>
+                </div>
+                <div className="mt-2 max-h-[300px] overflow-y-auto space-y-2">
+                  {finishSoonNotifications.length === 0 ? (
+                    <div className={`rounded-xl border p-3 text-sm ${isDarkLibraryTheme ? "border-slate-700 text-slate-400" : "border-gray-200 text-gray-500"}`}>
+                      No notifications for now.
+                    </div>
+                  ) : (
+                    finishSoonNotifications.map((item) => (
+                      <Link
+                        key={item.id}
+                        data-testid="notification-item-finish-soon"
+                        to={buildReaderPath(item.bookId)}
+                        onClick={() => {
+                          setIsNotificationsOpen(false);
+                          handleOpenBook(item.bookId);
+                        }}
+                        className={`block rounded-xl border p-3 transition ${
+                          isDarkLibraryTheme
+                            ? "border-slate-700 hover:border-blue-500 hover:bg-slate-800"
+                            : "border-gray-200 hover:border-blue-200 hover:bg-blue-50/40"
+                        }`}
+                      >
+                        <div className="text-sm font-semibold leading-tight">{item.title}</div>
+                        <div className={`mt-1 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-600"}`}>
+                          Can be finished in {formatEstimatedTimeLeft(item.remainingSeconds).replace(" left", "")}. Pick it up now.
+                        </div>
+                      </Link>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
           </div>
           )}
         </header>
@@ -2847,11 +3074,7 @@ export default function Home() {
             <div className="grid [grid-template-columns:repeat(auto-fit,minmax(340px,1fr))] gap-x-4 gap-y-10 pb-3 pr-2">
               {continueReadingBooks.map((book) => {
                 const progress = Math.max(0, Math.min(100, normalizeNumber(book.progress)));
-                const spentSeconds = Math.max(0, Number(book.readingTime) || 0);
-                const estimatedRemainingSeconds =
-                  progress > 0 && progress < 100 && spentSeconds > 0
-                    ? Math.round((spentSeconds * (100 - progress)) / progress)
-                    : 0;
+                const estimatedRemainingSeconds = getEstimatedRemainingSeconds(book);
                 const estimatedTimeLeft = formatEstimatedTimeLeft(estimatedRemainingSeconds);
                 return (
                   <div key={`continue-${book.id}`} className="pl-[88px] sm:pl-[100px] py-1">

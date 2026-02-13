@@ -1211,6 +1211,101 @@ test('sidebar uses concise labels and hides zero-count badges', async ({ page })
   await expect(trashButton.locator('span.rounded-full')).toHaveCount(0);
 });
 
+test('header shows bell notifications for books finishable in under 30 minutes', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  const seeded = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs') ? 'keyvaluepairs' : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didSeed = false;
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          const payload = row?.value && typeof row.value === 'object' ? row.value : row;
+          const isTargetBook = payload && payload.title === 'Test Book' && Object.prototype.hasOwnProperty.call(payload, 'data');
+          if (!didSeed && isTargetBook) {
+            const nextPayload = {
+              ...payload,
+              hasStarted: true,
+              progress: 80,
+              readingTime: 1800
+            };
+            if (row?.value && typeof row.value === 'object') {
+              cursor.update({ ...row, value: nextPayload });
+            } else {
+              cursor.update(nextPayload);
+            }
+            didSeed = true;
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didSeed);
+        };
+      };
+    });
+  });
+  expect(seeded).toBeTruthy();
+
+  await page.reload();
+  const bellButton = page.getByTestId('library-notifications-toggle');
+  await expect(bellButton).toBeVisible();
+  await expect(page.getByTestId('library-notifications-badge')).toBeVisible();
+
+  await bellButton.click();
+  await expect(page.getByTestId('library-notifications-panel')).toBeVisible();
+  await expect(page.getByTestId('notification-item-finish-soon')).toHaveCount(1);
+  await expect(page.getByTestId('notification-item-finish-soon').first()).toContainText(/can be finished in/i);
+});
+
+test('profile avatar opens menu and settings item opens account section', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await expect(page.getByTestId('library-profile-avatar')).toBeVisible();
+  await page.getByTestId('library-profile-avatar').click();
+  await expect(page.getByTestId('library-profile-menu')).toBeVisible();
+  await expect(page.getByTestId('library-profile-menu-item-profile')).toBeVisible();
+  await expect(page.getByTestId('library-profile-menu-item-reading-statistics')).toBeVisible();
+  await expect(page.getByTestId('library-profile-menu-item-settings')).toBeVisible();
+  await expect(page.getByTestId('library-profile-menu-item-faq')).toBeVisible();
+  await expect(page.getByTestId('library-profile-menu-item-sign-out')).toBeVisible();
+  await page.getByTestId('library-profile-menu-item-settings').click();
+  await expect(page.getByTestId('library-account-panel')).toBeVisible();
+});
+
 test('library cards remove quick action row and still open reader on click', async ({ page }) => {
   await page.goto('/');
   await page.evaluate(() => {
