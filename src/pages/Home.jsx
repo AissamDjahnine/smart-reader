@@ -56,6 +56,12 @@ import {
   LogOut,
   BarChart3,
   Settings2,
+  Target,
+  Trophy,
+  MoreHorizontal,
+  Archive,
+  Check,
+  Mail,
 } from 'lucide-react';
 import LibraryAccountSection from './library/LibraryAccountSection';
 import { LibraryWorkspaceSidebar, LibraryWorkspaceMobileNav } from './library/LibraryWorkspaceNav';
@@ -70,6 +76,7 @@ const TRASH_RETENTION_DAYS = 30;
 const LIBRARY_THEME_KEY = 'library-theme';
 const LIBRARY_LANGUAGE_KEY = 'library-language';
 const ACCOUNT_PROFILE_KEY = 'library-account-profile';
+const LIBRARY_NOTIFICATION_STATE_KEY = 'library-notification-state';
 const ACCOUNT_DEFAULT_EMAIL = 'dreamerissame@gmail.com';
 const LIBRARY_PERF_DEBUG_KEY = "library-perf-debug";
 const LIBRARY_PERF_HISTORY_KEY = "__smartReaderPerfHistory";
@@ -138,6 +145,18 @@ const readStoredAccountProfile = () => {
       preferredLanguage: "en",
       emailNotifications: "yes"
     };
+  }
+};
+
+const readStoredNotificationState = () => {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(LIBRARY_NOTIFICATION_STATE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch {
+    return {};
   }
 };
 
@@ -518,6 +537,10 @@ export default function Home() {
   const [isContentSearching, setIsContentSearching] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+  const [activeNotificationMenuId, setActiveNotificationMenuId] = useState("");
+  const [notificationView, setNotificationView] = useState("all");
+  const [notificationStateById, setNotificationStateById] = useState(() => readStoredNotificationState());
+  const [notificationFocusedBookId, setNotificationFocusedBookId] = useState("");
   const contentSearchTokenRef = useRef(0);
   const uploadTimerRef = useRef(null);
   const uploadSuccessTimerRef = useRef(null);
@@ -527,6 +550,7 @@ export default function Home() {
   const infoPopoverRef = useRef(null);
   const duplicateDecisionResolverRef = useRef(null);
   const notificationsMenuRef = useRef(null);
+  const notificationFocusTimerRef = useRef(null);
 
   const openInfoPopover = (book, rect, pinned = false) => {
     if (!book || !rect) return;
@@ -575,6 +599,11 @@ export default function Home() {
   }, [libraryLanguage]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(LIBRARY_NOTIFICATION_STATE_KEY, JSON.stringify(notificationStateById));
+  }, [notificationStateById]);
+
+  useEffect(() => {
     const timeoutId = setTimeout(() => {
       setDebouncedSearchQuery(searchQuery);
     }, 180);
@@ -600,11 +629,13 @@ export default function Home() {
       if (notificationsMenuRef.current.contains(event.target)) return;
       setIsNotificationsOpen(false);
       setIsProfileMenuOpen(false);
+      setActiveNotificationMenuId("");
     };
     const handleKeyDown = (event) => {
       if (event.key === "Escape") {
         setIsNotificationsOpen(false);
         setIsProfileMenuOpen(false);
+        setActiveNotificationMenuId("");
       }
     };
 
@@ -619,6 +650,8 @@ export default function Home() {
   useEffect(() => {
     setIsNotificationsOpen(false);
     setIsProfileMenuOpen(false);
+    setActiveNotificationMenuId("");
+    setNotificationView("all");
   }, [librarySection]);
 
   useEffect(() => {
@@ -626,6 +659,10 @@ export default function Home() {
       if (duplicateDecisionResolverRef.current) {
         duplicateDecisionResolverRef.current("ignore");
         duplicateDecisionResolverRef.current = null;
+      }
+      if (notificationFocusTimerRef.current) {
+        clearTimeout(notificationFocusTimerRef.current);
+        notificationFocusTimerRef.current = null;
       }
     };
   }, []);
@@ -2414,13 +2451,23 @@ export default function Home() {
     return `${hours}h ${remainingMinutes} min`;
   };
 
-  const formatRoundedHours = (seconds) => {
+const formatRoundedHours = (seconds) => {
     const safeSeconds = Math.max(0, Number(seconds) || 0);
     if (!safeSeconds) return "0h";
     const hours = safeSeconds / 3600;
     if (hours >= 10) return `${Math.round(hours)}h`;
     return `${Math.round(hours * 10) / 10}h`;
-  };
+};
+
+const formatNotificationTimeAgo = (value) => {
+  const time = value ? new Date(value) : null;
+  if (!time || Number.isNaN(time.getTime())) return "Just now";
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - time.getTime()) / 1000));
+  if (elapsedSeconds < 60) return "Just now";
+  if (elapsedSeconds < 3600) return `${Math.floor(elapsedSeconds / 60)}m ago`;
+  if (elapsedSeconds < 86400) return `${Math.floor(elapsedSeconds / 3600)}h ago`;
+  return `${Math.floor(elapsedSeconds / 86400)}d ago`;
+};
 
   const getPublicationYearLabel = (book) => {
     if (!book?.pubDate) return "";
@@ -2672,8 +2719,31 @@ export default function Home() {
   const readingSnapshotProgress = readingSnapshot.totalBooks > 0
     ? Math.max(0, Math.min(100, Math.round((readingSnapshot.finishedBooks / readingSnapshot.totalBooks) * 100)))
     : 0;
-  const finishSoonNotifications = useMemo(() => (
-    continueReadingBooks
+  const libraryNotifications = useMemo(() => {
+    const nowIso = new Date().toISOString();
+    const todayKey = toLocalDateKey(new Date());
+    const items = [];
+    const inProgressBooks = activeBooks
+      .filter((book) => {
+        const progress = Math.max(0, Math.min(100, normalizeNumber(book?.progress)));
+        return progress > 0 && progress < 100 && !book?.isDeleted;
+      })
+      .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead));
+
+    if (streakCount > 0 && !readToday) {
+      items.push({
+        id: `streak-risk-${todayKey}`,
+        kind: "streak-risk",
+        title: "Streak at risk",
+        message: `Keep your ${streakCount}-day streak alive — read 5 min now.`,
+        createdAt: nowIso,
+        priority: 0,
+        actionType: "open-library-in-progress",
+        actionLabel: "Read now"
+      });
+    }
+
+    inProgressBooks
       .map((book) => {
         const remainingSeconds = getEstimatedRemainingSeconds(book);
         return {
@@ -2682,13 +2752,166 @@ export default function Home() {
           bookId: book.id,
           title: book.title,
           author: book.author,
-          remainingSeconds
+          message: `Can be finished in ${formatEstimatedTimeLeft(remainingSeconds).replace(" left", "")}. Pick it up now.`,
+          remainingSeconds,
+          createdAt: book.lastRead || nowIso,
+          priority: 1,
+          actionType: "open-reader",
+          actionLabel: "Open book"
         };
       })
       .filter((item) => item.remainingSeconds > 0 && item.remainingSeconds <= 30 * 60)
       .sort((left, right) => left.remainingSeconds - right.remainingSeconds)
-  ), [continueReadingBooks]);
-  const notificationCount = finishSoonNotifications.length;
+      .forEach((item) => items.push(item));
+
+    inProgressBooks
+      .filter((book) => getCalendarDayDiff(book.lastRead) >= 3)
+      .slice(0, 3)
+      .forEach((book) => {
+        const progress = Math.max(0, Math.min(100, normalizeNumber(book.progress)));
+        items.push({
+          id: `resume-abandoned-${book.id}`,
+          kind: "resume-abandoned",
+          bookId: book.id,
+          title: "Resume reading",
+          author: book.author,
+          message: `Back to ${book.title}? You're ${Math.round(progress)}% in.`,
+          createdAt: book.lastRead || nowIso,
+          priority: 2,
+          actionType: "open-reader",
+          actionLabel: "Resume"
+        });
+      });
+
+    inProgressBooks
+      .filter((book) => getCalendarDayDiff(book.lastRead) <= 2)
+      .slice(0, 4)
+      .forEach((book) => {
+        const progress = Math.max(0, Math.min(100, normalizeNumber(book.progress)));
+        const milestone = [90, 75, 50, 25].find((threshold) => progress >= threshold);
+        if (!milestone || progress >= 100) return;
+        items.push({
+          id: `milestone-${book.id}-${milestone}`,
+          kind: "milestone",
+          bookId: book.id,
+          title: "Milestone reached",
+          author: book.author,
+          message: `Nice progress — you reached ${milestone}% in ${book.title}.`,
+          createdAt: book.lastRead || nowIso,
+          priority: 3,
+          actionType: "open-reader",
+          actionLabel: "Keep going"
+        });
+      });
+
+    if (!readToday) {
+      items.push({
+        id: `daily-goal-${todayKey}`,
+        kind: "daily-goal",
+        title: "Daily micro-goal",
+        message: "A 10-minute session today keeps your reading momentum.",
+        createdAt: nowIso,
+        priority: 4,
+        actionType: "open-library-in-progress",
+        actionLabel: "Start 10 min"
+      });
+    }
+
+    const untouchedToRead = activeBooks.filter((book) => {
+      if (!isBookToRead(book)) return false;
+      if (isBookStarted(book)) return false;
+      const ageDays = getCalendarDayDiff(book?.addedAt || book?.lastRead || 0);
+      return ageDays >= 7;
+    });
+    if (untouchedToRead.length > 0) {
+      items.push({
+        id: `to-read-nudge-${todayKey}`,
+        kind: "to-read-nudge",
+        title: "To Read reminder",
+        message: `Pick your next book: ${untouchedToRead.length} title${untouchedToRead.length === 1 ? "" : "s"} waiting in To Read.`,
+        createdAt: nowIso,
+        priority: 5,
+        actionType: "open-library-to-read",
+        actionLabel: "Review list"
+      });
+    }
+
+    return items
+      .sort((left, right) => {
+        if (left.priority !== right.priority) return left.priority - right.priority;
+        return normalizeTime(right.createdAt) - normalizeTime(left.createdAt);
+      })
+      .slice(0, 16);
+  }, [activeBooks, streakCount, readToday]);
+  useEffect(() => {
+    setNotificationStateById((current) => {
+      const nowIso = new Date().toISOString();
+      const next = {};
+      libraryNotifications.forEach((item) => {
+        const previous = current[item.id] || {};
+        next[item.id] = {
+          firstSeenAt: previous.firstSeenAt || item.createdAt || nowIso,
+          readAt: previous.readAt || null,
+          snoozedUntil: previous.snoozedUntil || null,
+          archivedAt: previous.archivedAt || null,
+          deletedAt: previous.deletedAt || null
+        };
+      });
+      const currentKeys = Object.keys(current);
+      const nextKeys = Object.keys(next);
+      if (currentKeys.length !== nextKeys.length) return next;
+      for (const key of nextKeys) {
+        const a = current[key];
+        const b = next[key];
+        if (
+          !a ||
+          a.firstSeenAt !== b.firstSeenAt ||
+          a.readAt !== b.readAt ||
+          a.snoozedUntil !== b.snoozedUntil ||
+          a.archivedAt !== b.archivedAt ||
+          a.deletedAt !== b.deletedAt
+        ) {
+          return next;
+        }
+      }
+      return current;
+    });
+  }, [libraryNotifications]);
+
+  const libraryNotificationsWithState = useMemo(() => (
+    libraryNotifications.map((item) => {
+      const state = notificationStateById[item.id] || {};
+      const firstSeenAt = state.firstSeenAt || null;
+      const readAt = state.readAt || null;
+      const snoozedUntil = state.snoozedUntil || null;
+      const archivedAt = state.archivedAt || null;
+      const deletedAt = state.deletedAt || null;
+      const snoozedActive = Boolean(snoozedUntil) && normalizeTime(snoozedUntil) > Date.now();
+      return {
+        ...item,
+        firstSeenAt,
+        readAt,
+        snoozedUntil,
+        archivedAt,
+        deletedAt,
+        isRead: Boolean(readAt),
+        isSnoozed: snoozedActive,
+        isArchived: Boolean(archivedAt),
+        isDeleted: Boolean(deletedAt)
+      };
+    })
+  ), [libraryNotifications, notificationStateById]);
+
+  const visibleNotifications = useMemo(
+    () => libraryNotificationsWithState.filter((item) => !item.isSnoozed && !item.isArchived && !item.isDeleted),
+    [libraryNotificationsWithState]
+  );
+  const unreadNotifications = useMemo(
+    () => visibleNotifications.filter((item) => !item.isRead),
+    [visibleNotifications]
+  );
+  const filteredNotifications = notificationView === "unread" ? unreadNotifications : visibleNotifications;
+  const notificationCount = unreadNotifications.length;
   const profileLabel = (accountProfile?.firstName || accountProfile?.email || "Reader").trim();
   const profileInitials = (() => {
     const firstName = (accountProfile?.firstName || "").trim();
@@ -2707,6 +2930,182 @@ export default function Home() {
     { key: "faq", label: "FAQ", icon: CircleHelp },
     { key: "sign-out", label: "Sign out", icon: LogOut },
   ];
+  const notificationKindConfig = {
+    "streak-risk": { label: "Streak", Icon: Flame, tone: "amber" },
+    "finish-soon": { label: "Finish soon", Icon: Clock, tone: "green" },
+    "resume-abandoned": { label: "Resume", Icon: History, tone: "blue" },
+    "daily-goal": { label: "Daily goal", Icon: Target, tone: "indigo" },
+    milestone: { label: "Milestone", Icon: Trophy, tone: "violet" },
+    "to-read-nudge": { label: "To Read", Icon: Tag, tone: "pink" }
+  };
+  const notificationToneClasses = {
+    amber: isDarkLibraryTheme ? "bg-amber-900/30 text-amber-300" : "bg-amber-100 text-amber-700",
+    green: isDarkLibraryTheme ? "bg-emerald-900/30 text-emerald-300" : "bg-emerald-100 text-emerald-700",
+    blue: isDarkLibraryTheme ? "bg-blue-900/30 text-blue-300" : "bg-blue-100 text-blue-700",
+    indigo: isDarkLibraryTheme ? "bg-indigo-900/30 text-indigo-300" : "bg-indigo-100 text-indigo-700",
+    violet: isDarkLibraryTheme ? "bg-violet-900/30 text-violet-300" : "bg-violet-100 text-violet-700",
+    pink: isDarkLibraryTheme ? "bg-pink-900/30 text-pink-300" : "bg-pink-100 text-pink-700"
+  };
+
+  const handleNotificationReadState = (id, read) => {
+    setNotificationStateById((current) => {
+      const prev = current[id] || {};
+      const nextReadAt = read ? (prev.readAt || new Date().toISOString()) : null;
+      if (prev.readAt === nextReadAt) return current;
+      return {
+        ...current,
+        [id]: {
+          firstSeenAt: prev.firstSeenAt || new Date().toISOString(),
+          readAt: nextReadAt,
+          snoozedUntil: prev.snoozedUntil || null,
+          archivedAt: prev.archivedAt || null,
+          deletedAt: prev.deletedAt || null
+        }
+      };
+    });
+  };
+
+  const handleNotificationSnooze = (id, hours = 24) => {
+    const snoozedUntil = new Date(Date.now() + (hours * 60 * 60 * 1000)).toISOString();
+    setNotificationStateById((current) => {
+      const previous = current[id] || {};
+      return {
+        ...current,
+        [id]: {
+          firstSeenAt: previous.firstSeenAt || new Date().toISOString(),
+          readAt: previous.readAt || null,
+          snoozedUntil,
+          archivedAt: previous.archivedAt || null,
+          deletedAt: previous.deletedAt || null
+        }
+      };
+    });
+  };
+
+  const handleNotificationArchive = (id) => {
+    const archivedAt = new Date().toISOString();
+    setNotificationStateById((current) => {
+      const previous = current[id] || {};
+      return {
+        ...current,
+        [id]: {
+          firstSeenAt: previous.firstSeenAt || archivedAt,
+          readAt: previous.readAt || archivedAt,
+          snoozedUntil: previous.snoozedUntil || null,
+          archivedAt,
+          deletedAt: previous.deletedAt || null
+        }
+      };
+    });
+    if (activeNotificationMenuId === id) setActiveNotificationMenuId("");
+  };
+
+  const handleNotificationDelete = (id) => {
+    const deletedAt = new Date().toISOString();
+    setNotificationStateById((current) => {
+      const previous = current[id] || {};
+      return {
+        ...current,
+        [id]: {
+          firstSeenAt: previous.firstSeenAt || deletedAt,
+          readAt: previous.readAt || deletedAt,
+          snoozedUntil: previous.snoozedUntil || null,
+          archivedAt: previous.archivedAt || null,
+          deletedAt
+        }
+      };
+    });
+    if (activeNotificationMenuId === id) setActiveNotificationMenuId("");
+  };
+
+  const handleMarkAllNotificationsRead = () => {
+    const nowIso = new Date().toISOString();
+    setNotificationStateById((current) => {
+      let changed = false;
+      const next = { ...current };
+      visibleNotifications.forEach((item) => {
+        const previous = next[item.id] || {};
+        if (previous.readAt) return;
+        next[item.id] = {
+          firstSeenAt: previous.firstSeenAt || nowIso,
+          readAt: nowIso,
+          snoozedUntil: previous.snoozedUntil || null,
+          archivedAt: previous.archivedAt || null,
+          deletedAt: previous.deletedAt || null
+        };
+        changed = true;
+      });
+      return changed ? next : current;
+    });
+  };
+
+  const handleOpenNotificationTarget = (item) => {
+    if (!item) return;
+    handleNotificationReadState(item.id, true);
+    setIsNotificationsOpen(false);
+    setActiveNotificationMenuId("");
+
+    if (item.actionType === "open-reader" && item.bookId) {
+      handleOpenBook(item.bookId);
+      navigate(buildReaderPath(item.bookId));
+      return;
+    }
+
+    if (item.actionType === "open-library-to-read") {
+      handleSidebarSectionSelect("library");
+      setStatusFilter("to-read");
+      setCollectionFilter("all");
+      setSearchQuery("");
+      return;
+    }
+
+    if (item.actionType === "open-library-in-progress") {
+      handleSidebarSectionSelect("library");
+      setStatusFilter("in-progress");
+      setCollectionFilter("all");
+      setSearchQuery("");
+      return;
+    }
+
+    handleSidebarSectionSelect("library");
+  };
+
+  const focusContinueReadingCard = (bookId) => {
+    if (!bookId || typeof window === "undefined") return;
+    setNotificationFocusedBookId(bookId);
+    if (notificationFocusTimerRef.current) {
+      clearTimeout(notificationFocusTimerRef.current);
+      notificationFocusTimerRef.current = null;
+    }
+    window.requestAnimationFrame(() => {
+      const target = document.getElementById(`continue-reading-${bookId}`);
+      if (target && typeof target.scrollIntoView === "function") {
+        target.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+      }
+    });
+    notificationFocusTimerRef.current = setTimeout(() => {
+      setNotificationFocusedBookId("");
+      notificationFocusTimerRef.current = null;
+    }, 2200);
+  };
+
+  const handleNotificationCardClick = (item) => {
+    if (!item) return;
+    handleNotificationReadState(item.id, true);
+    setActiveNotificationMenuId("");
+    setIsNotificationsOpen(false);
+
+    if (item.bookId) {
+      handleSidebarSectionSelect("library");
+      setStatusFilter("all");
+      setCollectionFilter("all");
+      setSearchQuery("");
+      focusContinueReadingCard(item.bookId);
+      return;
+    }
+
+    handleOpenNotificationTarget(item);
+  };
 
   const handleProfileMenuAction = (actionKey) => {
     setIsProfileMenuOpen(false);
@@ -2910,7 +3309,10 @@ export default function Home() {
             <button
               type="button"
               data-testid="library-notifications-toggle"
-              onClick={() => setIsNotificationsOpen((open) => !open)}
+              onClick={() => {
+                setActiveNotificationMenuId("");
+                setIsNotificationsOpen((open) => !open);
+              }}
               className={`relative inline-flex h-12 w-12 items-center justify-center rounded-full border transition ${
                 isDarkLibraryTheme
                   ? "border-slate-500 bg-slate-800 text-slate-100 hover:bg-slate-700"
@@ -2997,45 +3399,234 @@ export default function Home() {
             {isNotificationsOpen && (
               <div
                 data-testid="library-notifications-panel"
-                className={`absolute right-0 top-[56px] z-30 w-[360px] max-w-[calc(100vw-2rem)] rounded-2xl border p-3 shadow-xl ${
+                className={`absolute right-0 top-[56px] z-30 w-[420px] max-w-[calc(100vw-2rem)] rounded-2xl border p-3 shadow-xl ${
                   isDarkLibraryTheme ? "border-slate-700 bg-slate-900 text-slate-100" : "border-gray-200 bg-white text-gray-900"
                 }`}
               >
                 <div className={`flex items-center justify-between gap-3 border-b pb-2 ${
                   isDarkLibraryTheme ? "border-slate-700" : "border-gray-200"
                 }`}>
-                  <div className="text-sm font-semibold">Notifications</div>
-                  <div className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                    {notificationCount} alert{notificationCount === 1 ? "" : "s"}
-                  </div>
-                </div>
-                <div className="mt-2 max-h-[300px] overflow-y-auto space-y-2">
-                  {finishSoonNotifications.length === 0 ? (
-                    <div className={`rounded-xl border p-3 text-sm ${isDarkLibraryTheme ? "border-slate-700 text-slate-400" : "border-gray-200 text-gray-500"}`}>
-                      No notifications for now.
+                  <div>
+                    <div className="text-sm font-semibold">Notifications</div>
+                    <div className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                      {visibleNotifications.length} total
                     </div>
-                  ) : (
-                    finishSoonNotifications.map((item) => (
-                      <Link
-                        key={item.id}
-                        data-testid="notification-item-finish-soon"
-                        to={buildReaderPath(item.bookId)}
-                        onClick={() => {
-                          setIsNotificationsOpen(false);
-                          handleOpenBook(item.bookId);
-                        }}
-                        className={`block rounded-xl border p-3 transition ${
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                      {notificationCount} unread
+                    </div>
+                    {visibleNotifications.length > 0 && notificationCount > 0 && (
+                      <button
+                        type="button"
+                        data-testid="notifications-mark-all-read"
+                        onClick={handleMarkAllNotificationsRead}
+                        className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
                           isDarkLibraryTheme
-                            ? "border-slate-700 hover:border-blue-500 hover:bg-slate-800"
-                            : "border-gray-200 hover:border-blue-200 hover:bg-blue-50/40"
+                            ? "bg-slate-800 text-slate-200 hover:bg-slate-700"
+                            : "bg-gray-100 text-gray-700 hover:bg-gray-200"
                         }`}
                       >
-                        <div className="text-sm font-semibold leading-tight">{item.title}</div>
-                        <div className={`mt-1 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-600"}`}>
-                          Can be finished in {formatEstimatedTimeLeft(item.remainingSeconds).replace(" left", "")}. Pick it up now.
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    data-testid="notification-tab-all"
+                    onClick={() => setNotificationView("all")}
+                    className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                      notificationView === "all"
+                        ? (isDarkLibraryTheme ? "bg-blue-900/50 text-blue-200" : "bg-blue-100 text-blue-700")
+                        : (isDarkLibraryTheme ? "bg-slate-800 text-slate-300 hover:bg-slate-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200")
+                    }`}
+                  >
+                    All
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="notification-tab-unread"
+                    onClick={() => setNotificationView("unread")}
+                    className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                      notificationView === "unread"
+                        ? (isDarkLibraryTheme ? "bg-blue-900/50 text-blue-200" : "bg-blue-100 text-blue-700")
+                        : (isDarkLibraryTheme ? "bg-slate-800 text-slate-300 hover:bg-slate-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200")
+                    }`}
+                  >
+                    Unread
+                  </button>
+                </div>
+                <div className="mt-2 max-h-[360px] overflow-y-auto space-y-2.5 pr-1">
+                  {filteredNotifications.length === 0 ? (
+                    <div className={`rounded-xl border p-3 text-sm ${isDarkLibraryTheme ? "border-slate-700 text-slate-400" : "border-gray-200 text-gray-500"}`}>
+                      {notificationView === "unread" ? "No unread notifications." : "No notifications for now."}
+                    </div>
+                  ) : (
+                    filteredNotifications.map((item) => {
+                      const kindConfig = notificationKindConfig[item.kind] || {
+                        label: "Notice",
+                        Icon: Bell,
+                        tone: "blue"
+                      };
+                      const KindIcon = kindConfig.Icon;
+                      const toneClass = notificationToneClasses[kindConfig.tone] || notificationToneClasses.blue;
+                      const itemTestId = item.kind === "finish-soon" ? "notification-item-finish-soon" : `notification-item-${item.kind}`;
+                      const relatedBook = item.bookId ? booksById.get(item.bookId) : null;
+                      const coverSrc = item.actorAvatar || relatedBook?.cover || "";
+                      return (
+                      <div
+                        key={item.id}
+                        data-testid={itemTestId}
+                        className={`relative cursor-pointer rounded-xl border p-3 transition ${
+                          item.isRead
+                            ? (isDarkLibraryTheme
+                                ? "border-slate-700 bg-slate-900/60 hover:border-blue-600/70"
+                                : "border-gray-200 bg-gray-50/50 hover:border-blue-200")
+                            : (isDarkLibraryTheme
+                                ? "border-blue-700 bg-blue-950/30 hover:border-blue-500"
+                                : "border-blue-200 bg-blue-50/70 hover:border-blue-300")
+                        }`}
+                        onClick={() => handleNotificationCardClick(item)}
+                      >
+                        <div className="flex items-start gap-3">
+                          {coverSrc ? (
+                            <span
+                              data-testid="notification-book-cover-avatar"
+                              className={`mt-0.5 inline-flex h-9 w-9 shrink-0 overflow-hidden rounded-full border ${
+                                isDarkLibraryTheme ? "border-slate-600" : "border-gray-200"
+                              }`}
+                            >
+                              <img src={coverSrc} alt={item.title || "Notification"} className="h-full w-full object-cover" />
+                            </span>
+                          ) : (
+                            <span className={`mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${toneClass}`}>
+                              <KindIcon size={14} />
+                            </span>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <div className="text-sm font-semibold leading-tight">{item.title}</div>
+                                <div className="mt-1 flex items-center gap-2">
+                                  <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${toneClass}`}>
+                                    {kindConfig.label}
+                                  </span>
+                                  <span className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                                    {formatNotificationTimeAgo(item.firstSeenAt)}
+                                  </span>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                data-testid="notification-menu-toggle"
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  setActiveNotificationMenuId((current) => (current === item.id ? "" : item.id));
+                                }}
+                                className={`shrink-0 rounded-full p-1.5 ${
+                                  isDarkLibraryTheme
+                                    ? "text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+                                    : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                                }`}
+                                aria-label="Open notification actions"
+                              >
+                                <MoreHorizontal size={15} />
+                              </button>
+                            </div>
+                            <div className={`mt-2 text-xs leading-relaxed ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}`}>
+                              {item.message}
+                            </div>
+                          </div>
                         </div>
-                      </Link>
-                    ))
+                        {activeNotificationMenuId === item.id && (
+                          <div
+                            data-testid="notification-actions-menu"
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
+                            className={`absolute right-3 top-9 z-10 w-[170px] rounded-xl border p-1.5 shadow-lg ${
+                              isDarkLibraryTheme ? "border-slate-700 bg-slate-900" : "border-gray-200 bg-white"
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              data-testid="notification-action-open"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                handleOpenNotificationTarget(item);
+                              }}
+                              onMouseDown={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                              }}
+                              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-semibold ${
+                                isDarkLibraryTheme ? "text-slate-200 hover:bg-slate-800" : "text-[#1A1A2E] hover:bg-gray-50"
+                              }`}
+                            >
+                              <BookIcon size={13} />
+                              <span>{item.bookId ? "Open in Reader" : "Open"}</span>
+                            </button>
+                            <button
+                              type="button"
+                              data-testid="notification-action-mark"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                handleNotificationReadState(item.id, !item.isRead);
+                                setActiveNotificationMenuId("");
+                              }}
+                              className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-xs font-semibold ${
+                                isDarkLibraryTheme ? "text-slate-200 hover:bg-slate-800" : "text-[#1A1A2E] hover:bg-gray-50"
+                              }`}
+                            >
+                              <span className="inline-flex items-center gap-2">
+                                <Mail size={13} />
+                                {item.isRead ? "Mark as unread" : "Mark as read"}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              data-testid="notification-action-archive"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                handleNotificationArchive(item.id);
+                              }}
+                              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-semibold ${
+                                isDarkLibraryTheme ? "text-slate-200 hover:bg-slate-800" : "text-[#1A1A2E] hover:bg-gray-50"
+                              }`}
+                            >
+                              <Archive size={13} />
+                              <span>Archive</span>
+                            </button>
+                            <button
+                              type="button"
+                              data-testid="notification-action-delete"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                handleNotificationDelete(item.id);
+                              }}
+                              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-semibold ${
+                                isDarkLibraryTheme ? "text-rose-300 hover:bg-rose-900/20" : "text-rose-600 hover:bg-rose-50"
+                              }`}
+                            >
+                              <Trash2 size={13} />
+                              <span>Delete</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )})
                   )}
                 </div>
               </div>
@@ -3079,6 +3670,7 @@ export default function Home() {
                 return (
                   <div key={`continue-${book.id}`} className="pl-[88px] sm:pl-[100px] py-1">
                     <Link
+                      id={`continue-reading-${book.id}`}
                       to={buildReaderPath(book.id)}
                       data-testid="continue-reading-card"
                       onClick={() => handleOpenBook(book.id)}
@@ -3086,6 +3678,12 @@ export default function Home() {
                         isDarkLibraryTheme
                           ? "border-slate-700 bg-slate-800 shadow-[0_14px_34px_rgba(2,8,23,0.35)]"
                           : "border-gray-200 bg-white shadow-[0_14px_34px_rgba(15,23,42,0.10)]"
+                      } ${
+                        notificationFocusedBookId === book.id
+                          ? (isDarkLibraryTheme
+                              ? "ring-2 ring-blue-400 border-blue-400 bg-blue-950/30"
+                              : "ring-2 ring-blue-300 border-blue-300 bg-blue-50/60")
+                          : ""
                       }`}
                     >
                       <div

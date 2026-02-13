@@ -1280,6 +1280,242 @@ test('header shows bell notifications for books finishable in under 30 minutes',
   await expect(page.getByTestId('library-notifications-panel')).toBeVisible();
   await expect(page.getByTestId('notification-item-finish-soon')).toHaveCount(1);
   await expect(page.getByTestId('notification-item-finish-soon').first()).toContainText(/can be finished in/i);
+  await expect(page.getByTestId('notification-item-finish-soon').first()).toContainText(/ago|just now/i);
+});
+
+test('notifications support mark read and unread actions', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  const seeded = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs') ? 'keyvaluepairs' : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didSeed = false;
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          const payload = row?.value && typeof row.value === 'object' ? row.value : row;
+          const isTargetBook = payload && payload.title === 'Test Book' && Object.prototype.hasOwnProperty.call(payload, 'data');
+          if (!didSeed && isTargetBook) {
+            const nextPayload = {
+              ...payload,
+              hasStarted: true,
+              progress: 80,
+              readingTime: 1800
+            };
+            if (row?.value && typeof row.value === 'object') {
+              cursor.update({ ...row, value: nextPayload });
+            } else {
+              cursor.update(nextPayload);
+            }
+            didSeed = true;
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didSeed);
+        };
+      };
+    });
+  });
+  expect(seeded).toBeTruthy();
+
+  await page.reload();
+  const bellButton = page.getByTestId('library-notifications-toggle');
+  await expect(page.getByTestId('library-notifications-badge')).toBeVisible();
+
+  await bellButton.click();
+  await expect(page.getByTestId('library-notifications-panel')).toBeVisible();
+  await expect(page.getByTestId('notifications-mark-all-read')).toBeVisible();
+  await expect(page.getByTestId('notification-menu-toggle').first()).toBeVisible();
+
+  await page.getByTestId('notification-menu-toggle').first().click();
+  await expect(page.getByTestId('notification-actions-menu')).toBeVisible();
+  await page.getByTestId('notification-action-mark').click();
+  await expect(page.getByTestId('library-notifications-badge')).toBeVisible();
+  await page.getByTestId('notification-menu-toggle').first().click();
+  await expect(page.getByTestId('notification-action-mark')).toContainText(/mark as unread/i);
+
+  await page.getByTestId('notification-action-mark').click();
+  await expect(page.getByTestId('library-notifications-badge')).toBeVisible();
+  await page.getByTestId('notification-menu-toggle').first().click();
+  await expect(page.getByTestId('notification-action-mark')).toContainText(/mark as read/i);
+  await page.getByTestId('notification-action-mark').click();
+
+  await page.getByTestId('notifications-mark-all-read').click();
+  await expect(page.getByTestId('library-notifications-badge')).toHaveCount(0);
+  await page.getByTestId('notification-menu-toggle').first().click();
+  await expect(page.getByTestId('notification-action-mark')).toContainText(/mark as unread/i);
+});
+
+test('notification action menu supports archive and delete', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  const seeded = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs') ? 'keyvaluepairs' : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didSeed = false;
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          const payload = row?.value && typeof row.value === 'object' ? row.value : row;
+          const isTargetBook = payload && payload.title === 'Test Book' && Object.prototype.hasOwnProperty.call(payload, 'data');
+          if (!didSeed && isTargetBook) {
+            const nextPayload = {
+              ...payload,
+              hasStarted: true,
+              progress: 80,
+              readingTime: 1800
+            };
+            if (row?.value && typeof row.value === 'object') {
+              cursor.update({ ...row, value: nextPayload });
+            } else {
+              cursor.update(nextPayload);
+            }
+            didSeed = true;
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didSeed);
+        };
+      };
+    });
+  });
+  expect(seeded).toBeTruthy();
+  await page.reload();
+
+  await page.getByTestId('library-notifications-toggle').click();
+  await expect(page.getByTestId('library-notifications-panel')).toBeVisible();
+  const initialCount = await page.getByTestId('notification-menu-toggle').count();
+  expect(initialCount).toBeGreaterThan(1);
+
+  await page.getByTestId('notification-menu-toggle').first().click();
+  await page.getByTestId('notification-action-archive').click();
+  const afterArchiveCount = await page.getByTestId('notification-menu-toggle').count();
+  expect(afterArchiveCount).toBeGreaterThan(0);
+
+  await page.getByTestId('notification-menu-toggle').first().click();
+  await page.getByTestId('notification-action-delete').click();
+  const afterDeleteCount = await page.getByTestId('notification-menu-toggle').count();
+  expect(afterDeleteCount).toBeLessThanOrEqual(afterArchiveCount);
+});
+
+test('notification action menu can open a finish-soon book in reader', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  const seeded = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs') ? 'keyvaluepairs' : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didSeed = false;
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          const payload = row?.value && typeof row.value === 'object' ? row.value : row;
+          const isTargetBook = payload && payload.title === 'Test Book' && Object.prototype.hasOwnProperty.call(payload, 'data');
+          if (!didSeed && isTargetBook) {
+            const nextPayload = {
+              ...payload,
+              hasStarted: true,
+              progress: 80,
+              readingTime: 1800
+            };
+            if (row?.value && typeof row.value === 'object') {
+              cursor.update({ ...row, value: nextPayload });
+            } else {
+              cursor.update(nextPayload);
+            }
+            didSeed = true;
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didSeed);
+        };
+      };
+    });
+  });
+  expect(seeded).toBeTruthy();
+
+  await page.reload();
+  await page.getByTestId('library-notifications-toggle').click();
+  const finishSoonItem = page.getByTestId('notification-item-finish-soon').first();
+  await expect(finishSoonItem).toBeVisible();
+  await finishSoonItem.getByTestId('notification-menu-toggle').click();
+  await finishSoonItem.getByTestId('notification-action-open').click();
+  await expect(page).toHaveURL(/\/read\?id=/);
+  await expect(page.getByRole('button', { name: /Open chapters/i })).toBeVisible();
 });
 
 test('profile avatar opens menu and settings item opens account section', async ({ page }) => {
@@ -1760,8 +1996,15 @@ test('global search shows scanning state and found book cover rendering', async 
 
   await expect(page.getByTestId('global-search-panel')).toBeVisible();
   const scanningIndicator = page.getByTestId('global-search-scanning');
-  if (await scanningIndicator.count()) {
-    await expect(scanningIndicator).toBeVisible();
+  let sawScanningIndicator = false;
+  try {
+    await expect(scanningIndicator).toBeVisible({ timeout: 2000 });
+    sawScanningIndicator = true;
+  } catch {
+    sawScanningIndicator = false;
+  }
+  if (sawScanningIndicator) {
+    await expect(scanningIndicator).toBeHidden({ timeout: 25000 });
   }
   await expect
     .poll(async () => page.getByTestId('global-search-found-book-cover').count(), { timeout: 25000 })
