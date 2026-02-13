@@ -2814,6 +2814,74 @@ const formatNotificationTimeAgo = (value) => {
   const isHighlightsSection = librarySection === "highlights";
   const isTrashSection = librarySection === "trash";
   const shouldShowLibraryHomeContent = librarySection === "library";
+  const sectionHeader = useMemo(() => {
+    if (isAccountSection) {
+      return {
+        title: "Settings",
+        subtitle: "Manage your profile details and account preferences.",
+        summary: "Profile and account options"
+      };
+    }
+    if (isStatisticsSection) {
+      return {
+        title: "Reading Statistics",
+        subtitle: "Track reading momentum, completion, and habits across your library.",
+        summary: `${activeBooks.length} active book${activeBooks.length === 1 ? "" : "s"}`
+      };
+    }
+    if (isNotesSection) {
+      const count = notesCenterDisplayEntries.length;
+      return {
+        title: "Notes",
+        subtitle: "Review and refine your notes across books.",
+        summary: `${count} note${count === 1 ? "" : "s"} shown`
+      };
+    }
+    if (isHighlightsSection) {
+      const count = highlightsCenterDisplayEntries.length;
+      return {
+        title: "Highlights",
+        subtitle: "Browse key passages and jump back into the text.",
+        summary: `${count} highlight${count === 1 ? "" : "s"} shown`
+      };
+    }
+    if (isCollectionsPage) {
+      return {
+        title: "My Collections",
+        subtitle: "Organize books into custom shelves.",
+        summary: `${collections.length} collection${collections.length === 1 ? "" : "s"}`
+      };
+    }
+    if (isTrashSection) {
+      return {
+        title: "Trash",
+        subtitle: "Recently removed books waiting for restore or permanent deletion.",
+        summary: `Showing ${sortedTrashBooks.length} of ${trashedBooksCount} deleted books`
+      };
+    }
+    const librarySummary = sortedBooks.length === activeBooks.length
+      ? `You have ${activeBooks.length} books`
+      : `Showing ${sortedBooks.length} of ${activeBooks.length} books`;
+    return {
+      title: "My Library",
+      subtitle: "Read, organize, and return to your books quickly.",
+      summary: trashedBooksCount > 0 ? `${librarySummary} · ${trashedBooksCount} in trash` : librarySummary
+    };
+  }, [
+    isAccountSection,
+    isStatisticsSection,
+    isNotesSection,
+    isHighlightsSection,
+    isCollectionsPage,
+    isTrashSection,
+    activeBooks.length,
+    notesCenterDisplayEntries.length,
+    highlightsCenterDisplayEntries.length,
+    collections.length,
+    sortedTrashBooks.length,
+    trashedBooksCount,
+    sortedBooks.length
+  ]);
   const shouldShowContinueReading = showContinueReading && librarySection === "library";
   const renderedBooks = (isTrashSection ? sortedTrashBooks : sortedBooks).slice(
     0,
@@ -3345,115 +3413,73 @@ const formatNotificationTimeAgo = (value) => {
         />
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10">
           <div>
-            {isAccountSection ? (
-              <>
-                <h1 className={`text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                  Settings
-                </h1>
-                <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                  Manage your profile details and account preferences.
-                </p>
-              </>
-            ) : isStatisticsSection ? (
-              <>
-                <h1 className={`text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                  Reading Statistics
-                </h1>
-                <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                  Track reading momentum, completion, and habits across your library.
-                </p>
-              </>
-            ) : isNotesSection ? (
-              <>
-                <h1 className={`text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                  Notes
-                </h1>
-                <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                  {notesCenterFilteredEntries.length} note{notesCenterFilteredEntries.length === 1 ? "" : "s"} across your library.
-                </p>
-              </>
-            ) : isHighlightsSection ? (
-              <>
-                <h1 className={`text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                  Highlights
-                </h1>
-                <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                  {highlightsCenterFilteredEntries.length} highlight{highlightsCenterFilteredEntries.length === 1 ? "" : "s"} across your library.
-                </p>
-              </>
-            ) : (
-              <>
-                <div>
-                  <h1 className={`text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                    {isCollectionsPage ? "My Collections" : isTrashSection ? "Trash" : "My Library"}
-                  </h1>
-                  <p className={`mt-1 ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                    {isCollectionsPage
-                      ? `${collections.length} collection${collections.length === 1 ? "" : "s"}`
-                      : isTrashSection
-                      ? `Showing ${sortedTrashBooks.length} of ${trashedBooksCount} deleted books`
-                      : sortedBooks.length === activeBooks.length
-                      ? `You have ${activeBooks.length} books`
-                      : `Showing ${sortedBooks.length} of ${activeBooks.length} books`}
-                    {!isTrashSection && !isCollectionsPage && trashedBooksCount > 0 ? ` · ${trashedBooksCount} in trash` : ""}
-                  </p>
-                </div>
-                {shouldShowLibraryHomeContent && (
-                  <>
-                    <div
-                      data-testid="library-streak-badge"
-                      className={`mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${
-                        streakCount > 0
-                          ? 'border-orange-200 bg-orange-50 text-orange-700'
-                          : 'border-gray-200 bg-white text-gray-500'
-                      }`}
-                      title={streakCount > 0 && !readToday ? 'Read today to keep your streak alive.' : 'Daily reading streak'}
-                    >
-                      <Flame size={14} className={streakCount > 0 ? 'text-orange-500' : 'text-gray-400'} />
-                      <span>{streakCount > 0 ? `${streakCount}-day streak` : 'No streak yet'}</span>
-                    </div>
+            <div className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-500"}`}>
+              Workspace
+            </div>
+            <h1 className={`mt-1 text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
+              {sectionHeader.title}
+            </h1>
+            <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+              {sectionHeader.subtitle}
+            </p>
+            <p className={`mt-1 text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-600"}`}>
+              {sectionHeader.summary}
+            </p>
 
-                    <div data-testid="library-quick-filters" className="mt-3 flex flex-wrap gap-2">
-                      {quickFilterStats.map((stat) => {
-                        const isQuickActive =
-                          stat.key === "favorites"
-                            ? isFlagFilterActive("favorites")
-                            : statusFilter === stat.key;
-                        return (
-                        <button
-                          key={stat.key}
-                          type="button"
-                          data-testid={`library-quick-filter-${stat.key}`}
-                          aria-pressed={isQuickActive}
-                          onClick={() => {
-                            if (stat.key === "favorites") {
-                              toggleFlagFilter("favorites");
-                              return;
-                            }
-                            setStatusFilter(stat.key);
-                          }}
-                          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
-                            isQuickActive
-                              ? "border-blue-200 bg-blue-50 text-blue-700"
-                              : "border-gray-200 bg-white text-gray-600 hover:border-blue-200 hover:text-blue-700"
-                          }`}
-                          title={`Show ${stat.label.toLowerCase()} books`}
-                        >
-                          <span>{stat.label}</span>
-                          <span
-                            data-testid={`library-quick-filter-${stat.key}-count`}
-                            className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold ${
-                              isQuickActive ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
-                            }`}
-                          >
-                            {stat.count}
-                          </span>
-                        </button>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
+            {shouldShowLibraryHomeContent && (
+              <>
+                <div
+                  data-testid="library-streak-badge"
+                  className={`mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${
+                    streakCount > 0
+                      ? 'border-orange-200 bg-orange-50 text-orange-700'
+                      : 'border-gray-200 bg-white text-gray-500'
+                  }`}
+                  title={streakCount > 0 && !readToday ? 'Read today to keep your streak alive.' : 'Daily reading streak'}
+                >
+                  <Flame size={14} className={streakCount > 0 ? 'text-orange-500' : 'text-gray-400'} />
+                  <span>{streakCount > 0 ? `${streakCount}-day streak` : 'No streak yet'}</span>
+                </div>
+
+                <div data-testid="library-quick-filters" className="mt-3 flex flex-wrap gap-2">
+                  {quickFilterStats.map((stat) => {
+                    const isQuickActive =
+                      stat.key === "favorites"
+                        ? isFlagFilterActive("favorites")
+                        : statusFilter === stat.key;
+                    return (
+                    <button
+                      key={stat.key}
+                      type="button"
+                      data-testid={`library-quick-filter-${stat.key}`}
+                      aria-pressed={isQuickActive}
+                      onClick={() => {
+                        if (stat.key === "favorites") {
+                          toggleFlagFilter("favorites");
+                          return;
+                        }
+                        setStatusFilter(stat.key);
+                      }}
+                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                        isQuickActive
+                          ? "border-blue-200 bg-blue-50 text-blue-700"
+                          : "border-gray-200 bg-white text-gray-600 hover:border-blue-200 hover:text-blue-700"
+                      }`}
+                      title={`Show ${stat.label.toLowerCase()} books`}
+                    >
+                      <span>{stat.label}</span>
+                      <span
+                        data-testid={`library-quick-filter-${stat.key}-count`}
+                        className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold ${
+                          isQuickActive ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
+                        }`}
+                      >
+                        {stat.count}
+                      </span>
+                    </button>
+                    );
+                  })}
+                </div>
               </>
             )}
           </div>
