@@ -2,13 +2,14 @@
 
 ariadne is a modern EPUB reading app designed for people who read deeply.
 
-It helps you organize your library, stay focused while reading, and quickly return to important passages with highlights, notes, bookmarks, and export.
+Its core promise is simple: open any book and continue exactly where you stopped.
+On top of that, ariadne adds AI summarization and AI context understanding, so you can remember what happened and why it matters before you keep reading.
 
 ## Why the name "ariadne"?
 
 In the old myth, Ariadne gives a thread so you can always find your way back out.
-In this app, that thread is your reading position:
-close a book at page 47, return days later, and ariadne leads you straight back to the exact line where you paused.
+In this app, that thread is your reading position and your reading memory:
+close a book at page 47, come back a week later, and ariadne takes you to the exact line where you paused, with AI summaries and context ready so the story clicks again instantly.
 
 ## Why ariadne
 
@@ -16,9 +17,9 @@ Most reading apps are either too basic or overloaded.
 ariadne is built around real reading behavior:
 
 - Find your place fast
-- Understand what matters on the page
+- Understand what matters on the page with AI context
 - Save what you want to remember
-- Come back later without friction
+- Come back later without friction, exactly where you left off
 
 ## Core Experience
 
@@ -50,12 +51,11 @@ ariadne is built around real reading behavior:
   - Total hours spent across all books
   - Total pages from completed books only
   - Reading time for today
-- Dedicated Reading Statistics workspace with focused, customizable metrics:
-  - Reading Time (range-based)
-  - Weekly Challenge progress
-  - Year in Review summary
-  - Reading Activity chart (Bars/Line)
-  - Status distribution, top books, and best sessions
+- Dedicated Reading Statistics workspace with focused, simple metrics:
+  - Reading Time and Estimated Pages
+  - Current streak and monthly reading days
+  - Monthly heatmap (darker = more reading, lighter = less)
+  - Status distribution and top books
 - Sidebar + snapshot visuals aligned with the same card language as Continue Reading (rounded cards, stronger hierarchy, cleaner iconography)
 - Search, filter, and sort to find the right book fast
 - Custom shelves (collections): create, rename, delete, and color-code your own reading buckets
