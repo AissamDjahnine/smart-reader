@@ -38,7 +38,7 @@ Smart Reader is built around real reading behavior:
   - Hidden noisy/empty entries (for example `modified`, `identifier`, and blank values)
   - Language labels shown in full form (`English`, `French`, etc.)
 - Clean inline metadata rows on cards (lightweight language/pages display)
-- Workspace sidebar for fast section switching: `My Library`, `My Collections`, `Notes Center`, `Highlights Center`, `Account`
+- Workspace sidebar for fast section switching: `My Library`, `My Collections`, `Notes`, `Highlights`, `Trash`, `Settings`
 - Reading Snapshot panel above the workspace sidebar:
   - Completion donut (`finished / total`)
   - Total hours spent across all books
@@ -85,6 +85,10 @@ Smart Reader is built around real reading behavior:
   - Multiple books: optional ZIP export with one folder per book (`PDF` + `JSON`)
   - If a book has no highlights/notes, no backup prompt is shown
 - Top-right `Dark mode / Light mode` toggle directly in the library header
+- Top-right header controls now include:
+  - Notifications bell with unread badge
+  - Profile avatar menu (`Profile`, `Reading Statistics`, `Settings`, `FAQ`, `Sign out`)
+  - Finish-soon notifications for books that can be completed in under 30 minutes
 - Optional performance debug traces for heavy libraries:
   - Set `localStorage.setItem("library-perf-debug", "1")` to log `load/upload` timings in DevTools
   - Read session timings from `window.__smartReaderPerfHistory`
@@ -173,7 +177,7 @@ Open the app at the local Vite URL (usually `http://localhost:5173`).
 - `src/pages/library/LibraryNotesCenterPanel.jsx` - Notes Center panel
 - `src/pages/library/LibraryHighlightsCenterPanel.jsx` - Highlights Center panel
 - `src/pages/library/LibraryGlobalSearchPanel.jsx` - Global search result panel
-- `src/pages/library/LibraryAccountSection.jsx` - Account section form
+- `src/pages/library/LibraryAccountSection.jsx` - Settings section form
 - `src/pages/Reader.jsx` - Reading experience, contextual tools, highlights, bookmarks, export, and search handoff
 - `src/components/BookView.jsx` - EPUB rendering and navigation engine
 - `src/services/db.js` - Local-first persistence layer
