@@ -917,6 +917,8 @@ test('notes and highlights sections hide home-only library content', async ({ pa
 
   await page.getByTestId('library-notes-center-toggle').click();
   await expect(page.getByTestId('notes-center-panel')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Notes', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'My Library' })).toHaveCount(0);
   await expect(page.getByTestId('continue-reading-rail')).toHaveCount(0);
   await expect(page.getByTestId('library-toolbar-sticky')).toHaveCount(0);
   await expect(page.getByTestId('library-books-grid')).toHaveCount(0);
@@ -924,6 +926,8 @@ test('notes and highlights sections hide home-only library content', async ({ pa
 
   await page.getByTestId('library-highlights-center-toggle').click();
   await expect(page.getByTestId('highlights-center-panel')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Highlights', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'My Library' })).toHaveCount(0);
   await expect(page.getByTestId('continue-reading-rail')).toHaveCount(0);
   await expect(page.getByTestId('library-toolbar-sticky')).toHaveCount(0);
   await expect(page.getByTestId('library-books-grid')).toHaveCount(0);

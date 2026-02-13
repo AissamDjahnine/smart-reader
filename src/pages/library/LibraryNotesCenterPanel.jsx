@@ -21,13 +21,13 @@ export default function LibraryNotesCenterPanel({
   onCancelEdit
 }) {
   return (
-    <section data-testid="notes-center-panel" className="mb-4 rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
+    <section data-testid="notes-center-panel" className="mb-4 rounded-3xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-sm font-bold text-blue-900">Notes Center</h2>
+          <h2 className="text-lg font-bold text-[#1A1A2E]">Notes Workspace</h2>
           <p
             data-testid="notes-center-count"
-            className="mt-1 text-xs text-blue-700/90"
+            className="mt-1 text-xs text-gray-600"
           >
             {notesCenterFilteredEntries.length} note{notesCenterFilteredEntries.length === 1 ? "" : "s"} shown
             {searchQuery.trim() ? ` for "${searchQuery.trim()}"` : ""}
@@ -38,12 +38,12 @@ export default function LibraryNotesCenterPanel({
           onClick={onClose}
           className="text-xs font-semibold text-blue-700 hover:text-blue-900"
         >
-          Close
+          Back to Library
         </button>
       </div>
 
       {notesCenterFilteredEntries.length === 0 ? (
-        <div data-testid="notes-center-empty" className="mt-3 rounded-xl border border-blue-100 bg-white p-3 text-xs text-gray-600">
+        <div data-testid="notes-center-empty" className="mt-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
           No notes found yet. Add notes on highlights in the Reader, then manage them here.
         </div>
       ) : (
@@ -55,7 +55,7 @@ export default function LibraryNotesCenterPanel({
               className="grid grid-cols-1 gap-3 items-start lg:grid-cols-[minmax(0,1.65fr)_minmax(260px,0.95fr)]"
               style={VIRTUAL_BOOK_ROW_STYLE}
             >
-              <div className={`rounded-xl border border-blue-100 bg-white p-3 ${contentPanelHeightClass}`}>
+              <div className={`rounded-2xl border border-gray-200 bg-white p-3 ${contentPanelHeightClass}`}>
                 <div className="mb-2 text-[11px] uppercase tracking-[0.16em] font-bold text-blue-700">
                   Notes · {pair.title}
                 </div>

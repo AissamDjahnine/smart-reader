@@ -14,11 +14,11 @@ export default function LibraryHighlightsCenterPanel({
   onOpenReader
 }) {
   return (
-    <section data-testid="highlights-center-panel" className="mb-4 rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4">
+    <section data-testid="highlights-center-panel" className="mb-4 rounded-3xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-sm font-bold text-indigo-900">Highlights Center</h2>
-          <p className="mt-1 text-xs text-indigo-700/90">
+          <h2 className="text-lg font-bold text-[#1A1A2E]">Highlights Workspace</h2>
+          <p className="mt-1 text-xs text-gray-600">
             {highlightsCenterFilteredEntries.length} highlight{highlightsCenterFilteredEntries.length === 1 ? "" : "s"} shown
             {searchQuery.trim() ? ` for "${searchQuery.trim()}"` : ""}
           </p>
@@ -26,14 +26,14 @@ export default function LibraryHighlightsCenterPanel({
         <button
           type="button"
           onClick={onClose}
-          className="text-xs font-semibold text-indigo-700 hover:text-indigo-900"
+          className="text-xs font-semibold text-blue-700 hover:text-blue-900"
         >
-          Close
+          Back to Library
         </button>
       </div>
 
       {highlightsCenterFilteredEntries.length === 0 ? (
-        <div data-testid="highlights-center-empty" className="mt-3 rounded-xl border border-indigo-100 bg-white p-3 text-xs text-gray-600">
+        <div data-testid="highlights-center-empty" className="mt-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
           No highlights found yet. Add highlights in the Reader, then manage them here.
         </div>
       ) : (
@@ -45,7 +45,7 @@ export default function LibraryHighlightsCenterPanel({
               className="grid grid-cols-1 gap-3 items-start lg:grid-cols-[minmax(0,1.65fr)_minmax(260px,0.95fr)]"
               style={VIRTUAL_BOOK_ROW_STYLE}
             >
-              <div className={`rounded-xl border border-indigo-100 bg-white p-3 ${contentPanelHeightClass}`}>
+              <div className={`rounded-2xl border border-gray-200 bg-white p-3 ${contentPanelHeightClass}`}>
                 <div className="mb-2 text-[11px] uppercase tracking-[0.16em] font-bold text-indigo-700">
                   Highlights · {pair.title}
                 </div>

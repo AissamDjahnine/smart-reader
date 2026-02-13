@@ -2679,6 +2679,8 @@ const formatNotificationTimeAgo = (value) => {
   const isAccountSection = librarySection === "account";
   const isStatisticsSection = librarySection === "statistics";
   const isCollectionsPage = librarySection === "collections";
+  const isNotesSection = librarySection === "notes";
+  const isHighlightsSection = librarySection === "highlights";
   const isTrashSection = librarySection === "trash";
   const shouldShowLibraryHomeContent = librarySection === "library";
   const shouldShowContinueReading = showContinueReading && librarySection === "library";
@@ -3230,13 +3232,31 @@ const formatNotificationTimeAgo = (value) => {
                   Track reading momentum, completion, and habits across your library.
                 </p>
               </>
+            ) : isNotesSection ? (
+              <>
+                <h1 className={`text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
+                  Notes
+                </h1>
+                <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                  {notesCenterFilteredEntries.length} note{notesCenterFilteredEntries.length === 1 ? "" : "s"} across your library.
+                </p>
+              </>
+            ) : isHighlightsSection ? (
+              <>
+                <h1 className={`text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
+                  Highlights
+                </h1>
+                <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                  {highlightsCenterFilteredEntries.length} highlight{highlightsCenterFilteredEntries.length === 1 ? "" : "s"} across your library.
+                </p>
+              </>
             ) : (
               <>
                 <div>
-                  <h1 className="text-4xl font-extrabold text-gray-900 tracking-tight">
+                  <h1 className={`text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
                     {isCollectionsPage ? "My Collections" : isTrashSection ? "Trash" : "My Library"}
                   </h1>
-                  <p className="text-gray-500 mt-1">
+                  <p className={`mt-1 ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
                     {isCollectionsPage
                       ? `${collections.length} collection${collections.length === 1 ? "" : "s"}`
                       : isTrashSection
@@ -3247,7 +3267,7 @@ const formatNotificationTimeAgo = (value) => {
                     {!isTrashSection && !isCollectionsPage && trashedBooksCount > 0 ? ` · ${trashedBooksCount} in trash` : ""}
                   </p>
                 </div>
-                {!isCollectionsPage && !isTrashSection && (
+                {shouldShowLibraryHomeContent && (
                   <>
                     <div
                       data-testid="library-streak-badge"
@@ -3911,7 +3931,7 @@ const formatNotificationTimeAgo = (value) => {
             </div>
           </>
         )}
-        {isNotesCenterOpen && !isTrashSection && (
+        {isNotesSection && !isTrashSection && (
           <LibraryNotesCenterPanel
             notesCenterFilteredEntries={notesCenterFilteredEntries}
             notesCenterPairs={notesCenterPairs}
@@ -3931,7 +3951,7 @@ const formatNotificationTimeAgo = (value) => {
           />
         )}
 
-        {isHighlightsCenterOpen && !isTrashSection && (
+        {isHighlightsSection && !isTrashSection && (
           <LibraryHighlightsCenterPanel
             highlightsCenterFilteredEntries={highlightsCenterFilteredEntries}
             highlightsCenterPairs={highlightsCenterPairs}
