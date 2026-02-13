@@ -793,6 +793,7 @@ test('notes center edits note and syncs to reader highlights panel', async ({ pa
   await page.getByTestId('notes-center-edit').first().click();
   await page.getByTestId('notes-center-textarea').first().fill('Updated note from Notes Center');
   await page.getByTestId('notes-center-save').first().click();
+  await expect(page.getByTestId('library-feedback-toast')).toContainText('Note saved');
   await expect(page.getByText('Updated note from Notes Center')).toBeVisible();
 
   await page.getByTestId('notes-center-open-reader').first().click();
@@ -1948,8 +1949,9 @@ test('trash icon supports move to trash, restore, and permanent delete', async (
   await page.getByTestId('library-view-list').click();
   await expect(page.getByTestId('library-books-list')).toBeVisible();
 
-  page.once('dialog', (dialog) => dialog.accept());
   await page.getByTestId('book-move-trash').first().click();
+  await expect(page.getByTestId('library-feedback-toast')).toContainText('Moved to Trash');
+  await expect(page.getByTestId('library-feedback-action')).toContainText('Undo');
   await expect(page.getByText('No books found matching your criteria.')).toBeVisible();
 
   await page.getByTestId('sidebar-trash').click();
@@ -1962,8 +1964,8 @@ test('trash icon supports move to trash, restore, and permanent delete', async (
   await page.getByTestId('sidebar-my-library').click();
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
 
-  page.once('dialog', (dialog) => dialog.accept());
   await page.getByTestId('book-move-trash').first().click();
+  await expect(page.getByTestId('library-feedback-toast')).toContainText('Moved to Trash');
   await page.getByTestId('sidebar-trash').click();
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
 

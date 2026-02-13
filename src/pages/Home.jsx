@@ -71,6 +71,7 @@ import LibraryCollectionsBoard from './library/LibraryCollectionsBoard';
 import LibraryGlobalSearchPanel from './library/LibraryGlobalSearchPanel';
 import LibraryToolbarSection from './library/LibraryToolbarSection';
 import LibraryReadingStatisticsSection from './library/LibraryReadingStatisticsSection';
+import FeedbackToast from '../components/FeedbackToast';
 
 const STARTED_BOOK_IDS_KEY = 'library-started-book-ids';
 const TRASH_RETENTION_DAYS = 30;
@@ -483,8 +484,7 @@ export default function Home() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadStage, setUploadStage] = useState("idle");
-  const [showUploadSuccess, setShowUploadSuccess] = useState(false);
-  const [uploadSuccessMessage, setUploadSuccessMessage] = useState("Book loaded and added");
+  const [feedbackToast, setFeedbackToast] = useState(null);
   const [uploadBatchTotal, setUploadBatchTotal] = useState(0);
   const [uploadBatchCompleted, setUploadBatchCompleted] = useState(0);
   const [uploadBatchCurrentIndex, setUploadBatchCurrentIndex] = useState(0);
@@ -546,7 +546,9 @@ export default function Home() {
   const [notificationFocusedBookId, setNotificationFocusedBookId] = useState("");
   const contentSearchTokenRef = useRef(0);
   const uploadTimerRef = useRef(null);
-  const uploadSuccessTimerRef = useRef(null);
+  const feedbackToastTimerRef = useRef(null);
+  const pendingTrashUndoTimerRef = useRef(null);
+  const pendingTrashUndoRef = useRef(null);
   const recentHighlightTimerRef = useRef(null);
   const loadMoreBooksRef = useRef(null);
   const infoPopoverCloseTimerRef = useRef(null);
@@ -840,14 +842,50 @@ export default function Home() {
       if (uploadTimerRef.current) {
         clearInterval(uploadTimerRef.current);
       }
-      if (uploadSuccessTimerRef.current) {
-        clearTimeout(uploadSuccessTimerRef.current);
+      if (feedbackToastTimerRef.current) {
+        clearTimeout(feedbackToastTimerRef.current);
+      }
+      if (pendingTrashUndoTimerRef.current) {
+        clearTimeout(pendingTrashUndoTimerRef.current);
       }
       if (recentHighlightTimerRef.current) {
         clearTimeout(recentHighlightTimerRef.current);
       }
     };
   }, []);
+
+  const dismissFeedbackToast = () => {
+    if (feedbackToastTimerRef.current) {
+      clearTimeout(feedbackToastTimerRef.current);
+      feedbackToastTimerRef.current = null;
+    }
+    setFeedbackToast(null);
+  };
+
+  const showFeedbackToast = (payload, options = {}) => {
+    const { duration = 3200 } = options;
+    if (!payload) return;
+    if (feedbackToastTimerRef.current) {
+      clearTimeout(feedbackToastTimerRef.current);
+      feedbackToastTimerRef.current = null;
+    }
+    const nextToast = { id: `${Date.now()}-${Math.random()}`, ...payload };
+    setFeedbackToast(nextToast);
+    if (duration > 0) {
+      feedbackToastTimerRef.current = setTimeout(() => {
+        setFeedbackToast((current) => (current?.id === nextToast.id ? null : current));
+        feedbackToastTimerRef.current = null;
+      }, duration);
+    }
+  };
+
+  const clearPendingTrashUndo = () => {
+    if (pendingTrashUndoTimerRef.current) {
+      clearTimeout(pendingTrashUndoTimerRef.current);
+      pendingTrashUndoTimerRef.current = null;
+    }
+    pendingTrashUndoRef.current = null;
+  };
 
   const startUploadProgress = () => {
     if (uploadTimerRef.current) {
@@ -962,17 +1000,52 @@ export default function Home() {
   const handleDeleteBook = async (e, id) => {
     e.preventDefault(); 
     e.stopPropagation(); 
-    if (window.confirm("Move this book to Trash?")) {
-      await moveBookToTrash(id);
-      loadLibrary(); 
-    }
+    const targetBook = books.find((book) => book.id === id);
+    if (!targetBook) return;
+
+    await moveBookToTrash(id);
+    await loadLibrary();
+
+    clearPendingTrashUndo();
+    pendingTrashUndoRef.current = {
+      bookId: id,
+      title: targetBook.title || "Book"
+    };
+    pendingTrashUndoTimerRef.current = setTimeout(() => {
+      clearPendingTrashUndo();
+    }, 6000);
+
+    showFeedbackToast({
+      tone: "destructive",
+      title: "Moved to Trash",
+      message: `${targetBook.title || "Book"} moved to Trash.`,
+      actionLabel: "Undo",
+      onAction: async () => {
+        const pending = pendingTrashUndoRef.current;
+        if (!pending?.bookId) return;
+        await restoreBookFromTrash(pending.bookId);
+        await loadLibrary();
+        clearPendingTrashUndo();
+        showFeedbackToast({
+          tone: "success",
+          title: "Restored",
+          message: `${pending.title} restored from Trash.`
+        });
+      }
+    }, { duration: 6200 });
   };
 
   const handleRestoreBook = async (e, id) => {
     e.preventDefault();
     e.stopPropagation();
+    const targetBook = books.find((book) => book.id === id);
     await restoreBookFromTrash(id);
-    loadLibrary();
+    await loadLibrary();
+    showFeedbackToast({
+      tone: "success",
+      title: "Restored",
+      message: `${targetBook?.title || "Book"} restored from Trash.`
+    });
   };
 
   const handleDeleteBookForever = async (e, id) => {
@@ -993,6 +1066,11 @@ export default function Home() {
     }
     await deleteBook(id);
     await loadLibrary();
+    showFeedbackToast({
+      tone: "destructive",
+      title: "Deleted permanently",
+      message: `${targetBook.title || "Book"} was deleted forever.`
+    }, { duration: 3600 });
   };
 
   const buildBookBackupPayload = (book) => {
@@ -1138,9 +1216,15 @@ export default function Home() {
 
   const handleRestoreSelectedTrash = async () => {
     if (!selectedTrashBookIds.length) return;
+    const selectedBooks = trashedBooks.filter((book) => selectedTrashBookIds.includes(book.id));
     await Promise.all(selectedTrashBookIds.map((id) => restoreBookFromTrash(id)));
     setSelectedTrashBookIds([]);
     await loadLibrary();
+    showFeedbackToast({
+      tone: "success",
+      title: "Books restored",
+      message: `${selectedBooks.length} book${selectedBooks.length === 1 ? "" : "s"} restored from Trash.`
+    });
   };
 
   const handleDeleteSelectedTrash = async () => {
@@ -1160,13 +1244,24 @@ export default function Home() {
     await Promise.all(selectedTrashBookIds.map((id) => deleteBook(id)));
     setSelectedTrashBookIds([]);
     await loadLibrary();
+    showFeedbackToast({
+      tone: "destructive",
+      title: "Deleted permanently",
+      message: `${selectedBooks.length} book${selectedBooks.length === 1 ? "" : "s"} deleted forever.`
+    }, { duration: 3600 });
   };
 
   const handleRestoreAllTrash = async () => {
     if (!trashedBooks.length) return;
+    const total = trashedBooks.length;
     await Promise.all(trashedBooks.map((book) => restoreBookFromTrash(book.id)));
     setSelectedTrashBookIds([]);
     await loadLibrary();
+    showFeedbackToast({
+      tone: "success",
+      title: "Trash restored",
+      message: `${total} book${total === 1 ? "" : "s"} restored.`
+    });
   };
 
   const handleDeleteAllTrash = async () => {
@@ -1185,6 +1280,11 @@ export default function Home() {
     await Promise.all(trashedBooks.map((book) => deleteBook(book.id)));
     setSelectedTrashBookIds([]);
     await loadLibrary();
+    showFeedbackToast({
+      tone: "destructive",
+      title: "Trash deleted permanently",
+      message: "All books in Trash were deleted forever."
+    }, { duration: 3600 });
   };
 
   const handleToggleFavorite = async (e, id) => {
@@ -1381,12 +1481,25 @@ export default function Home() {
 
   const handleSaveNoteFromCenter = async (entry) => {
     if (!entry?.bookId || !entry?.cfiRange) return;
+    const noteValue = noteEditorValue.trim();
     setIsSavingNote(true);
     try {
-      await updateHighlightNote(entry.bookId, entry.cfiRange, noteEditorValue.trim());
+      await updateHighlightNote(entry.bookId, entry.cfiRange, noteValue);
       await loadLibrary();
       setEditingNoteId("");
       setNoteEditorValue("");
+      showFeedbackToast({
+        tone: "success",
+        title: "Note saved",
+        message: noteValue ? "Your note has been updated." : "Note removed from highlight."
+      });
+    } catch (err) {
+      console.error(err);
+      showFeedbackToast({
+        tone: "warning",
+        title: "Could not save note",
+        message: "Try again in a moment."
+      });
     } finally {
       setIsSavingNote(false);
     }
@@ -1501,7 +1614,6 @@ export default function Home() {
     try {
       const batchStartAt = getPerfNow();
       setIsUploading(true);
-      setShowUploadSuccess(false);
       setUploadStage("reading");
       setUploadBatchTotal(files.length);
       setUploadBatchCompleted(0);
@@ -1655,16 +1767,11 @@ export default function Home() {
       setUploadBatchCompleted(0);
 
       if (addedCount > 0) {
-        setUploadSuccessMessage(
-          addedCount === 1 ? "Book loaded and added" : `${addedCount} books loaded and added`
-        );
-        setShowUploadSuccess(true);
-        if (uploadSuccessTimerRef.current) {
-          clearTimeout(uploadSuccessTimerRef.current);
-        }
-        uploadSuccessTimerRef.current = setTimeout(() => {
-          setShowUploadSuccess(false);
-        }, 2800);
+        showFeedbackToast({
+          tone: "success",
+          title: addedCount === 1 ? "Upload complete" : "Batch upload complete",
+          message: addedCount === 1 ? "Book loaded and added." : `${addedCount} books loaded and added.`
+        });
       }
       recordPerfMetric("upload.batch.total", batchStartAt, {
         files: files.length,
@@ -4614,16 +4721,14 @@ const formatNotificationTimeAgo = (value) => {
             </div>
           </div>
         )}
-        {showUploadSuccess && (
-          <div className="fixed bottom-24 right-6 z-50">
-            <div
-              data-testid="upload-success-toast"
-              className="rounded-full border border-amber-300 px-4 py-2 text-xs font-semibold text-amber-700 bg-amber-50/40 backdrop-blur-sm shadow-sm"
-            >
-              {uploadSuccessMessage}
-            </div>
-          </div>
-        )}
+        <FeedbackToast
+          toast={feedbackToast}
+          isDark={isDarkLibraryTheme}
+          onDismiss={dismissFeedbackToast}
+          testId="library-feedback-toast"
+          actionTestId="library-feedback-action"
+          className="fixed bottom-6 right-6 z-50"
+        />
         {duplicatePrompt && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
             <div
