@@ -801,6 +801,101 @@ test('notes center edits note and syncs to reader highlights panel', async ({ pa
   await expect(page.getByText('Updated note from Notes Center')).toBeVisible();
 });
 
+test('notes and highlights workspaces keep sticky local actions with search and sort', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.reload();
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  const seeded = await page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('SmartReaderLib');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const storeName = db.objectStoreNames.contains('keyvaluepairs') ? 'keyvaluepairs' : db.objectStoreNames[0];
+        if (!storeName) {
+          db.close();
+          resolve(false);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const cursorRequest = store.openCursor();
+        let didSeed = false;
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          const payload = row?.value && typeof row.value === 'object' ? row.value : row;
+          const isTargetBook = payload && payload.title === 'Test Book' && Object.prototype.hasOwnProperty.call(payload, 'data');
+          if (!didSeed && isTargetBook) {
+            const cfiRange = 'epubcfi(/6/2[seed-sticky-actions]!/4/2/2,/4/2/18)';
+            const highlights = Array.isArray(payload.highlights) ? [...payload.highlights] : [];
+            const seededHighlight = {
+              cfiRange,
+              text: 'Alpha sticky highlight',
+              color: '#fcd34d',
+              note: 'Sticky note content'
+            };
+            const existingIndex = highlights.findIndex((item) => item?.cfiRange === cfiRange);
+            if (existingIndex >= 0) {
+              highlights[existingIndex] = { ...highlights[existingIndex], ...seededHighlight };
+            } else {
+              highlights.push(seededHighlight);
+            }
+            const nextPayload = { ...payload, highlights };
+            if (row?.value && typeof row.value === 'object') {
+              cursor.update({ ...row, value: nextPayload });
+            } else {
+              cursor.update(nextPayload);
+            }
+            didSeed = true;
+          }
+          cursor.continue();
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve(didSeed);
+        };
+      };
+    });
+  });
+  expect(seeded).toBeTruthy();
+
+  await page.reload();
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await page.getByTestId('library-notes-center-toggle').click();
+  const notesActions = page.getByTestId('notes-local-actions-sticky');
+  await expect(notesActions).toBeVisible();
+  await expect(notesActions).toHaveClass(/sticky/);
+  await expect(page.getByTestId('notes-local-sort')).toBeVisible();
+  await page.getByTestId('notes-local-sort').selectOption('book-asc');
+  await expect(page.getByTestId('notes-local-sort')).toHaveValue('book-asc');
+  await page.getByTestId('notes-local-search').fill('no-match-query');
+  await expect(page.getByTestId('notes-center-empty')).toBeVisible();
+  await page.getByTestId('notes-local-search-clear').click();
+  await expect(page.getByTestId('notes-center-item').first()).toBeVisible();
+
+  await page.getByTestId('library-highlights-center-toggle').click();
+  const highlightsActions = page.getByTestId('highlights-local-actions-sticky');
+  await expect(highlightsActions).toBeVisible();
+  await expect(highlightsActions).toHaveClass(/sticky/);
+  await expect(page.getByTestId('highlights-local-sort')).toBeVisible();
+  await page.getByTestId('highlights-local-sort').selectOption('book-asc');
+  await expect(page.getByTestId('highlights-local-sort')).toHaveValue('book-asc');
+  await page.getByTestId('highlights-local-search').fill('alpha sticky');
+  await expect(page.getByTestId('highlights-center-item').first()).toBeVisible();
+});
+
 test('highlights center open in reader triggers highlight flash', async ({ page }) => {
   await page.goto('/');
   await page.evaluate(() => {

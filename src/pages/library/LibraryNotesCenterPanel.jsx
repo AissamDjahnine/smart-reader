@@ -1,4 +1,5 @@
 import React from "react";
+import { ArrowUpDown, Search, X } from "lucide-react";
 
 const VIRTUAL_NOTE_ITEM_STYLE = { contentVisibility: "auto", containIntrinsicSize: "190px" };
 const VIRTUAL_BOOK_ROW_STYLE = { contentVisibility: "auto", containIntrinsicSize: "560px" };
@@ -7,6 +8,9 @@ export default function LibraryNotesCenterPanel({
   notesCenterFilteredEntries,
   notesCenterPairs,
   searchQuery,
+  onSearchChange,
+  sortBy,
+  onSortChange,
   contentPanelHeightClass,
   contentScrollHeightClass,
   renderBookCard,
@@ -20,8 +24,61 @@ export default function LibraryNotesCenterPanel({
   onSaveNote,
   onCancelEdit
 }) {
+  const trimmedSearchQuery = searchQuery.trim();
+
   return (
     <section data-testid="notes-center-panel" className="mb-4 rounded-3xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div
+        data-testid="notes-local-actions-sticky"
+        className="sticky top-3 z-20 mb-3 rounded-2xl border border-gray-200 bg-white/95 p-3 backdrop-blur supports-[backdrop-filter]:bg-white/90"
+      >
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_220px_auto]">
+          <label className="relative block">
+            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+            <input
+              data-testid="notes-local-search"
+              type="text"
+              placeholder="Search notes..."
+              value={searchQuery}
+              onChange={(event) => onSearchChange(event.target.value)}
+              className="h-10 w-full rounded-xl border border-gray-200 bg-white pl-9 pr-9 text-sm text-gray-800 outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            {trimmedSearchQuery ? (
+              <button
+                type="button"
+                data-testid="notes-local-search-clear"
+                onClick={() => onSearchChange("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                aria-label="Clear notes search"
+              >
+                <X size={14} />
+              </button>
+            ) : null}
+          </label>
+
+          <label className="relative block">
+            <ArrowUpDown className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={15} />
+            <select
+              data-testid="notes-local-sort"
+              value={sortBy}
+              onChange={(event) => onSortChange(event.target.value)}
+              className="h-10 w-full rounded-xl border border-gray-200 bg-white pl-9 pr-3 text-sm font-semibold text-gray-700 outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="recent">Most recent</option>
+              <option value="book-asc">Book title (A-Z)</option>
+            </select>
+          </label>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-10 rounded-xl border border-gray-200 px-3 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+          >
+            Back to Library
+          </button>
+        </div>
+      </div>
+
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-bold text-[#1A1A2E]">Notes Workspace</h2>
@@ -33,13 +90,7 @@ export default function LibraryNotesCenterPanel({
             {searchQuery.trim() ? ` for "${searchQuery.trim()}"` : ""}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-xs font-semibold text-blue-700 hover:text-blue-900"
-        >
-          Back to Library
-        </button>
+        <span className="text-xs font-semibold text-gray-500">Manage notes across books</span>
       </div>
 
       {notesCenterFilteredEntries.length === 0 ? (

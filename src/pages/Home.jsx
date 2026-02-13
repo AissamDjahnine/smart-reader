@@ -520,6 +520,8 @@ export default function Home() {
   const [accountSaveMessage, setAccountSaveMessage] = useState("");
   const [isNotesCenterOpen, setIsNotesCenterOpen] = useState(false);
   const [isHighlightsCenterOpen, setIsHighlightsCenterOpen] = useState(false);
+  const [notesCenterSortBy, setNotesCenterSortBy] = useState("recent");
+  const [highlightsCenterSortBy, setHighlightsCenterSortBy] = useState("recent");
   const [editingNoteId, setEditingNoteId] = useState("");
   const [noteEditorValue, setNoteEditorValue] = useState("");
   const [isSavingNote, setIsSavingNote] = useState(false);
@@ -1924,6 +1926,17 @@ export default function Home() {
     }),
     [notesCenterEntries, normalizedDebouncedSearchQuery]
   );
+  const notesCenterDisplayEntries = useMemo(() => {
+    const entries = [...notesCenterFilteredEntries];
+    if (notesCenterSortBy === "book-asc") {
+      return entries.sort((left, right) => {
+        const byTitle = String(left.bookTitle || "").localeCompare(String(right.bookTitle || ""), undefined, { sensitivity: "base" });
+        if (byTitle !== 0) return byTitle;
+        return String(left.note || "").localeCompare(String(right.note || ""), undefined, { sensitivity: "base" });
+      });
+    }
+    return entries.sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead));
+  }, [notesCenterFilteredEntries, notesCenterSortBy]);
   const highlightsCenterEntries = useMemo(
     () => activeBooks
     .flatMap((book) => {
@@ -1957,6 +1970,17 @@ export default function Home() {
     }),
     [highlightsCenterEntries, normalizedDebouncedSearchQuery]
   );
+  const highlightsCenterDisplayEntries = useMemo(() => {
+    const entries = [...highlightsCenterFilteredEntries];
+    if (highlightsCenterSortBy === "book-asc") {
+      return entries.sort((left, right) => {
+        const byTitle = String(left.bookTitle || "").localeCompare(String(right.bookTitle || ""), undefined, { sensitivity: "base" });
+        if (byTitle !== 0) return byTitle;
+        return String(left.text || "").localeCompare(String(right.text || ""), undefined, { sensitivity: "base" });
+      });
+    }
+    return entries.sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead));
+  }, [highlightsCenterFilteredEntries, highlightsCenterSortBy]);
   const activeBooksById = useMemo(
     () => new Map(activeBooks.map((book) => [book.id, book])),
     [activeBooks]
@@ -1998,12 +2022,12 @@ export default function Home() {
     return pairs;
   };
   const notesCenterPairs = useMemo(
-    () => buildCenterPairs(notesCenterFilteredEntries, "notes-book"),
-    [notesCenterFilteredEntries, activeBooksById]
+    () => buildCenterPairs(notesCenterDisplayEntries, "notes-book"),
+    [notesCenterDisplayEntries, activeBooksById]
   );
   const highlightsCenterPairs = useMemo(
-    () => buildCenterPairs(highlightsCenterFilteredEntries, "highlights-book"),
-    [highlightsCenterFilteredEntries, activeBooksById]
+    () => buildCenterPairs(highlightsCenterDisplayEntries, "highlights-book"),
+    [highlightsCenterDisplayEntries, activeBooksById]
   );
 
   const sortedBooks = useMemo(
@@ -3933,9 +3957,12 @@ const formatNotificationTimeAgo = (value) => {
         )}
         {isNotesSection && !isTrashSection && (
           <LibraryNotesCenterPanel
-            notesCenterFilteredEntries={notesCenterFilteredEntries}
+            notesCenterFilteredEntries={notesCenterDisplayEntries}
             notesCenterPairs={notesCenterPairs}
             searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            sortBy={notesCenterSortBy}
+            onSortChange={setNotesCenterSortBy}
             contentPanelHeightClass={CONTENT_PANEL_HEIGHT_CLASS}
             contentScrollHeightClass={CONTENT_SCROLL_HEIGHT_CLASS}
             renderBookCard={renderGlobalSearchBookCard}
@@ -3953,9 +3980,12 @@ const formatNotificationTimeAgo = (value) => {
 
         {isHighlightsSection && !isTrashSection && (
           <LibraryHighlightsCenterPanel
-            highlightsCenterFilteredEntries={highlightsCenterFilteredEntries}
+            highlightsCenterFilteredEntries={highlightsCenterDisplayEntries}
             highlightsCenterPairs={highlightsCenterPairs}
             searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            sortBy={highlightsCenterSortBy}
+            onSortChange={setHighlightsCenterSortBy}
             contentPanelHeightClass={CONTENT_PANEL_HEIGHT_CLASS}
             contentScrollHeightClass={CONTENT_SCROLL_HEIGHT_CLASS}
             renderBookCard={renderGlobalSearchBookCard}
