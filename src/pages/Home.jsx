@@ -495,6 +495,10 @@ export default function Home() {
   // Search, filter & sort states
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
+  const [notesSearchQuery, setNotesSearchQuery] = useState("");
+  const [debouncedNotesSearchQuery, setDebouncedNotesSearchQuery] = useState("");
+  const [highlightsSearchQuery, setHighlightsSearchQuery] = useState("");
+  const [debouncedHighlightsSearchQuery, setDebouncedHighlightsSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [collectionFilter, setCollectionFilter] = useState("all");
   const [librarySection, setLibrarySection] = useState("library");
@@ -614,6 +618,20 @@ export default function Home() {
     }, 180);
     return () => clearTimeout(timeoutId);
   }, [searchQuery]);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      setDebouncedNotesSearchQuery(notesSearchQuery);
+    }, 180);
+    return () => clearTimeout(timeoutId);
+  }, [notesSearchQuery]);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      setDebouncedHighlightsSearchQuery(highlightsSearchQuery);
+    }, 180);
+    return () => clearTimeout(timeoutId);
+  }, [highlightsSearchQuery]);
 
   useEffect(() => {
     if (!infoPopover) return;
@@ -2001,6 +2019,8 @@ export default function Home() {
     [activeBooks]
   );
   const normalizedDebouncedSearchQuery = normalizeString(debouncedSearchQuery.trim());
+  const normalizedDebouncedNotesSearchQuery = normalizeString(debouncedNotesSearchQuery.trim());
+  const normalizedDebouncedHighlightsSearchQuery = normalizeString(debouncedHighlightsSearchQuery.trim());
   const notesCenterEntries = useMemo(
     () => activeBooks
     .flatMap((book) => {
@@ -2023,15 +2043,15 @@ export default function Home() {
   );
   const notesCenterFilteredEntries = useMemo(
     () => notesCenterEntries.filter((entry) => {
-      if (!normalizedDebouncedSearchQuery) return true;
+      if (!normalizedDebouncedNotesSearchQuery) return true;
       return (
-        normalizeString(entry.bookTitle).includes(normalizedDebouncedSearchQuery) ||
-        normalizeString(entry.bookAuthor).includes(normalizedDebouncedSearchQuery) ||
-        normalizeString(entry.note).includes(normalizedDebouncedSearchQuery) ||
-        normalizeString(entry.highlightText).includes(normalizedDebouncedSearchQuery)
+        normalizeString(entry.bookTitle).includes(normalizedDebouncedNotesSearchQuery) ||
+        normalizeString(entry.bookAuthor).includes(normalizedDebouncedNotesSearchQuery) ||
+        normalizeString(entry.note).includes(normalizedDebouncedNotesSearchQuery) ||
+        normalizeString(entry.highlightText).includes(normalizedDebouncedNotesSearchQuery)
       );
     }),
-    [notesCenterEntries, normalizedDebouncedSearchQuery]
+    [notesCenterEntries, normalizedDebouncedNotesSearchQuery]
   );
   const notesCenterDisplayEntries = useMemo(() => {
     const entries = [...notesCenterFilteredEntries];
@@ -2067,15 +2087,15 @@ export default function Home() {
   );
   const highlightsCenterFilteredEntries = useMemo(
     () => highlightsCenterEntries.filter((entry) => {
-      if (!normalizedDebouncedSearchQuery) return true;
+      if (!normalizedDebouncedHighlightsSearchQuery) return true;
       return (
-        normalizeString(entry.bookTitle).includes(normalizedDebouncedSearchQuery) ||
-        normalizeString(entry.bookAuthor).includes(normalizedDebouncedSearchQuery) ||
-        normalizeString(entry.text).includes(normalizedDebouncedSearchQuery) ||
-        normalizeString(entry.note).includes(normalizedDebouncedSearchQuery)
+        normalizeString(entry.bookTitle).includes(normalizedDebouncedHighlightsSearchQuery) ||
+        normalizeString(entry.bookAuthor).includes(normalizedDebouncedHighlightsSearchQuery) ||
+        normalizeString(entry.text).includes(normalizedDebouncedHighlightsSearchQuery) ||
+        normalizeString(entry.note).includes(normalizedDebouncedHighlightsSearchQuery)
       );
     }),
-    [highlightsCenterEntries, normalizedDebouncedSearchQuery]
+    [highlightsCenterEntries, normalizedDebouncedHighlightsSearchQuery]
   );
   const highlightsCenterDisplayEntries = useMemo(() => {
     const entries = [...highlightsCenterFilteredEntries];
@@ -3946,6 +3966,7 @@ const formatNotificationTimeAgo = (value) => {
           <LibraryToolbarSection
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
+            searchPlaceholder="Search library (title, author, notes, highlights, bookmarks)..."
             statusFilter={statusFilter}
             onStatusFilterChange={setStatusFilter}
             statusFilterOptions={statusFilterOptions}
@@ -4093,8 +4114,8 @@ const formatNotificationTimeAgo = (value) => {
             isDarkLibraryTheme={isDarkLibraryTheme}
             notesCenterFilteredEntries={notesCenterDisplayEntries}
             notesCenterPairs={notesCenterPairs}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
+            searchQuery={notesSearchQuery}
+            onSearchChange={setNotesSearchQuery}
             sortBy={notesCenterSortBy}
             onSortChange={setNotesCenterSortBy}
             contentPanelHeightClass={CONTENT_PANEL_HEIGHT_CLASS}
@@ -4117,8 +4138,8 @@ const formatNotificationTimeAgo = (value) => {
             isDarkLibraryTheme={isDarkLibraryTheme}
             highlightsCenterFilteredEntries={highlightsCenterDisplayEntries}
             highlightsCenterPairs={highlightsCenterPairs}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
+            searchQuery={highlightsSearchQuery}
+            onSearchChange={setHighlightsSearchQuery}
             sortBy={highlightsCenterSortBy}
             onSortChange={setHighlightsCenterSortBy}
             contentPanelHeightClass={CONTENT_PANEL_HEIGHT_CLASS}
