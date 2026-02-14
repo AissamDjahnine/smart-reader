@@ -1,0 +1,17 @@
+name: Deploy (Vercel)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vercel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Deployment disabled for now
+        run: echo "Vercel deployment is intentionally disabled. Enable this workflow when deployment setup is ready."
