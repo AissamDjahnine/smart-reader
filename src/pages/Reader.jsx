@@ -4200,7 +4200,13 @@ export default function Reader() {
             <Bookmark size={18} />
           </button>
           <div className="w-px h-6 bg-gray-200 dark:bg-gray-700 mx-1" />
-          <button onClick={toggleDarkTheme} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700" data-testid="theme-toggle">
+          <button
+            onClick={toggleDarkTheme}
+            className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700"
+            data-testid="theme-toggle"
+            title={isReaderDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label={isReaderDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
             {isReaderDark ? <Sun size={20} /> : <Moon size={20} />}
           </button>
           <button
@@ -4208,6 +4214,7 @@ export default function Reader() {
             className={`p-2 rounded-full transition hover:bg-gray-100 dark:hover:bg-gray-700 ${isReaderSepia ? 'text-amber-700 bg-amber-100 dark:bg-amber-900/30' : ''}`}
             data-testid="sepia-toggle"
             title={isReaderSepia ? 'Disable night reading mode' : 'Enable night reading mode'}
+            aria-label={isReaderSepia ? 'Disable night reading mode' : 'Enable night reading mode'}
           >
             <OwlIcon size={20} />
           </button>
@@ -4222,8 +4229,22 @@ export default function Reader() {
           >
             <DaltonIcon size={20} />
           </button>
-          <button onClick={() => setSettings(s => ({...s, flow: s.flow === 'paginated' ? 'scrolled' : 'paginated'}))} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">{settings.flow === 'paginated' ? <Scroll size={20} /> : <BookOpen size={20} />}</button>
-          <button onClick={() => setShowFontMenu(!showFontMenu)} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700"><Type size={20} /></button>
+          <button
+            onClick={() => setSettings(s => ({...s, flow: s.flow === 'paginated' ? 'scrolled' : 'paginated'}))}
+            className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700"
+            title={settings.flow === 'paginated' ? 'Switch to infinite scrolling mode' : 'Switch to paginated mode'}
+            aria-label={settings.flow === 'paginated' ? 'Switch to infinite scrolling mode' : 'Switch to paginated mode'}
+          >
+            {settings.flow === 'paginated' ? <Scroll size={20} /> : <BookOpen size={20} />}
+          </button>
+          <button
+            onClick={() => setShowFontMenu(!showFontMenu)}
+            className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700"
+            title={showFontMenu ? 'Close text settings' : 'Open text settings'}
+            aria-label={showFontMenu ? 'Close text settings' : 'Open text settings'}
+          >
+            <Type size={20} />
+          </button>
         </div>
       </div>
 
