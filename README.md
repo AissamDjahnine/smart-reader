@@ -1,18 +1,25 @@
-# Smart Reader
+# ariadne
 
-Smart Reader is a modern EPUB reading app designed for people who read deeply.
+ariadne is a modern EPUB reading app designed for people who read deeply.
 
-It helps you organize your library, stay focused while reading, and quickly return to important passages with highlights, notes, bookmarks, and export.
+Its main feature is this: open any book and return exactly to where you left off.
+Then ariadne gives you AI summarization and AI context understanding of what you have already read, so you restart with clarity instead of confusion.
 
-## Why Smart Reader
+## Why the name "ariadne"?
+
+In the old myth, Ariadne gives a thread so you can always find your way back out.
+In this app, that thread is your reading position and your reading memory:
+close a book at page 47, come back a week later, and ariadne takes you to the exact line where you paused, then reminds you with AI summaries and context of what came before.
+
+## Why ariadne
 
 Most reading apps are either too basic or overloaded.
-Smart Reader is built around real reading behavior:
+ariadne is built around real reading behavior:
 
 - Find your place fast
-- Understand what matters on the page
+- Understand what matters on the page with AI context
 - Save what you want to remember
-- Come back later without friction
+- Come back later without friction, exactly where you left off
 
 ## Core Experience
 
@@ -31,13 +38,25 @@ Smart Reader is built around real reading behavior:
   - Automatic fallback to main-thread parsing if Worker is unavailable
 - Yellow success toast after upload and a 10-second halo on newly added book cards
 - Clean cover-based library (grid or list)
-- Smart metadata (author, language, estimated pages, genre when available)
+- Smart metadata (author, language, estimated pages, year, and genre when available)
+- Genre auto-detection improved from EPUB metadata (`subject`, `dc:subject`, `type`, `dc:type`, and related fields) with normalized labels
 - Book Info popover on each card (hover/click) with cleaned EPUB metadata:
   - Prioritized order for key fields (`Title`, `Author`, `Language`)
   - Hidden noisy/empty entries (for example `modified`, `identifier`, and blank values)
   - Language labels shown in full form (`English`, `French`, etc.)
 - Clean inline metadata rows on cards (lightweight language/pages display)
-- Workspace sidebar for fast section switching: `My Library`, `My Collections`, `Notes Center`, `Highlights Center`, `Account`
+- Workspace sidebar for fast section switching: `My Library`, `My Collections`, `Notes`, `Highlights`, `Trash`, `Settings`
+- Reading Snapshot panel above the workspace sidebar:
+  - Completion donut (`finished / total`)
+  - Total hours spent across all books
+  - Total pages from completed books only
+  - Reading time for today
+- Dedicated Reading Statistics workspace with focused, simple metrics:
+  - Reading Time and Estimated Pages
+  - Current streak and monthly reading days
+  - Monthly heatmap (darker = more reading, lighter = less)
+  - Status distribution and top books
+- Sidebar + snapshot visuals aligned with the same card language as Continue Reading (rounded cards, stronger hierarchy, cleaner iconography)
 - Search, filter, and sort to find the right book fast
 - Custom shelves (collections): create, rename, delete, and color-code your own reading buckets
 - Assign books to one or many shelves directly from each card
@@ -65,8 +84,9 @@ Smart Reader is built around real reading behavior:
   - Render culling with `content-visibility: auto` on large repeated rows/cards (library, notes, highlights, global search)
 - Manual `TO READ` tagging (create your personal "read next" queue)
 - Favorites with cleaner, less cluttered library cards
-- Notes Center in Library with cross-book note browsing, inline editing, and jump-to-reader
-- Continue Reading rail with progress and session context
+- Dedicated Notes workspace with cross-book note browsing, inline editing, and jump-to-reader
+- Dedicated Highlights workspace with cross-book highlight browsing and jump-to-reader
+- Continue Reading rail redesigned with layered cover cards, progress ring, optional favorite marker, and estimated time-left hint
 - Dedicated Trash workspace (independent from library filters):
   - Trash-specific search and sort
   - Grid/list views
@@ -78,6 +98,19 @@ Smart Reader is built around real reading behavior:
   - Multiple books: optional ZIP export with one folder per book (`PDF` + `JSON`)
   - If a book has no highlights/notes, no backup prompt is shown
 - Top-right `Dark mode / Light mode` toggle directly in the library header
+- Top-right header controls now include:
+  - Notifications bell with unread badge
+  - Profile avatar menu (`Profile`, `Reading Statistics`, `Settings`, `FAQ`, `Sign out`)
+  - Notification Center with `All` / `Unread` tabs
+  - Notification actions menu (`...`) per item: `Open in Reader`, `Mark as read/unread`, `Archive`, `Delete`
+  - Notification card click focuses/highlights the related book in `Continue Reading`
+  - Reading nudges and activity alerts:
+    - Finish-soon (`<= 30 min`)
+    - Streak risk
+    - Resume abandoned in-progress books
+    - Daily micro-goal
+    - Milestone reached (25/50/75/90%)
+    - To-read reminder
 - Optional performance debug traces for heavy libraries:
   - Set `localStorage.setItem("library-perf-debug", "1")` to log `load/upload` timings in DevTools
   - Read session timings from `window.__smartReaderPerfHistory`
@@ -139,12 +172,12 @@ Smart Reader is built around real reading behavior:
 
 - Accurate per-book progress tracking
 - Estimated time left
-- Reading sessions and “last session” snapshot
+- Reading sessions and “last session” snapshot (with inline icon cues in library cards)
 - Reading streak badge on home
 
 ## Current Status
 
-Smart Reader is fully usable for everyday reading workflows.
+ariadne is fully usable for everyday reading workflows.
 
 AI buttons are visible in the UI, but AI features are currently marked as unavailable.
 
@@ -163,10 +196,10 @@ Open the app at the local Vite URL (usually `http://localhost:5173`).
 - `src/pages/library/LibraryWorkspaceNav.jsx` - Sidebar and mobile workspace navigation
 - `src/pages/library/LibraryToolbarSection.jsx` - Library search/filter/sort toolbar + active chips + view toggle
 - `src/pages/library/LibraryCollectionsBoard.jsx` - Collections workspace (`Directory + Detail` default, optional balanced board toggle, add-books modal)
-- `src/pages/library/LibraryNotesCenterPanel.jsx` - Notes Center panel
-- `src/pages/library/LibraryHighlightsCenterPanel.jsx` - Highlights Center panel
+- `src/pages/library/LibraryNotesCenterPanel.jsx` - Notes workspace page
+- `src/pages/library/LibraryHighlightsCenterPanel.jsx` - Highlights workspace page
 - `src/pages/library/LibraryGlobalSearchPanel.jsx` - Global search result panel
-- `src/pages/library/LibraryAccountSection.jsx` - Account section form
+- `src/pages/library/LibraryAccountSection.jsx` - Settings section form
 - `src/pages/Reader.jsx` - Reading experience, contextual tools, highlights, bookmarks, export, and search handoff
 - `src/components/BookView.jsx` - EPUB rendering and navigation engine
 - `src/services/db.js` - Local-first persistence layer
@@ -176,4 +209,4 @@ Open the app at the local Vite URL (usually `http://localhost:5173`).
 
 ---
 
-If you want a reader that feels practical on day one and scalable for serious reading habits, Smart Reader is built for that.
+If you want a reader that feels practical on day one and scalable for serious reading habits, ariadne is built for that.

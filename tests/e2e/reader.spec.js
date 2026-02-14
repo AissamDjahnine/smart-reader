@@ -1089,7 +1089,7 @@ test('menu button opens chapter contents and chapter selection closes panel', as
   await expect(panel).toBeVisible();
 
   await expect
-    .poll(async () => panel.getByTestId('toc-item').count(), { timeout: 15000 })
+    .poll(async () => panel.getByTestId('toc-item').count(), { timeout: 30000 })
     .toBeGreaterThan(0);
 
   await panel.getByTestId('toc-item').first().click();

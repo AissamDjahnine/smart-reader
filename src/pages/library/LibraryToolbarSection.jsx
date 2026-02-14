@@ -4,6 +4,7 @@ import { Search, Filter, ArrowUpDown, LayoutGrid, List, RotateCcw } from "lucide
 export default function LibraryToolbarSection({
   searchQuery,
   onSearchChange,
+  searchPlaceholder = "Search books, highlights, notes, bookmarks...",
   statusFilter,
   onStatusFilterChange,
   statusFilterOptions,
@@ -31,7 +32,7 @@ export default function LibraryToolbarSection({
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
             <input
               type="text"
-              placeholder="Search books, highlights, notes, bookmarks..."
+              placeholder={searchPlaceholder}
               data-testid="library-search"
               className="h-[52px] w-full rounded-2xl border border-gray-200 bg-white pl-12 pr-4 text-base focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
               value={searchQuery}

@@ -224,7 +224,7 @@ export default function LibraryCollectionsBoard({
       <article
         key={`${collectionId}-${book.id}`}
         data-testid="collection-column-book"
-        className="group rounded-xl border border-gray-200 bg-white p-2 shadow-sm"
+        className="group workspace-interactive-card workspace-interactive-card-light rounded-xl p-2"
       >
         <div className="flex gap-2">
           <Link

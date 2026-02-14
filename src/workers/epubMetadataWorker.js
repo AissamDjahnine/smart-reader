@@ -83,6 +83,76 @@ const firstTagText = (xml, tagNames) => {
   return "";
 };
 
+const normalizeGenreLabel = (value) => {
+  const clean = compactWhitespace(value);
+  if (!clean) return "";
+  const lower = clean.toLowerCase();
+
+  if (/\b(science fiction|sci[- ]?fi)\b/.test(lower)) return "Science Fiction";
+  if (/\b(fantasy)\b/.test(lower)) return "Fantasy";
+  if (/\b(horror)\b/.test(lower)) return "Horror";
+  if (/\b(thriller|suspense)\b/.test(lower)) return "Thriller";
+  if (/\b(mystery|crime|detective)\b/.test(lower)) return "Mystery";
+  if (/\b(romance|love story)\b/.test(lower)) return "Romance";
+  if (/\b(classic|classics)\b/.test(lower)) return "Classic";
+  if (/\b(historical fiction|historical)\b/.test(lower)) return "Historical";
+  if (/\b(poetry|poems)\b/.test(lower)) return "Poetry";
+  if (/\b(drama|plays?)\b/.test(lower)) return "Drama";
+  if (/\b(biography|memoir|autobiography)\b/.test(lower)) return "Biography";
+  if (/\b(history)\b/.test(lower)) return "History";
+  if (/\b(philosophy)\b/.test(lower)) return "Philosophy";
+  if (/\b(non[- ]?fiction)\b/.test(lower)) return "Nonfiction";
+  if (/\b(fiction)\b/.test(lower)) return "Fiction";
+
+  return clean
+    .split(" ")
+    .map((word) => {
+      if (!word) return word;
+      const upper = word.toUpperCase();
+      if (upper.length <= 3) return upper;
+      return upper[0] + word.slice(1).toLowerCase();
+    })
+    .join(" ");
+};
+
+const extractGenreFromMetadata = (metadata = {}) => {
+  const candidates = [];
+  [
+    metadata.genre,
+    metadata.subject,
+    metadata.subjects,
+    metadata.type,
+    metadata.types,
+    metadata["dc:subject"],
+    metadata["dc:type"]
+  ].forEach((value) => {
+    if (value == null) return;
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (typeof item === "string") {
+          item.split(/[,;|/]/).forEach((token) => {
+            const clean = compactWhitespace(token);
+            if (clean) candidates.push(clean);
+          });
+        }
+      });
+      return;
+    }
+    if (typeof value === "string") {
+      value.split(/[,;|/]/).forEach((token) => {
+        const clean = compactWhitespace(token);
+        if (clean) candidates.push(clean);
+      });
+    }
+  });
+
+  for (const candidate of candidates) {
+    const normalized = normalizeGenreLabel(candidate);
+    if (normalized) return normalized;
+  }
+  return "";
+};
+
 const readContainerOpfPath = (containerXml) => {
   const match = /full-path\s*=\s*["']([^"']+)["']/i.exec(containerXml || "");
   return match ? match[1] : "";
@@ -155,6 +225,8 @@ const extractMetadata = (opfXml, fileName) => {
   const identifier = firstTagText(opfXml, ["dc:identifier", "identifier"]);
   const subjects = collectTagTexts(opfXml, "dc:subject");
   const subject = subjects[0] || "";
+  const types = collectTagTexts(opfXml, "dc:type");
+  const type = types[0] || "";
 
   return {
     title,
@@ -165,6 +237,8 @@ const extractMetadata = (opfXml, fileName) => {
     identifier,
     subject,
     subjects,
+    type,
+    types,
   };
 };
 
@@ -202,7 +276,7 @@ const parseEpubMetadataFromBuffer = async (buffer, fileName) => {
   return {
     metadata,
     estimatedPages,
-    genre: metadata.subject || "",
+    genre: extractGenreFromMetadata(metadata),
     cover,
   };
 };

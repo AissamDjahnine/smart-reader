@@ -10,8 +10,8 @@ export default function LibraryAccountSection({
   return (
     <section
       data-testid="library-account-panel"
-      className={`mb-4 rounded-2xl border p-6 md:p-8 ${
-        isDarkLibraryTheme ? "border-slate-700 bg-slate-900/70" : "border-gray-200 bg-white"
+      className={`workspace-surface mb-4 p-6 md:p-8 ${
+        isDarkLibraryTheme ? "workspace-surface-dark" : "workspace-surface-light"
       }`}
     >
       <div className="mx-auto max-w-5xl">

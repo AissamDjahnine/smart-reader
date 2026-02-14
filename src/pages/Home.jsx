@@ -35,6 +35,8 @@ import {
   Calendar,
   Trash2,
   Clock,
+  Bell,
+  History,
   Heart,
   Tag,
   Flame,
@@ -50,6 +52,16 @@ import {
   ArrowUpDown,
   LayoutGrid,
   List,
+  CircleHelp,
+  LogOut,
+  BarChart3,
+  Settings2,
+  Target,
+  Trophy,
+  MoreHorizontal,
+  Archive,
+  Check,
+  Mail,
 } from 'lucide-react';
 import LibraryAccountSection from './library/LibraryAccountSection';
 import { LibraryWorkspaceSidebar, LibraryWorkspaceMobileNav } from './library/LibraryWorkspaceNav';
@@ -58,12 +70,15 @@ import LibraryHighlightsCenterPanel from './library/LibraryHighlightsCenterPanel
 import LibraryCollectionsBoard from './library/LibraryCollectionsBoard';
 import LibraryGlobalSearchPanel from './library/LibraryGlobalSearchPanel';
 import LibraryToolbarSection from './library/LibraryToolbarSection';
+import LibraryReadingStatisticsSection from './library/LibraryReadingStatisticsSection';
+import FeedbackToast from '../components/FeedbackToast';
 
 const STARTED_BOOK_IDS_KEY = 'library-started-book-ids';
 const TRASH_RETENTION_DAYS = 30;
 const LIBRARY_THEME_KEY = 'library-theme';
 const LIBRARY_LANGUAGE_KEY = 'library-language';
 const ACCOUNT_PROFILE_KEY = 'library-account-profile';
+const LIBRARY_NOTIFICATION_STATE_KEY = 'library-notification-state';
 const ACCOUNT_DEFAULT_EMAIL = 'dreamerissame@gmail.com';
 const LIBRARY_PERF_DEBUG_KEY = "library-perf-debug";
 const LIBRARY_PERF_HISTORY_KEY = "__smartReaderPerfHistory";
@@ -71,6 +86,7 @@ const LANGUAGE_DISPLAY_NAMES =
   typeof Intl !== "undefined" && typeof Intl.DisplayNames === "function"
     ? new Intl.DisplayNames(["en"], { type: "language" })
     : null;
+const DUPLICATE_TITLE_SUFFIX_REGEX = /\s*\(duplicate\s+\d+\)\s*$/i;
 
 const getPerfNow = () => {
   if (typeof performance !== "undefined" && typeof performance.now === "function") {
@@ -132,6 +148,18 @@ const readStoredAccountProfile = () => {
       preferredLanguage: "en",
       emailNotifications: "yes"
     };
+  }
+};
+
+const readStoredNotificationState = () => {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(LIBRARY_NOTIFICATION_STATE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch {
+    return {};
   }
 };
 
@@ -457,8 +485,7 @@ export default function Home() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadStage, setUploadStage] = useState("idle");
-  const [showUploadSuccess, setShowUploadSuccess] = useState(false);
-  const [uploadSuccessMessage, setUploadSuccessMessage] = useState("Book loaded and added");
+  const [feedbackToast, setFeedbackToast] = useState(null);
   const [uploadBatchTotal, setUploadBatchTotal] = useState(0);
   const [uploadBatchCompleted, setUploadBatchCompleted] = useState(0);
   const [uploadBatchCurrentIndex, setUploadBatchCurrentIndex] = useState(0);
@@ -469,11 +496,17 @@ export default function Home() {
   // Search, filter & sort states
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
+  const [notesSearchQuery, setNotesSearchQuery] = useState("");
+  const [debouncedNotesSearchQuery, setDebouncedNotesSearchQuery] = useState("");
+  const [highlightsSearchQuery, setHighlightsSearchQuery] = useState("");
+  const [debouncedHighlightsSearchQuery, setDebouncedHighlightsSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [collectionFilter, setCollectionFilter] = useState("all");
   const [librarySection, setLibrarySection] = useState("library");
   const [trashSortBy, setTrashSortBy] = useState("deleted-desc");
   const [selectedTrashBookIds, setSelectedTrashBookIds] = useState([]);
+  const [selectedLibraryBookIds, setSelectedLibraryBookIds] = useState([]);
+  const [isLibrarySelectionMode, setIsLibrarySelectionMode] = useState(false);
   const [libraryRenderLimit, setLibraryRenderLimit] = useState(LIBRARY_RENDER_BATCH_SIZE);
   const [trashRenderLimit, setTrashRenderLimit] = useState(LIBRARY_RENDER_BATCH_SIZE);
   const [flagFilters, setFlagFilters] = useState([]);
@@ -494,6 +527,8 @@ export default function Home() {
   const [accountSaveMessage, setAccountSaveMessage] = useState("");
   const [isNotesCenterOpen, setIsNotesCenterOpen] = useState(false);
   const [isHighlightsCenterOpen, setIsHighlightsCenterOpen] = useState(false);
+  const [notesCenterSortBy, setNotesCenterSortBy] = useState("recent");
+  const [highlightsCenterSortBy, setHighlightsCenterSortBy] = useState("recent");
   const [editingNoteId, setEditingNoteId] = useState("");
   const [noteEditorValue, setNoteEditorValue] = useState("");
   const [isSavingNote, setIsSavingNote] = useState(false);
@@ -510,14 +545,24 @@ export default function Home() {
   const [contentIndexManifest, setContentIndexManifest] = useState({});
   const [searchIndexByBook, setSearchIndexByBook] = useState({});
   const [isContentSearching, setIsContentSearching] = useState(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+  const [activeNotificationMenuId, setActiveNotificationMenuId] = useState("");
+  const [notificationView, setNotificationView] = useState("all");
+  const [notificationStateById, setNotificationStateById] = useState(() => readStoredNotificationState());
+  const [notificationFocusedBookId, setNotificationFocusedBookId] = useState("");
   const contentSearchTokenRef = useRef(0);
   const uploadTimerRef = useRef(null);
-  const uploadSuccessTimerRef = useRef(null);
+  const feedbackToastTimerRef = useRef(null);
+  const pendingTrashUndoTimerRef = useRef(null);
+  const pendingTrashUndoRef = useRef(null);
   const recentHighlightTimerRef = useRef(null);
   const loadMoreBooksRef = useRef(null);
   const infoPopoverCloseTimerRef = useRef(null);
   const infoPopoverRef = useRef(null);
   const duplicateDecisionResolverRef = useRef(null);
+  const notificationsMenuRef = useRef(null);
+  const notificationFocusTimerRef = useRef(null);
 
   const openInfoPopover = (book, rect, pinned = false) => {
     if (!book || !rect) return;
@@ -566,11 +611,30 @@ export default function Home() {
   }, [libraryLanguage]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(LIBRARY_NOTIFICATION_STATE_KEY, JSON.stringify(notificationStateById));
+  }, [notificationStateById]);
+
+  useEffect(() => {
     const timeoutId = setTimeout(() => {
       setDebouncedSearchQuery(searchQuery);
     }, 180);
     return () => clearTimeout(timeoutId);
   }, [searchQuery]);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      setDebouncedNotesSearchQuery(notesSearchQuery);
+    }, 180);
+    return () => clearTimeout(timeoutId);
+  }, [notesSearchQuery]);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      setDebouncedHighlightsSearchQuery(highlightsSearchQuery);
+    }, 180);
+    return () => clearTimeout(timeoutId);
+  }, [highlightsSearchQuery]);
 
   useEffect(() => {
     if (!infoPopover) return;
@@ -584,10 +648,47 @@ export default function Home() {
   }, [infoPopover]);
 
   useEffect(() => {
+    if (!isNotificationsOpen && !isProfileMenuOpen) return;
+
+    const handleMouseDown = (event) => {
+      if (!notificationsMenuRef.current) return;
+      if (notificationsMenuRef.current.contains(event.target)) return;
+      setIsNotificationsOpen(false);
+      setIsProfileMenuOpen(false);
+      setActiveNotificationMenuId("");
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setIsNotificationsOpen(false);
+        setIsProfileMenuOpen(false);
+        setActiveNotificationMenuId("");
+      }
+    };
+
+    window.addEventListener("mousedown", handleMouseDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handleMouseDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isNotificationsOpen, isProfileMenuOpen]);
+
+  useEffect(() => {
+    setIsNotificationsOpen(false);
+    setIsProfileMenuOpen(false);
+    setActiveNotificationMenuId("");
+    setNotificationView("all");
+  }, [librarySection]);
+
+  useEffect(() => {
     return () => {
       if (duplicateDecisionResolverRef.current) {
         duplicateDecisionResolverRef.current("ignore");
         duplicateDecisionResolverRef.current = null;
+      }
+      if (notificationFocusTimerRef.current) {
+        clearTimeout(notificationFocusTimerRef.current);
+        notificationFocusTimerRef.current = null;
       }
     };
   }, []);
@@ -762,14 +863,50 @@ export default function Home() {
       if (uploadTimerRef.current) {
         clearInterval(uploadTimerRef.current);
       }
-      if (uploadSuccessTimerRef.current) {
-        clearTimeout(uploadSuccessTimerRef.current);
+      if (feedbackToastTimerRef.current) {
+        clearTimeout(feedbackToastTimerRef.current);
+      }
+      if (pendingTrashUndoTimerRef.current) {
+        clearTimeout(pendingTrashUndoTimerRef.current);
       }
       if (recentHighlightTimerRef.current) {
         clearTimeout(recentHighlightTimerRef.current);
       }
     };
   }, []);
+
+  const dismissFeedbackToast = () => {
+    if (feedbackToastTimerRef.current) {
+      clearTimeout(feedbackToastTimerRef.current);
+      feedbackToastTimerRef.current = null;
+    }
+    setFeedbackToast(null);
+  };
+
+  const showFeedbackToast = (payload, options = {}) => {
+    const { duration = 3200 } = options;
+    if (!payload) return;
+    if (feedbackToastTimerRef.current) {
+      clearTimeout(feedbackToastTimerRef.current);
+      feedbackToastTimerRef.current = null;
+    }
+    const nextToast = { id: `${Date.now()}-${Math.random()}`, ...payload };
+    setFeedbackToast(nextToast);
+    if (duration > 0) {
+      feedbackToastTimerRef.current = setTimeout(() => {
+        setFeedbackToast((current) => (current?.id === nextToast.id ? null : current));
+        feedbackToastTimerRef.current = null;
+      }, duration);
+    }
+  };
+
+  const clearPendingTrashUndo = () => {
+    if (pendingTrashUndoTimerRef.current) {
+      clearTimeout(pendingTrashUndoTimerRef.current);
+      pendingTrashUndoTimerRef.current = null;
+    }
+    pendingTrashUndoRef.current = null;
+  };
 
   const startUploadProgress = () => {
     if (uploadTimerRef.current) {
@@ -805,7 +942,7 @@ export default function Home() {
         const missingLanguage = !String(book.language || "").trim();
         const missingPages = !toPositiveNumber(book.estimatedPages);
         const missingGenreField = typeof book.genre !== "string";
-        const isLegacyVersion = (book.metadataVersion || 0) < 1;
+        const isLegacyVersion = (book.metadataVersion || 0) < 2;
         return missingLanguage || missingPages || missingGenreField || isLegacyVersion;
       })
       .map((book) => book.id);
@@ -884,17 +1021,52 @@ export default function Home() {
   const handleDeleteBook = async (e, id) => {
     e.preventDefault(); 
     e.stopPropagation(); 
-    if (window.confirm("Move this book to Trash?")) {
-      await moveBookToTrash(id);
-      loadLibrary(); 
-    }
+    const targetBook = books.find((book) => book.id === id);
+    if (!targetBook) return;
+
+    await moveBookToTrash(id);
+    await loadLibrary();
+
+    clearPendingTrashUndo();
+    pendingTrashUndoRef.current = {
+      bookId: id,
+      title: targetBook.title || "Book"
+    };
+    pendingTrashUndoTimerRef.current = setTimeout(() => {
+      clearPendingTrashUndo();
+    }, 6000);
+
+    showFeedbackToast({
+      tone: "destructive",
+      title: "Moved to Trash",
+      message: `${targetBook.title || "Book"} moved to Trash.`,
+      actionLabel: "Undo",
+      onAction: async () => {
+        const pending = pendingTrashUndoRef.current;
+        if (!pending?.bookId) return;
+        await restoreBookFromTrash(pending.bookId);
+        await loadLibrary();
+        clearPendingTrashUndo();
+        showFeedbackToast({
+          tone: "success",
+          title: "Restored",
+          message: `${pending.title} restored from Trash.`
+        });
+      }
+    }, { duration: 6200 });
   };
 
   const handleRestoreBook = async (e, id) => {
     e.preventDefault();
     e.stopPropagation();
+    const targetBook = books.find((book) => book.id === id);
     await restoreBookFromTrash(id);
-    loadLibrary();
+    await loadLibrary();
+    showFeedbackToast({
+      tone: "success",
+      title: "Restored",
+      message: `${targetBook?.title || "Book"} restored from Trash.`
+    });
   };
 
   const handleDeleteBookForever = async (e, id) => {
@@ -915,6 +1087,11 @@ export default function Home() {
     }
     await deleteBook(id);
     await loadLibrary();
+    showFeedbackToast({
+      tone: "destructive",
+      title: "Deleted permanently",
+      message: `${targetBook.title || "Book"} was deleted forever.`
+    }, { duration: 3600 });
   };
 
   const buildBookBackupPayload = (book) => {
@@ -1058,11 +1235,107 @@ export default function Home() {
     });
   };
 
+  const handleToggleLibrarySelection = (id) => {
+    setSelectedLibraryBookIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return Array.from(next);
+    });
+  };
+
+  const handleToggleSelectAllLibrary = () => {
+    setSelectedLibraryBookIds((current) => {
+      const nextIds = Array.from(new Set(sortedBooks.map((book) => book.id)));
+      if (!nextIds.length) return [];
+      const allSelected = nextIds.every((id) => current.includes(id));
+      return allSelected ? [] : nextIds;
+    });
+  };
+
+  const handleClearLibrarySelection = () => {
+    setSelectedLibraryBookIds([]);
+  };
+
+  const handleEnterLibrarySelectionMode = () => {
+    setIsLibrarySelectionMode(true);
+  };
+
+  const handleExitLibrarySelectionMode = () => {
+    setSelectedLibraryBookIds([]);
+    setIsLibrarySelectionMode(false);
+  };
+
+  const handleBulkMarkToRead = async () => {
+    if (!selectedLibraryBookIds.length) return;
+    const selectedBooks = activeBooks.filter((book) => selectedLibraryBookIds.includes(book.id));
+    const toUpdate = selectedBooks.filter((book) => !isBookToRead(book));
+    if (!toUpdate.length) {
+      showFeedbackToast({
+        tone: "info",
+        title: "Already tagged",
+        message: "Selected books are already in To Read."
+      });
+      return;
+    }
+    await Promise.all(toUpdate.map((book) => toggleToRead(book.id)));
+    await loadLibrary();
+    showFeedbackToast({
+      tone: "success",
+      title: "To Read updated",
+      message: `${toUpdate.length} book${toUpdate.length === 1 ? "" : "s"} added to To Read.`
+    });
+  };
+
+  const handleBulkFavorite = async () => {
+    if (!selectedLibraryBookIds.length) return;
+    const selectedBooks = activeBooks.filter((book) => selectedLibraryBookIds.includes(book.id));
+    const toUpdate = selectedBooks.filter((book) => !book.isFavorite);
+    if (!toUpdate.length) {
+      showFeedbackToast({
+        tone: "info",
+        title: "Already favorites",
+        message: "Selected books are already marked as favorites."
+      });
+      return;
+    }
+    await Promise.all(toUpdate.map((book) => toggleFavorite(book.id)));
+    await loadLibrary();
+    showFeedbackToast({
+      tone: "success",
+      title: "Favorites updated",
+      message: `${toUpdate.length} book${toUpdate.length === 1 ? "" : "s"} marked as favorites.`
+    });
+  };
+
+  const handleBulkMoveToTrash = async () => {
+    if (!selectedLibraryBookIds.length) return;
+    const selectedBooks = activeBooks.filter((book) => selectedLibraryBookIds.includes(book.id));
+    if (!selectedBooks.length) return;
+    await Promise.all(selectedBooks.map((book) => moveBookToTrash(book.id)));
+    setSelectedLibraryBookIds([]);
+    await loadLibrary();
+    showFeedbackToast({
+      tone: "warning",
+      title: "Moved to Trash",
+      message: `${selectedBooks.length} book${selectedBooks.length === 1 ? "" : "s"} moved to Trash.`
+    });
+  };
+
   const handleRestoreSelectedTrash = async () => {
     if (!selectedTrashBookIds.length) return;
+    const selectedBooks = trashedBooks.filter((book) => selectedTrashBookIds.includes(book.id));
     await Promise.all(selectedTrashBookIds.map((id) => restoreBookFromTrash(id)));
     setSelectedTrashBookIds([]);
     await loadLibrary();
+    showFeedbackToast({
+      tone: "success",
+      title: "Books restored",
+      message: `${selectedBooks.length} book${selectedBooks.length === 1 ? "" : "s"} restored from Trash.`
+    });
   };
 
   const handleDeleteSelectedTrash = async () => {
@@ -1082,13 +1355,24 @@ export default function Home() {
     await Promise.all(selectedTrashBookIds.map((id) => deleteBook(id)));
     setSelectedTrashBookIds([]);
     await loadLibrary();
+    showFeedbackToast({
+      tone: "destructive",
+      title: "Deleted permanently",
+      message: `${selectedBooks.length} book${selectedBooks.length === 1 ? "" : "s"} deleted forever.`
+    }, { duration: 3600 });
   };
 
   const handleRestoreAllTrash = async () => {
     if (!trashedBooks.length) return;
+    const total = trashedBooks.length;
     await Promise.all(trashedBooks.map((book) => restoreBookFromTrash(book.id)));
     setSelectedTrashBookIds([]);
     await loadLibrary();
+    showFeedbackToast({
+      tone: "success",
+      title: "Trash restored",
+      message: `${total} book${total === 1 ? "" : "s"} restored.`
+    });
   };
 
   const handleDeleteAllTrash = async () => {
@@ -1107,6 +1391,11 @@ export default function Home() {
     await Promise.all(trashedBooks.map((book) => deleteBook(book.id)));
     setSelectedTrashBookIds([]);
     await loadLibrary();
+    showFeedbackToast({
+      tone: "destructive",
+      title: "Trash deleted permanently",
+      message: "All books in Trash were deleted forever."
+    }, { duration: 3600 });
   };
 
   const handleToggleFavorite = async (e, id) => {
@@ -1261,7 +1550,7 @@ export default function Home() {
       setSelectedTrashBookIds([]);
       return;
     }
-    if (section === "account") {
+    if (section === "account" || section === "statistics") {
       setStatusFilter("all");
       setCollectionFilter("all");
       setSelectedTrashBookIds([]);
@@ -1303,12 +1592,25 @@ export default function Home() {
 
   const handleSaveNoteFromCenter = async (entry) => {
     if (!entry?.bookId || !entry?.cfiRange) return;
+    const noteValue = noteEditorValue.trim();
     setIsSavingNote(true);
     try {
-      await updateHighlightNote(entry.bookId, entry.cfiRange, noteEditorValue.trim());
+      await updateHighlightNote(entry.bookId, entry.cfiRange, noteValue);
       await loadLibrary();
       setEditingNoteId("");
       setNoteEditorValue("");
+      showFeedbackToast({
+        tone: "success",
+        title: "Note saved",
+        message: noteValue ? "Your note has been updated." : "Note removed from highlight."
+      });
+    } catch (err) {
+      console.error(err);
+      showFeedbackToast({
+        tone: "warning",
+        title: "Could not save note",
+        message: "Try again in a moment."
+      });
     } finally {
       setIsSavingNote(false);
     }
@@ -1330,6 +1632,10 @@ export default function Home() {
   };
 
   const normalizeDuplicateValue = (value) => (value || "").toString().trim().toLowerCase();
+  const stripDuplicateTitleSuffix = (title) =>
+    (title || "").toString().replace(DUPLICATE_TITLE_SUFFIX_REGEX, "").trim();
+  const isDuplicateTitleBook = (book) =>
+    DUPLICATE_TITLE_SUFFIX_REGEX.test((book?.title || "").toString());
   const getDuplicateKey = (title, author) =>
     `${normalizeDuplicateValue(title)}::${normalizeDuplicateValue(author)}`;
 
@@ -1423,7 +1729,6 @@ export default function Home() {
     try {
       const batchStartAt = getPerfNow();
       setIsUploading(true);
-      setShowUploadSuccess(false);
       setUploadStage("reading");
       setUploadBatchTotal(files.length);
       setUploadBatchCompleted(0);
@@ -1577,16 +1882,11 @@ export default function Home() {
       setUploadBatchCompleted(0);
 
       if (addedCount > 0) {
-        setUploadSuccessMessage(
-          addedCount === 1 ? "Book loaded and added" : `${addedCount} books loaded and added`
-        );
-        setShowUploadSuccess(true);
-        if (uploadSuccessTimerRef.current) {
-          clearTimeout(uploadSuccessTimerRef.current);
-        }
-        uploadSuccessTimerRef.current = setTimeout(() => {
-          setShowUploadSuccess(false);
-        }, 2800);
+        showFeedbackToast({
+          tone: "success",
+          title: addedCount === 1 ? "Upload complete" : "Batch upload complete",
+          message: addedCount === 1 ? "Book loaded and added." : `${addedCount} books loaded and added.`
+        });
       }
       recordPerfMetric("upload.batch.total", batchStartAt, {
         files: files.length,
@@ -1816,6 +2116,8 @@ export default function Home() {
     [activeBooks]
   );
   const normalizedDebouncedSearchQuery = normalizeString(debouncedSearchQuery.trim());
+  const normalizedDebouncedNotesSearchQuery = normalizeString(debouncedNotesSearchQuery.trim());
+  const normalizedDebouncedHighlightsSearchQuery = normalizeString(debouncedHighlightsSearchQuery.trim());
   const notesCenterEntries = useMemo(
     () => activeBooks
     .flatMap((book) => {
@@ -1838,16 +2140,27 @@ export default function Home() {
   );
   const notesCenterFilteredEntries = useMemo(
     () => notesCenterEntries.filter((entry) => {
-      if (!normalizedDebouncedSearchQuery) return true;
+      if (!normalizedDebouncedNotesSearchQuery) return true;
       return (
-        normalizeString(entry.bookTitle).includes(normalizedDebouncedSearchQuery) ||
-        normalizeString(entry.bookAuthor).includes(normalizedDebouncedSearchQuery) ||
-        normalizeString(entry.note).includes(normalizedDebouncedSearchQuery) ||
-        normalizeString(entry.highlightText).includes(normalizedDebouncedSearchQuery)
+        normalizeString(entry.bookTitle).includes(normalizedDebouncedNotesSearchQuery) ||
+        normalizeString(entry.bookAuthor).includes(normalizedDebouncedNotesSearchQuery) ||
+        normalizeString(entry.note).includes(normalizedDebouncedNotesSearchQuery) ||
+        normalizeString(entry.highlightText).includes(normalizedDebouncedNotesSearchQuery)
       );
     }),
-    [notesCenterEntries, normalizedDebouncedSearchQuery]
+    [notesCenterEntries, normalizedDebouncedNotesSearchQuery]
   );
+  const notesCenterDisplayEntries = useMemo(() => {
+    const entries = [...notesCenterFilteredEntries];
+    if (notesCenterSortBy === "book-asc") {
+      return entries.sort((left, right) => {
+        const byTitle = String(left.bookTitle || "").localeCompare(String(right.bookTitle || ""), undefined, { sensitivity: "base" });
+        if (byTitle !== 0) return byTitle;
+        return String(left.note || "").localeCompare(String(right.note || ""), undefined, { sensitivity: "base" });
+      });
+    }
+    return entries.sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead));
+  }, [notesCenterFilteredEntries, notesCenterSortBy]);
   const highlightsCenterEntries = useMemo(
     () => activeBooks
     .flatMap((book) => {
@@ -1871,16 +2184,27 @@ export default function Home() {
   );
   const highlightsCenterFilteredEntries = useMemo(
     () => highlightsCenterEntries.filter((entry) => {
-      if (!normalizedDebouncedSearchQuery) return true;
+      if (!normalizedDebouncedHighlightsSearchQuery) return true;
       return (
-        normalizeString(entry.bookTitle).includes(normalizedDebouncedSearchQuery) ||
-        normalizeString(entry.bookAuthor).includes(normalizedDebouncedSearchQuery) ||
-        normalizeString(entry.text).includes(normalizedDebouncedSearchQuery) ||
-        normalizeString(entry.note).includes(normalizedDebouncedSearchQuery)
+        normalizeString(entry.bookTitle).includes(normalizedDebouncedHighlightsSearchQuery) ||
+        normalizeString(entry.bookAuthor).includes(normalizedDebouncedHighlightsSearchQuery) ||
+        normalizeString(entry.text).includes(normalizedDebouncedHighlightsSearchQuery) ||
+        normalizeString(entry.note).includes(normalizedDebouncedHighlightsSearchQuery)
       );
     }),
-    [highlightsCenterEntries, normalizedDebouncedSearchQuery]
+    [highlightsCenterEntries, normalizedDebouncedHighlightsSearchQuery]
   );
+  const highlightsCenterDisplayEntries = useMemo(() => {
+    const entries = [...highlightsCenterFilteredEntries];
+    if (highlightsCenterSortBy === "book-asc") {
+      return entries.sort((left, right) => {
+        const byTitle = String(left.bookTitle || "").localeCompare(String(right.bookTitle || ""), undefined, { sensitivity: "base" });
+        if (byTitle !== 0) return byTitle;
+        return String(left.text || "").localeCompare(String(right.text || ""), undefined, { sensitivity: "base" });
+      });
+    }
+    return entries.sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead));
+  }, [highlightsCenterFilteredEntries, highlightsCenterSortBy]);
   const activeBooksById = useMemo(
     () => new Map(activeBooks.map((book) => [book.id, book])),
     [activeBooks]
@@ -1922,12 +2246,12 @@ export default function Home() {
     return pairs;
   };
   const notesCenterPairs = useMemo(
-    () => buildCenterPairs(notesCenterFilteredEntries, "notes-book"),
-    [notesCenterFilteredEntries, activeBooksById]
+    () => buildCenterPairs(notesCenterDisplayEntries, "notes-book"),
+    [notesCenterDisplayEntries, activeBooksById]
   );
   const highlightsCenterPairs = useMemo(
-    () => buildCenterPairs(highlightsCenterFilteredEntries, "highlights-book"),
-    [highlightsCenterFilteredEntries, activeBooksById]
+    () => buildCenterPairs(highlightsCenterDisplayEntries, "highlights-book"),
+    [highlightsCenterDisplayEntries, activeBooksById]
   );
 
   const sortedBooks = useMemo(
@@ -2249,11 +2573,36 @@ export default function Home() {
     () => [...books]
       .filter((book) => {
         if (book.isDeleted) return false;
+        if (isDuplicateTitleBook(book)) return false;
         const progress = normalizeNumber(book.progress);
         const hasStarted = isBookStarted(book);
         return hasStarted && progress < 100;
       })
-      .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead))
+      .map((book) => {
+        const progress = Math.max(0, Math.min(100, normalizeNumber(book?.progress)));
+        const spentSeconds = Math.max(0, Number(book?.readingTime) || 0);
+        const estimatedRemainingSeconds =
+          progress > 0 && progress < 100 && spentSeconds > 0
+            ? Math.round((spentSeconds * (100 - progress)) / progress)
+            : 0;
+        const lastReadMs = normalizeTime(book?.lastRead);
+        const ageDays = lastReadMs > 0 ? Math.max(0, (Date.now() - lastReadMs) / (1000 * 60 * 60 * 24)) : Number.POSITIVE_INFINITY;
+        const recencyScore = Number.isFinite(ageDays) ? 1 / (1 + ageDays) : 0;
+        const nearFinishScore = progress / 100;
+        const continuePriorityScore = (recencyScore * 0.68) + (nearFinishScore * 0.32);
+        return {
+          ...book,
+          __estimatedRemainingSeconds: estimatedRemainingSeconds,
+          __continuePriorityScore: continuePriorityScore
+        };
+      })
+      .sort((left, right) => {
+        const priorityDiff = (right.__continuePriorityScore || 0) - (left.__continuePriorityScore || 0);
+        if (Math.abs(priorityDiff) > 0.0001) return priorityDiff;
+        const recencyDiff = normalizeTime(right.lastRead) - normalizeTime(left.lastRead);
+        if (recencyDiff !== 0) return recencyDiff;
+        return normalizeNumber(right.progress) - normalizeNumber(left.progress);
+      })
       .slice(0, 8),
     [books]
   );
@@ -2274,7 +2623,10 @@ export default function Home() {
   };
 
   const renderReadingStateBadge = (book, extraClasses = "") => (
-    <div className={`flex items-center gap-2 text-blue-500 text-xs font-semibold ${extraClasses}`}>
+    <div
+      data-testid="book-reading-state"
+      className={`flex items-center gap-2 text-blue-500 text-xs font-semibold ${extraClasses}`}
+    >
       <Clock size={12} />
       <span>{formatTime(book.readingTime)}</span>
     </div>
@@ -2292,6 +2644,19 @@ export default function Home() {
     );
   };
 
+  const renderGenreChip = (book, extraClasses = "") => {
+    const genre = formatGenreLabel(book.genre);
+    if (!genre) return null;
+    return (
+      <span
+        data-testid="book-meta-genre"
+        className={`inline-flex items-center rounded-full border border-pink-500 bg-pink-50 px-3 py-0.5 text-xs font-semibold tracking-wide text-pink-600 ${extraClasses}`}
+      >
+        {genre}
+      </span>
+    );
+  };
+
   const renderCollectionChips = (book, extraClasses = "") => {
     const ids = Array.isArray(book?.collectionIds) ? book.collectionIds : [];
     if (!ids.length) return null;
@@ -2303,7 +2668,7 @@ export default function Home() {
     const visible = resolved.slice(0, 2);
     const remaining = resolved.length - visible.length;
     return (
-      <div className={`mt-2 flex flex-wrap items-center gap-1.5 ${extraClasses}`}>
+      <div className={`mt-1.5 flex flex-wrap items-center gap-1.5 ${extraClasses}`}>
         {visible.map((collection) => (
           <span
             key={`${book.id}-${collection.id}`}
@@ -2360,6 +2725,85 @@ export default function Home() {
     return `${hours}h ${remainingMinutes} min`;
   };
 
+const formatRoundedHours = (seconds) => {
+    const safeSeconds = Math.max(0, Number(seconds) || 0);
+    if (!safeSeconds) return "0h";
+    const hours = safeSeconds / 3600;
+    if (hours >= 10) return `${Math.round(hours)}h`;
+    return `${Math.round(hours * 10) / 10}h`;
+};
+
+const formatNotificationTimeAgo = (value) => {
+  const time = value ? new Date(value) : null;
+  if (!time || Number.isNaN(time.getTime())) return "Just now";
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - time.getTime()) / 1000));
+  if (elapsedSeconds < 60) return "Just now";
+  if (elapsedSeconds < 3600) return `${Math.floor(elapsedSeconds / 60)}m ago`;
+  if (elapsedSeconds < 86400) return `${Math.floor(elapsedSeconds / 3600)}h ago`;
+  return `${Math.floor(elapsedSeconds / 86400)}d ago`;
+};
+
+  const getPublicationYearLabel = (book) => {
+    if (!book?.pubDate) return "";
+    const parsed = new Date(book.pubDate);
+    if (Number.isFinite(parsed.getTime())) {
+      return String(parsed.getFullYear());
+    }
+    const raw = compactWhitespace(String(book.pubDate));
+    const yearMatch = raw.match(/\b(1[6-9]\d{2}|20\d{2}|21\d{2})\b/);
+    return yearMatch ? yearMatch[1] : "";
+  };
+
+  const formatEstimatedTimeLeft = (seconds) => {
+    const safeSeconds = Math.max(0, Number(seconds) || 0);
+    if (!safeSeconds) return "";
+    const minutes = Math.max(1, Math.round(safeSeconds / 60));
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    if (hours <= 0) return `${minutes}m left`;
+    if (remainingMinutes === 0) return `${hours}h left`;
+    return `${hours}h ${remainingMinutes}m left`;
+  };
+
+  const getEstimatedRemainingSeconds = (book) => {
+    const progress = Math.max(0, Math.min(100, normalizeNumber(book?.progress)));
+    const spentSeconds = Math.max(0, Number(book?.readingTime) || 0);
+    if (progress <= 0 || progress >= 100 || spentSeconds <= 0) return 0;
+    return Math.round((spentSeconds * (100 - progress)) / progress);
+  };
+
+  const getContinueReadingTimeLeftTone = (seconds) => {
+    const safeSeconds = Math.max(0, Number(seconds) || 0);
+    if (!safeSeconds) {
+      return {
+        tone: "neutral",
+        className: isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"
+      };
+    }
+    if (safeSeconds <= 30 * 60) {
+      return {
+        tone: "success",
+        className: isDarkLibraryTheme ? "text-emerald-300" : "text-emerald-600"
+      };
+    }
+    if (safeSeconds <= 2 * 60 * 60) {
+      return {
+        tone: "info",
+        className: isDarkLibraryTheme ? "text-blue-300" : "text-blue-600"
+      };
+    }
+    if (safeSeconds <= 6 * 60 * 60) {
+      return {
+        tone: "warning",
+        className: isDarkLibraryTheme ? "text-amber-300" : "text-amber-600"
+      };
+    }
+    return {
+      tone: "neutral",
+      className: isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"
+    };
+  };
+
   const getCalendarDayDiff = (dateString) => {
     const date = new Date(dateString || 0);
     if (!Number.isFinite(date.getTime())) return 0;
@@ -2395,8 +2839,9 @@ export default function Home() {
 
     if (compact) {
       return (
-        <div className="mt-1 text-[10px] font-semibold text-gray-500">
-          {label}
+        <div className="mt-1 inline-flex items-center gap-1.5 text-[10px] font-semibold text-gray-500">
+          <History size={11} className="text-gray-400" />
+          <span>{label}</span>
         </div>
       );
     }
@@ -2404,8 +2849,9 @@ export default function Home() {
     return (
       <div
         data-testid="book-session-summary"
-        className="mt-2 text-[10px] font-semibold text-gray-500"
+        className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-semibold text-gray-500"
       >
+        <History size={12} className="text-gray-400" />
         <span data-testid="book-last-session">{label}</span>
       </div>
     );
@@ -2414,7 +2860,7 @@ export default function Home() {
   const renderMetadataBadges = (book) => {
     const language = formatLanguageLabel(book.language);
     const estimatedPages = toPositiveNumber(book.estimatedPages);
-    const genre = formatGenreLabel(book.genre);
+    const publicationYear = getPublicationYearLabel(book);
     const metaItems = [];
 
     if (language) {
@@ -2433,12 +2879,20 @@ export default function Home() {
         label: `${estimatedPages} pages`
       });
     }
-    if (!metaItems.length && !genre) return null;
+    if (publicationYear) {
+      metaItems.push({
+        key: "year",
+        testId: "book-meta-year",
+        icon: Calendar,
+        label: publicationYear
+      });
+    }
+    if (!metaItems.length) return null;
 
     return (
-      <div className="mt-2">
+      <div className="mt-1.5">
         {metaItems.length > 0 && (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-500">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[14px] text-gray-500">
             {metaItems.map((item) => {
               const Icon = item.icon;
               return (
@@ -2452,16 +2906,6 @@ export default function Home() {
                 </span>
               );
             })}
-          </div>
-        )}
-        {genre && (
-          <div className={metaItems.length ? "mt-2" : ""}>
-            <span
-              data-testid="book-meta-genre"
-              className="inline-flex items-center rounded-full border border-pink-500 bg-pink-50 px-3 py-0.5 text-xs font-semibold tracking-wide text-pink-600"
-            >
-              {genre}
-            </span>
           </div>
         )}
       </div>
@@ -2484,7 +2928,7 @@ export default function Home() {
         key={`global-card-${book.id}`}
         data-testid="global-search-found-book-card"
         onClick={() => handleOpenBook(book.id)}
-        className={`group bg-white rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden border border-gray-100 block relative ${coverHeightClass}`}
+        className={`group workspace-interactive-card workspace-interactive-card-light rounded-2xl overflow-hidden block relative ${coverHeightClass}`}
       >
         <div data-testid="global-search-found-book-cover" className={`h-full bg-gray-100 ${FOUND_BOOK_COVER_PADDING_CLASS}`}>
           <div className="relative h-full w-full rounded-xl overflow-hidden bg-white border border-gray-100">
@@ -2538,9 +2982,80 @@ export default function Home() {
   const canShowResetFilters = hasActiveLibraryFilters;
   const isDarkLibraryTheme = libraryTheme === "dark";
   const isAccountSection = librarySection === "account";
+  const isStatisticsSection = librarySection === "statistics";
   const isCollectionsPage = librarySection === "collections";
+  const isNotesSection = librarySection === "notes";
+  const isHighlightsSection = librarySection === "highlights";
   const isTrashSection = librarySection === "trash";
   const shouldShowLibraryHomeContent = librarySection === "library";
+  const sectionHeader = useMemo(() => {
+    if (isAccountSection) {
+      return {
+        title: "Settings",
+        subtitle: "Manage your profile details and account preferences.",
+        summary: "Profile and account options"
+      };
+    }
+    if (isStatisticsSection) {
+      return {
+        title: "Reading Statistics",
+        subtitle: "Track reading momentum, completion, and habits across your library.",
+        summary: `${activeBooks.length} active book${activeBooks.length === 1 ? "" : "s"}`
+      };
+    }
+    if (isNotesSection) {
+      const count = notesCenterDisplayEntries.length;
+      return {
+        title: "Notes",
+        subtitle: "Review and refine your notes across books.",
+        summary: `${count} note${count === 1 ? "" : "s"} shown`
+      };
+    }
+    if (isHighlightsSection) {
+      const count = highlightsCenterDisplayEntries.length;
+      return {
+        title: "Highlights",
+        subtitle: "Browse key passages and jump back into the text.",
+        summary: `${count} highlight${count === 1 ? "" : "s"} shown`
+      };
+    }
+    if (isCollectionsPage) {
+      return {
+        title: "My Collections",
+        subtitle: "Organize books into custom shelves.",
+        summary: `${collections.length} collection${collections.length === 1 ? "" : "s"}`
+      };
+    }
+    if (isTrashSection) {
+      return {
+        title: "Trash",
+        subtitle: "Recently removed books waiting for restore or permanent deletion.",
+        summary: `Showing ${sortedTrashBooks.length} of ${trashedBooksCount} deleted books`
+      };
+    }
+    const librarySummary = sortedBooks.length === activeBooks.length
+      ? `You have ${activeBooks.length} books`
+      : `Showing ${sortedBooks.length} of ${activeBooks.length} books`;
+    return {
+      title: "My Library",
+      subtitle: "Read, organize, and return to your books quickly.",
+      summary: trashedBooksCount > 0 ? `${librarySummary} · ${trashedBooksCount} in trash` : librarySummary
+    };
+  }, [
+    isAccountSection,
+    isStatisticsSection,
+    isNotesSection,
+    isHighlightsSection,
+    isCollectionsPage,
+    isTrashSection,
+    activeBooks.length,
+    notesCenterDisplayEntries.length,
+    highlightsCenterDisplayEntries.length,
+    collections.length,
+    sortedTrashBooks.length,
+    trashedBooksCount,
+    sortedBooks.length
+  ]);
   const shouldShowContinueReading = showContinueReading && librarySection === "library";
   const renderedBooks = (isTrashSection ? sortedTrashBooks : sortedBooks).slice(
     0,
@@ -2548,22 +3063,577 @@ export default function Home() {
   );
   const showRenderSentinel = isTrashSection ? hasMoreTrashBooks : hasMoreLibraryBooks;
   const visibleTrashIds = Array.from(new Set(sortedTrashBooks.map((book) => book.id)));
+  const visibleLibraryIds = Array.from(new Set(sortedBooks.map((book) => book.id)));
   const trashSelectedCount = selectedTrashBookIds.length;
+  const librarySelectedCount = selectedLibraryBookIds.length;
   const allVisibleTrashSelected =
     visibleTrashIds.length > 0 &&
     visibleTrashIds.every((id) => selectedTrashBookIds.includes(id));
+  const allVisibleLibrarySelected =
+    visibleLibraryIds.length > 0 &&
+    visibleLibraryIds.every((id) => selectedLibraryBookIds.includes(id));
+  useEffect(() => {
+    if (librarySection !== "library") {
+      setSelectedLibraryBookIds([]);
+      setIsLibrarySelectionMode(false);
+      return;
+    }
+    setSelectedLibraryBookIds((current) => {
+      if (!current.length) return current;
+      const allowed = new Set(sortedBooks.map((book) => book.id));
+      const next = current.filter((id) => allowed.has(id));
+      return next.length === current.length ? current : next;
+    });
+    if (!sortedBooks.length) {
+      setIsLibrarySelectionMode(false);
+    }
+  }, [librarySection, sortedBooks]);
+  const readingSnapshot = useMemo(() => {
+    const liveBooks = books.filter((book) => !book?.isDeleted);
+    const totalBooks = liveBooks.length;
+    const completedBooks = liveBooks.filter((book) => normalizeNumber(book.progress) >= 100);
+    const finishedBooks = completedBooks.length;
+    const completedPages = completedBooks.reduce((sum, book) => sum + (toPositiveNumber(book?.estimatedPages) || 0), 0);
+    const totalSeconds = liveBooks.reduce((sum, book) => sum + Math.max(0, Number(book?.readingTime) || 0), 0);
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todaySeconds = liveBooks.reduce((sum, book) => {
+      const sessions = Array.isArray(book?.readingSessions) ? book.readingSessions : [];
+      return sum + sessions.reduce((sessionSum, session) => {
+        const endAt = new Date(session?.endAt || session?.startAt || 0);
+        if (!Number.isFinite(endAt.getTime()) || endAt < todayStart) return sessionSum;
+        return sessionSum + Math.max(0, Number(session?.seconds) || 0);
+      }, 0);
+    }, 0);
+    return {
+      totalBooks,
+      finishedBooks,
+      completedPages,
+      totalSeconds,
+      todaySeconds
+    };
+  }, [books]);
+  const showReadingSnapshot = shouldShowLibraryHomeContent;
+  const readingSnapshotProgress = readingSnapshot.totalBooks > 0
+    ? Math.max(0, Math.min(100, Math.round((readingSnapshot.finishedBooks / readingSnapshot.totalBooks) * 100)))
+    : 0;
+  const libraryNotifications = useMemo(() => {
+    const nowIso = new Date().toISOString();
+    const todayKey = toLocalDateKey(new Date());
+    const duplicateReminderWeekKey = Math.floor(Date.now() / (1000 * 60 * 60 * 24 * 7));
+    const items = [];
+    const duplicateTitleBooks = activeBooks.filter((book) => isDuplicateTitleBook(book));
+    const inProgressBooks = activeBooks
+      .filter((book) => {
+        const progress = Math.max(0, Math.min(100, normalizeNumber(book?.progress)));
+        return progress > 0 && progress < 100 && !book?.isDeleted;
+      })
+      .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead));
+
+    if (streakCount > 0 && !readToday) {
+      items.push({
+        id: `streak-risk-${todayKey}`,
+        kind: "streak-risk",
+        title: "Streak at risk",
+        message: `Keep your ${streakCount}-day streak alive — read 5 min now.`,
+        createdAt: nowIso,
+        priority: 0,
+        actionType: "open-library-in-progress",
+        actionLabel: "Read now"
+      });
+    }
+
+    inProgressBooks
+      .map((book) => {
+        const remainingSeconds = getEstimatedRemainingSeconds(book);
+        return {
+          id: `finish-soon-${book.id}`,
+          kind: "finish-soon",
+          bookId: book.id,
+          title: book.title,
+          author: book.author,
+          message: `Can be finished in ${formatEstimatedTimeLeft(remainingSeconds).replace(" left", "")}. Pick it up now.`,
+          remainingSeconds,
+          createdAt: book.lastRead || nowIso,
+          priority: 1,
+          actionType: "open-reader",
+          actionLabel: "Open book"
+        };
+      })
+      .filter((item) => item.remainingSeconds > 0 && item.remainingSeconds <= 30 * 60)
+      .sort((left, right) => left.remainingSeconds - right.remainingSeconds)
+      .forEach((item) => items.push(item));
+
+    inProgressBooks
+      .filter((book) => getCalendarDayDiff(book.lastRead) >= 3)
+      .slice(0, 3)
+      .forEach((book) => {
+        const progress = Math.max(0, Math.min(100, normalizeNumber(book.progress)));
+        items.push({
+          id: `resume-abandoned-${book.id}`,
+          kind: "resume-abandoned",
+          bookId: book.id,
+          title: "Resume reading",
+          author: book.author,
+          message: `Back to ${book.title}? You're ${Math.round(progress)}% in.`,
+          createdAt: book.lastRead || nowIso,
+          priority: 2,
+          actionType: "open-reader",
+          actionLabel: "Resume"
+        });
+      });
+
+    inProgressBooks
+      .filter((book) => getCalendarDayDiff(book.lastRead) <= 2)
+      .slice(0, 4)
+      .forEach((book) => {
+        const progress = Math.max(0, Math.min(100, normalizeNumber(book.progress)));
+        const milestone = [90, 75, 50, 25].find((threshold) => progress >= threshold);
+        if (!milestone || progress >= 100) return;
+        items.push({
+          id: `milestone-${book.id}-${milestone}`,
+          kind: "milestone",
+          bookId: book.id,
+          title: "Milestone reached",
+          author: book.author,
+          message: `Nice progress — you reached ${milestone}% in ${book.title}.`,
+          createdAt: book.lastRead || nowIso,
+          priority: 3,
+          actionType: "open-reader",
+          actionLabel: "Keep going"
+        });
+      });
+
+    if (!readToday) {
+      items.push({
+        id: `daily-goal-${todayKey}`,
+        kind: "daily-goal",
+        title: "Daily micro-goal",
+        message: "A 10-minute session today keeps your reading momentum.",
+        createdAt: nowIso,
+        priority: 4,
+        actionType: "open-library-in-progress",
+        actionLabel: "Start 10 min"
+      });
+    }
+
+    const untouchedToRead = activeBooks.filter((book) => {
+      if (!isBookToRead(book)) return false;
+      if (isBookStarted(book)) return false;
+      const ageDays = getCalendarDayDiff(book?.addedAt || book?.lastRead || 0);
+      return ageDays >= 7;
+    });
+    if (untouchedToRead.length > 0) {
+      items.push({
+        id: `to-read-nudge-${todayKey}`,
+        kind: "to-read-nudge",
+        title: "To Read reminder",
+        message: `Pick your next book: ${untouchedToRead.length} title${untouchedToRead.length === 1 ? "" : "s"} waiting in To Read.`,
+        createdAt: nowIso,
+        priority: 5,
+        actionType: "open-library-to-read",
+        actionLabel: "Review list"
+      });
+    }
+
+    if (duplicateTitleBooks.length > 0) {
+      const duplicateBaseTitleSet = new Set(
+        duplicateTitleBooks
+          .map((book) => stripDuplicateTitleSuffix(book.title))
+          .filter(Boolean)
+      );
+      const sampleTitles = Array.from(duplicateBaseTitleSet).slice(0, 2);
+      const sampleLabel = sampleTitles.length
+        ? ` (${sampleTitles.join(", ")}${duplicateBaseTitleSet.size > 2 ? ", ..." : ""})`
+        : "";
+      items.push({
+        id: `duplicate-cleanup-${duplicateReminderWeekKey}`,
+        kind: "duplicate-cleanup",
+        title: "Duplicate cleanup recommended",
+        message: `${duplicateTitleBooks.length} duplicate copy${duplicateTitleBooks.length === 1 ? "" : "ies"} detected${sampleLabel}. They add no value and should be deleted.`,
+        createdAt: nowIso,
+        priority: 4,
+        actionType: "open-library-duplicates",
+        actionLabel: "Review duplicates"
+      });
+    }
+
+    return items
+      .sort((left, right) => {
+        if (left.priority !== right.priority) return left.priority - right.priority;
+        return normalizeTime(right.createdAt) - normalizeTime(left.createdAt);
+      })
+      .slice(0, 16);
+  }, [activeBooks, streakCount, readToday]);
+  useEffect(() => {
+    setNotificationStateById((current) => {
+      const nowIso = new Date().toISOString();
+      const next = {};
+      libraryNotifications.forEach((item) => {
+        const previous = current[item.id] || {};
+        next[item.id] = {
+          firstSeenAt: previous.firstSeenAt || item.createdAt || nowIso,
+          readAt: previous.readAt || null,
+          snoozedUntil: previous.snoozedUntil || null,
+          archivedAt: previous.archivedAt || null,
+          deletedAt: previous.deletedAt || null
+        };
+      });
+      const currentKeys = Object.keys(current);
+      const nextKeys = Object.keys(next);
+      if (currentKeys.length !== nextKeys.length) return next;
+      for (const key of nextKeys) {
+        const a = current[key];
+        const b = next[key];
+        if (
+          !a ||
+          a.firstSeenAt !== b.firstSeenAt ||
+          a.readAt !== b.readAt ||
+          a.snoozedUntil !== b.snoozedUntil ||
+          a.archivedAt !== b.archivedAt ||
+          a.deletedAt !== b.deletedAt
+        ) {
+          return next;
+        }
+      }
+      return current;
+    });
+  }, [libraryNotifications]);
+
+  const libraryNotificationsWithState = useMemo(() => (
+    libraryNotifications.map((item) => {
+      const state = notificationStateById[item.id] || {};
+      const firstSeenAt = state.firstSeenAt || null;
+      const readAt = state.readAt || null;
+      const snoozedUntil = state.snoozedUntil || null;
+      const archivedAt = state.archivedAt || null;
+      const deletedAt = state.deletedAt || null;
+      const snoozedActive = Boolean(snoozedUntil) && normalizeTime(snoozedUntil) > Date.now();
+      return {
+        ...item,
+        firstSeenAt,
+        readAt,
+        snoozedUntil,
+        archivedAt,
+        deletedAt,
+        isRead: Boolean(readAt),
+        isSnoozed: snoozedActive,
+        isArchived: Boolean(archivedAt),
+        isDeleted: Boolean(deletedAt)
+      };
+    })
+  ), [libraryNotifications, notificationStateById]);
+
+  const visibleNotifications = useMemo(
+    () => libraryNotificationsWithState.filter((item) => !item.isSnoozed && !item.isArchived && !item.isDeleted),
+    [libraryNotificationsWithState]
+  );
+  const unreadNotifications = useMemo(
+    () => visibleNotifications.filter((item) => !item.isRead),
+    [visibleNotifications]
+  );
+  const filteredNotifications = notificationView === "unread" ? unreadNotifications : visibleNotifications;
+  const notificationCount = unreadNotifications.length;
+  const profileLabel = (accountProfile?.firstName || accountProfile?.email || "Reader").trim();
+  const profileInitials = (() => {
+    const firstName = (accountProfile?.firstName || "").trim();
+    if (firstName) {
+      const parts = firstName.split(/\s+/).filter(Boolean).slice(0, 2);
+      const initials = parts.map((part) => part[0]?.toUpperCase() || "").join("");
+      if (initials) return initials;
+    }
+    const fromEmail = (accountProfile?.email || "R").trim().charAt(0).toUpperCase();
+    return fromEmail || "R";
+  })();
+  const profileMenuItems = [
+    { key: "profile", label: "Profile", icon: User },
+    { key: "reading-statistics", label: "Reading Statistics", icon: BarChart3 },
+    { key: "settings", label: "Settings", icon: Settings2 },
+    { key: "faq", label: "FAQ", icon: CircleHelp },
+    { key: "sign-out", label: "Sign out", icon: LogOut },
+  ];
+  const notificationKindConfig = {
+    "streak-risk": { label: "Streak", Icon: Flame, tone: "amber" },
+    "finish-soon": { label: "Finish soon", Icon: Clock, tone: "green" },
+    "resume-abandoned": { label: "Resume", Icon: History, tone: "blue" },
+    "daily-goal": { label: "Daily goal", Icon: Target, tone: "indigo" },
+    milestone: { label: "Milestone", Icon: Trophy, tone: "violet" },
+    "to-read-nudge": { label: "To Read", Icon: Tag, tone: "pink" },
+    "duplicate-cleanup": { label: "Duplicates", Icon: Trash2, tone: "rose" }
+  };
+  const notificationToneClasses = {
+    amber: isDarkLibraryTheme ? "bg-amber-900/30 text-amber-300" : "bg-amber-100 text-amber-700",
+    green: isDarkLibraryTheme ? "bg-emerald-900/30 text-emerald-300" : "bg-emerald-100 text-emerald-700",
+    blue: isDarkLibraryTheme ? "bg-blue-900/30 text-blue-300" : "bg-blue-100 text-blue-700",
+    indigo: isDarkLibraryTheme ? "bg-indigo-900/30 text-indigo-300" : "bg-indigo-100 text-indigo-700",
+    violet: isDarkLibraryTheme ? "bg-violet-900/30 text-violet-300" : "bg-violet-100 text-violet-700",
+    pink: isDarkLibraryTheme ? "bg-pink-900/30 text-pink-300" : "bg-pink-100 text-pink-700",
+    rose: isDarkLibraryTheme ? "bg-rose-900/30 text-rose-300" : "bg-rose-100 text-rose-700"
+  };
+
+  const handleNotificationReadState = (id, read) => {
+    setNotificationStateById((current) => {
+      const prev = current[id] || {};
+      const nextReadAt = read ? (prev.readAt || new Date().toISOString()) : null;
+      if (prev.readAt === nextReadAt) return current;
+      return {
+        ...current,
+        [id]: {
+          firstSeenAt: prev.firstSeenAt || new Date().toISOString(),
+          readAt: nextReadAt,
+          snoozedUntil: prev.snoozedUntil || null,
+          archivedAt: prev.archivedAt || null,
+          deletedAt: prev.deletedAt || null
+        }
+      };
+    });
+  };
+
+  const handleNotificationSnooze = (id, hours = 24) => {
+    const snoozedUntil = new Date(Date.now() + (hours * 60 * 60 * 1000)).toISOString();
+    setNotificationStateById((current) => {
+      const previous = current[id] || {};
+      return {
+        ...current,
+        [id]: {
+          firstSeenAt: previous.firstSeenAt || new Date().toISOString(),
+          readAt: previous.readAt || null,
+          snoozedUntil,
+          archivedAt: previous.archivedAt || null,
+          deletedAt: previous.deletedAt || null
+        }
+      };
+    });
+  };
+
+  const handleNotificationArchive = (id) => {
+    const archivedAt = new Date().toISOString();
+    setNotificationStateById((current) => {
+      const previous = current[id] || {};
+      return {
+        ...current,
+        [id]: {
+          firstSeenAt: previous.firstSeenAt || archivedAt,
+          readAt: previous.readAt || archivedAt,
+          snoozedUntil: previous.snoozedUntil || null,
+          archivedAt,
+          deletedAt: previous.deletedAt || null
+        }
+      };
+    });
+    if (activeNotificationMenuId === id) setActiveNotificationMenuId("");
+  };
+
+  const handleNotificationDelete = (id) => {
+    const deletedAt = new Date().toISOString();
+    setNotificationStateById((current) => {
+      const previous = current[id] || {};
+      return {
+        ...current,
+        [id]: {
+          firstSeenAt: previous.firstSeenAt || deletedAt,
+          readAt: previous.readAt || deletedAt,
+          snoozedUntil: previous.snoozedUntil || null,
+          archivedAt: previous.archivedAt || null,
+          deletedAt
+        }
+      };
+    });
+    if (activeNotificationMenuId === id) setActiveNotificationMenuId("");
+  };
+
+  const handleMarkAllNotificationsRead = () => {
+    const nowIso = new Date().toISOString();
+    setNotificationStateById((current) => {
+      let changed = false;
+      const next = { ...current };
+      visibleNotifications.forEach((item) => {
+        const previous = next[item.id] || {};
+        if (previous.readAt) return;
+        next[item.id] = {
+          firstSeenAt: previous.firstSeenAt || nowIso,
+          readAt: nowIso,
+          snoozedUntil: previous.snoozedUntil || null,
+          archivedAt: previous.archivedAt || null,
+          deletedAt: previous.deletedAt || null
+        };
+        changed = true;
+      });
+      return changed ? next : current;
+    });
+  };
+
+  const handleOpenNotificationTarget = (item) => {
+    if (!item) return;
+    handleNotificationReadState(item.id, true);
+    setIsNotificationsOpen(false);
+    setActiveNotificationMenuId("");
+
+    if (item.actionType === "open-reader" && item.bookId) {
+      handleOpenBook(item.bookId);
+      navigate(buildReaderPath(item.bookId));
+      return;
+    }
+
+    if (item.actionType === "open-library-to-read") {
+      handleSidebarSectionSelect("library");
+      setStatusFilter("to-read");
+      setCollectionFilter("all");
+      setSearchQuery("");
+      return;
+    }
+
+    if (item.actionType === "open-library-in-progress") {
+      handleSidebarSectionSelect("library");
+      setStatusFilter("in-progress");
+      setCollectionFilter("all");
+      setSearchQuery("");
+      return;
+    }
+
+    if (item.actionType === "open-library-duplicates") {
+      handleSidebarSectionSelect("library");
+      setStatusFilter("all");
+      setCollectionFilter("all");
+      setSearchQuery("Duplicate");
+      return;
+    }
+
+    handleSidebarSectionSelect("library");
+  };
+
+  const focusContinueReadingCard = (bookId) => {
+    if (!bookId || typeof window === "undefined") return;
+    setNotificationFocusedBookId(bookId);
+    if (notificationFocusTimerRef.current) {
+      clearTimeout(notificationFocusTimerRef.current);
+      notificationFocusTimerRef.current = null;
+    }
+    window.requestAnimationFrame(() => {
+      const target = document.getElementById(`continue-reading-${bookId}`);
+      if (target && typeof target.scrollIntoView === "function") {
+        target.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+      }
+    });
+    notificationFocusTimerRef.current = setTimeout(() => {
+      setNotificationFocusedBookId("");
+      notificationFocusTimerRef.current = null;
+    }, 2200);
+  };
+
+  const handleNotificationCardClick = (item) => {
+    if (!item) return;
+    handleNotificationReadState(item.id, true);
+    setActiveNotificationMenuId("");
+    setIsNotificationsOpen(false);
+
+    if (item.bookId) {
+      handleSidebarSectionSelect("library");
+      setStatusFilter("all");
+      setCollectionFilter("all");
+      setSearchQuery("");
+      focusContinueReadingCard(item.bookId);
+      return;
+    }
+
+    handleOpenNotificationTarget(item);
+  };
+
+  const handleProfileMenuAction = (actionKey) => {
+    setIsProfileMenuOpen(false);
+    setIsNotificationsOpen(false);
+    if (actionKey === "settings" || actionKey === "profile") {
+      handleSidebarSectionSelect("account");
+      return;
+    }
+    if (actionKey === "reading-statistics") {
+      handleSidebarSectionSelect("statistics");
+      return;
+    }
+    if (actionKey === "faq") {
+      if (typeof window !== "undefined") {
+        window.open("https://github.com/AissamDjahnine/smart-reader#faq", "_blank", "noopener,noreferrer");
+      }
+      return;
+    }
+    if (actionKey === "sign-out") {
+      handleSidebarSectionSelect("library");
+    }
+  };
 
   return (
     <div className={`min-h-screen p-6 md:p-12 font-sans ${isDarkLibraryTheme ? "bg-slate-950 text-slate-100" : "bg-gray-50 text-gray-900"}`}>
       <div className="mx-auto max-w-[1480px] md:grid md:grid-cols-[240px_minmax(0,1fr)] md:gap-8">
-        <LibraryWorkspaceSidebar
-          librarySection={librarySection}
-          isDarkLibraryTheme={isDarkLibraryTheme}
-          notesCount={notesCenterEntries.length}
-          highlightsCount={highlightsCenterEntries.length}
-          trashCount={trashedBooksCount}
-          onSelectSection={handleSidebarSectionSelect}
-        />
+        <div className="hidden md:flex md:flex-col">
+          {showReadingSnapshot && (
+            <aside
+              data-testid="reading-snapshot-card"
+              className={`workspace-surface p-5 ${
+                isDarkLibraryTheme ? "workspace-surface-dark" : "workspace-surface-light"
+              }`}
+            >
+              <div className={`text-sm font-semibold ${
+                isDarkLibraryTheme ? "text-slate-200" : "text-[#1A1A2E]"
+              }`}>
+                Reading Snapshot
+              </div>
+              <div className="mt-4 flex items-center gap-4">
+                <div
+                  className="relative h-20 w-20 shrink-0 rounded-full"
+                  style={{
+                    background: `conic-gradient(${isDarkLibraryTheme ? "#60a5fa" : "#2563eb"} ${readingSnapshotProgress}%, ${isDarkLibraryTheme ? "#334155" : "#e5e7eb"} ${readingSnapshotProgress}% 100%)`
+                  }}
+                >
+                  <div className={`absolute inset-[7px] rounded-full ${isDarkLibraryTheme ? "bg-slate-900" : "bg-white"}`} />
+                  <div className="absolute inset-0 flex flex-col items-center justify-center leading-tight">
+                    <span className={`text-[18px] font-extrabold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+                      {readingSnapshot.finishedBooks}
+                    </span>
+                    <span className={`text-[10px] font-semibold ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                      / {readingSnapshot.totalBooks || 0}
+                    </span>
+                  </div>
+                </div>
+                <div className="space-y-2.5">
+                  <div className="inline-flex items-center gap-2">
+                    <Clock size={14} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
+                    <div className="leading-tight">
+                      <div className={`text-[11px] font-medium ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Hours</div>
+                      <div className={`text-lg font-bold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+                        {formatRoundedHours(readingSnapshot.totalSeconds)}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="inline-flex items-center gap-2">
+                    <FileText size={14} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
+                    <div className="leading-tight">
+                      <div className={`text-[11px] font-medium ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Pages done</div>
+                      <div className={`text-lg font-bold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+                        {readingSnapshot.completedPages}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className={`mt-4 inline-flex w-full items-center gap-2 border-t pt-3 text-[12px] ${isDarkLibraryTheme ? "border-slate-700 text-slate-400" : "border-gray-100 text-gray-600"}`}>
+                <History size={14} className={isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"} />
+                <span className="font-medium">Today</span>
+                <span className={`ml-1 font-semibold ${isDarkLibraryTheme ? "text-blue-300" : "text-blue-600"}`}>
+                  {formatSessionDuration(readingSnapshot.todaySeconds)}
+                </span>
+              </div>
+            </aside>
+          )}
+          <LibraryWorkspaceSidebar
+            librarySection={librarySection}
+            isDarkLibraryTheme={isDarkLibraryTheme}
+            notesCount={notesCenterEntries.length}
+            highlightsCount={highlightsCenterEntries.length}
+            trashCount={trashedBooksCount}
+            onSelectSection={handleSidebarSectionSelect}
+            className={showReadingSnapshot ? "mt-4" : ""}
+          />
+        </div>
 
         <div className="w-full min-w-0">
         <LibraryWorkspaceMobileNav
@@ -2572,97 +3642,111 @@ export default function Home() {
         />
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10">
           <div>
-            {isAccountSection ? (
-              <>
-                <h1 className={`text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                  Account
-                </h1>
-                <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                  Manage your profile details and account preferences.
-                </p>
-              </>
-            ) : (
-              <>
-                <h1 className="text-4xl font-extrabold text-gray-900 tracking-tight">
-                  {isCollectionsPage ? "My Collections" : isTrashSection ? "Trash" : "My Library"}
-                </h1>
-                <p className="text-gray-500 mt-1">
-                  {isCollectionsPage
-                    ? `${collections.length} collection${collections.length === 1 ? "" : "s"}`
-                    : isTrashSection
-                    ? `Showing ${sortedTrashBooks.length} of ${trashedBooksCount} deleted books`
-                    : sortedBooks.length === activeBooks.length
-                    ? `You have ${activeBooks.length} books`
-                    : `Showing ${sortedBooks.length} of ${activeBooks.length} books`}
-                  {!isTrashSection && !isCollectionsPage && trashedBooksCount > 0 ? ` · ${trashedBooksCount} in trash` : ""}
-                </p>
-                {!isCollectionsPage && !isTrashSection && (
-                  <>
-                    <div
-                      data-testid="library-streak-badge"
-                      className={`mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${
-                        streakCount > 0
-                          ? 'border-orange-200 bg-orange-50 text-orange-700'
-                          : 'border-gray-200 bg-white text-gray-500'
-                      }`}
-                      title={streakCount > 0 && !readToday ? 'Read today to keep your streak alive.' : 'Daily reading streak'}
-                    >
-                      <Flame size={14} className={streakCount > 0 ? 'text-orange-500' : 'text-gray-400'} />
-                      <span>{streakCount > 0 ? `${streakCount}-day streak` : 'No streak yet'}</span>
-                    </div>
+            <div className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-500"}`}>
+              Workspace
+            </div>
+            <h1 className={`mt-1 text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
+              {sectionHeader.title}
+            </h1>
+            <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+              {sectionHeader.subtitle}
+            </p>
+            <p className={`mt-1 text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-600"}`}>
+              {sectionHeader.summary}
+            </p>
 
-                    <div data-testid="library-quick-filters" className="mt-3 flex flex-wrap gap-2">
-                      {quickFilterStats.map((stat) => {
-                        const isQuickActive =
-                          stat.key === "favorites"
-                            ? isFlagFilterActive("favorites")
-                            : statusFilter === stat.key;
-                        return (
-                        <button
-                          key={stat.key}
-                          type="button"
-                          data-testid={`library-quick-filter-${stat.key}`}
-                          aria-pressed={isQuickActive}
-                          onClick={() => {
-                            if (stat.key === "favorites") {
-                              toggleFlagFilter("favorites");
-                              return;
-                            }
-                            setStatusFilter(stat.key);
-                          }}
-                          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
-                            isQuickActive
-                              ? "border-blue-200 bg-blue-50 text-blue-700"
-                              : "border-gray-200 bg-white text-gray-600 hover:border-blue-200 hover:text-blue-700"
-                          }`}
-                          title={`Show ${stat.label.toLowerCase()} books`}
-                        >
-                          <span>{stat.label}</span>
-                          <span
-                            data-testid={`library-quick-filter-${stat.key}-count`}
-                            className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold ${
-                              isQuickActive ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
-                            }`}
-                          >
-                            {stat.count}
-                          </span>
-                        </button>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
+            {shouldShowLibraryHomeContent && (
+              <>
+                <div
+                  data-testid="library-streak-badge"
+                  className={`mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${
+                    streakCount > 0
+                      ? 'border-orange-200 bg-orange-50 text-orange-700'
+                      : 'border-gray-200 bg-white text-gray-500'
+                  }`}
+                  title={streakCount > 0 && !readToday ? 'Read today to keep your streak alive.' : 'Daily reading streak'}
+                >
+                  <Flame size={14} className={streakCount > 0 ? 'text-orange-500' : 'text-gray-400'} />
+                  <span>{streakCount > 0 ? `${streakCount}-day streak` : 'No streak yet'}</span>
+                </div>
+
+                <div data-testid="library-quick-filters" className="mt-3 flex flex-wrap gap-2">
+                  {quickFilterStats.map((stat) => {
+                    const isQuickActive =
+                      stat.key === "favorites"
+                        ? isFlagFilterActive("favorites")
+                        : statusFilter === stat.key;
+                    return (
+                    <button
+                      key={stat.key}
+                      type="button"
+                      data-testid={`library-quick-filter-${stat.key}`}
+                      aria-pressed={isQuickActive}
+                      onClick={() => {
+                        if (stat.key === "favorites") {
+                          toggleFlagFilter("favorites");
+                          return;
+                        }
+                        setStatusFilter(stat.key);
+                      }}
+                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                        isQuickActive
+                          ? "border-blue-200 bg-blue-50 text-blue-700"
+                          : "border-gray-200 bg-white text-gray-600 hover:border-blue-200 hover:text-blue-700"
+                      }`}
+                      title={`Show ${stat.label.toLowerCase()} books`}
+                    >
+                      <span>{stat.label}</span>
+                      <span
+                        data-testid={`library-quick-filter-${stat.key}-count`}
+                        className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold ${
+                          isQuickActive ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
+                        }`}
+                      >
+                        {stat.count}
+                      </span>
+                    </button>
+                    );
+                  })}
+                </div>
               </>
             )}
           </div>
 
           {!isAccountSection && (
-          <div className="flex w-full flex-wrap items-center gap-3 md:w-auto md:justify-end">
+          <div className="relative flex w-full flex-wrap items-center gap-3 md:w-auto md:justify-end" ref={notificationsMenuRef}>
+            <button
+              type="button"
+              data-testid="library-notifications-toggle"
+              onClick={() => {
+                setActiveNotificationMenuId("");
+                setIsNotificationsOpen((open) => !open);
+              }}
+              className={`relative inline-flex h-12 w-12 items-center justify-center rounded-full border transition ${
+                isDarkLibraryTheme
+                  ? "border-slate-500 bg-slate-800 text-slate-100 hover:bg-slate-700"
+                  : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
+              }`}
+              title="Notifications"
+              aria-label="Open notifications"
+              aria-expanded={isNotificationsOpen}
+            >
+              <Bell size={17} />
+              {notificationCount > 0 && (
+                <span
+                  data-testid="library-notifications-badge"
+                  className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center"
+                >
+                  {notificationCount}
+                </span>
+              )}
+            </button>
+
             <button
               type="button"
               data-testid="library-theme-toggle"
               onClick={() => setLibraryTheme((current) => (current === "dark" ? "light" : "dark"))}
-              className={`inline-flex h-12 min-w-[122px] items-center justify-center gap-2 rounded-full border px-4 text-sm font-semibold transition ${
+              className={`inline-flex h-12 w-12 items-center justify-center rounded-full border transition ${
                 isDarkLibraryTheme
                   ? "border-slate-500 bg-slate-800 text-slate-100 hover:bg-slate-700"
                   : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
@@ -2671,35 +3755,291 @@ export default function Home() {
               aria-label={isDarkLibraryTheme ? "Switch to light mode" : "Switch to dark mode"}
             >
               {isDarkLibraryTheme ? <Sun size={16} /> : <Moon size={16} />}
-              <span>{isDarkLibraryTheme ? "Light mode" : "Dark mode"}</span>
             </button>
 
             <button
               type="button"
-              data-testid="trash-toggle-button"
+              data-testid="library-profile-avatar"
               onClick={() => {
-                const nextSection = isTrashSection ? "library" : "trash";
-                setLibrarySection(nextSection);
-                setCollectionFilter("all");
-                setStatusFilter("all");
-                setSelectedTrashBookIds([]);
+                setIsNotificationsOpen(false);
+                setIsProfileMenuOpen((open) => !open);
               }}
-              className={`relative p-3 rounded-full border shadow-sm transition-all ${
-                isTrashSection
-                  ? "bg-amber-500 text-white border-amber-500"
-                  : "bg-white text-gray-600 border-gray-200 hover:text-amber-600 hover:border-amber-300"
+              className={`inline-flex h-12 w-12 items-center justify-center rounded-full border text-sm font-bold transition ${
+                isDarkLibraryTheme
+                  ? "border-slate-500 bg-slate-800 text-slate-100 hover:bg-slate-700"
+                  : "border-gray-200 bg-white text-[#1A1A2E] hover:border-blue-200 hover:text-blue-700"
               }`}
-              title={isTrashSection ? "Back to library" : "Open Trash"}
-              aria-label={isTrashSection ? "Back to library" : "Open Trash"}
+              title={profileLabel}
+              aria-label="Open profile menu"
+              aria-expanded={isProfileMenuOpen}
             >
-              <Trash2 size={20} />
-              {trashedBooksCount > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
-                  {trashedBooksCount}
-                </span>
-              )}
+              {profileInitials}
             </button>
 
+            {isProfileMenuOpen && (
+              <div
+                data-testid="library-profile-menu"
+                className={`absolute right-0 top-[56px] z-30 w-[230px] max-w-[calc(100vw-2rem)] rounded-2xl border p-2 shadow-xl ${
+                  isDarkLibraryTheme ? "border-slate-700 bg-slate-900 text-slate-100" : "border-gray-200 bg-white text-[#1A1A2E]"
+                }`}
+              >
+                {profileMenuItems.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      data-testid={`library-profile-menu-item-${item.key}`}
+                      onClick={() => handleProfileMenuAction(item.key)}
+                      className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm font-semibold transition ${
+                        isDarkLibraryTheme
+                          ? "text-slate-100 hover:bg-slate-800"
+                          : "text-[#1A1A2E] hover:bg-gray-50"
+                      }`}
+                    >
+                      <Icon size={15} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"} />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {isNotificationsOpen && (
+              <div
+                data-testid="library-notifications-panel"
+                className={`absolute right-0 top-[56px] z-30 w-[420px] max-w-[calc(100vw-2rem)] rounded-2xl border p-3 shadow-xl ${
+                  isDarkLibraryTheme ? "border-slate-700 bg-slate-900 text-slate-100" : "border-gray-200 bg-white text-gray-900"
+                }`}
+              >
+                <div className={`flex items-center justify-between gap-3 border-b pb-2 ${
+                  isDarkLibraryTheme ? "border-slate-700" : "border-gray-200"
+                }`}>
+                  <div>
+                    <div className="text-sm font-semibold">Notifications</div>
+                    <div className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                      {visibleNotifications.length} total
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                      {notificationCount} unread
+                    </div>
+                    {visibleNotifications.length > 0 && notificationCount > 0 && (
+                      <button
+                        type="button"
+                        data-testid="notifications-mark-all-read"
+                        onClick={handleMarkAllNotificationsRead}
+                        className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                          isDarkLibraryTheme
+                            ? "bg-slate-800 text-slate-200 hover:bg-slate-700"
+                            : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                        }`}
+                      >
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    data-testid="notification-tab-all"
+                    onClick={() => setNotificationView("all")}
+                    className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                      notificationView === "all"
+                        ? (isDarkLibraryTheme ? "bg-blue-900/50 text-blue-200" : "bg-blue-100 text-blue-700")
+                        : (isDarkLibraryTheme ? "bg-slate-800 text-slate-300 hover:bg-slate-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200")
+                    }`}
+                  >
+                    All
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="notification-tab-unread"
+                    onClick={() => setNotificationView("unread")}
+                    className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                      notificationView === "unread"
+                        ? (isDarkLibraryTheme ? "bg-blue-900/50 text-blue-200" : "bg-blue-100 text-blue-700")
+                        : (isDarkLibraryTheme ? "bg-slate-800 text-slate-300 hover:bg-slate-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200")
+                    }`}
+                  >
+                    Unread
+                  </button>
+                </div>
+                <div className="mt-2 max-h-[360px] overflow-y-auto space-y-2.5 pr-1">
+                  {filteredNotifications.length === 0 ? (
+                    <div className={`rounded-xl border p-3 text-sm ${isDarkLibraryTheme ? "border-slate-700 text-slate-400" : "border-gray-200 text-gray-500"}`}>
+                      {notificationView === "unread" ? "No unread notifications." : "No notifications for now."}
+                    </div>
+                  ) : (
+                    filteredNotifications.map((item) => {
+                      const kindConfig = notificationKindConfig[item.kind] || {
+                        label: "Notice",
+                        Icon: Bell,
+                        tone: "blue"
+                      };
+                      const KindIcon = kindConfig.Icon;
+                      const toneClass = notificationToneClasses[kindConfig.tone] || notificationToneClasses.blue;
+                      const itemTestId = item.kind === "finish-soon" ? "notification-item-finish-soon" : `notification-item-${item.kind}`;
+                      const relatedBook = item.bookId ? booksById.get(item.bookId) : null;
+                      const coverSrc = item.actorAvatar || relatedBook?.cover || "";
+                      return (
+                      <div
+                        key={item.id}
+                        data-testid={itemTestId}
+                        className={`relative cursor-pointer rounded-xl border p-3 transition ${
+                          item.isRead
+                            ? (isDarkLibraryTheme
+                                ? "border-slate-700 bg-slate-900/60 hover:border-blue-600/70"
+                                : "border-gray-200 bg-gray-50/50 hover:border-blue-200")
+                            : (isDarkLibraryTheme
+                                ? "border-blue-700 bg-blue-950/30 hover:border-blue-500"
+                                : "border-blue-200 bg-blue-50/70 hover:border-blue-300")
+                        }`}
+                        onClick={() => handleNotificationCardClick(item)}
+                      >
+                        <div className="flex items-start gap-3">
+                          {coverSrc ? (
+                            <span
+                              data-testid="notification-book-cover-avatar"
+                              className={`mt-0.5 inline-flex h-9 w-9 shrink-0 overflow-hidden rounded-full border ${
+                                isDarkLibraryTheme ? "border-slate-600" : "border-gray-200"
+                              }`}
+                            >
+                              <img src={coverSrc} alt={item.title || "Notification"} className="h-full w-full object-cover" />
+                            </span>
+                          ) : (
+                            <span className={`mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${toneClass}`}>
+                              <KindIcon size={14} />
+                            </span>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <div className="text-sm font-semibold leading-tight">{item.title}</div>
+                                <div className="mt-1 flex items-center gap-2">
+                                  <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${toneClass}`}>
+                                    {kindConfig.label}
+                                  </span>
+                                  <span className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                                    {formatNotificationTimeAgo(item.firstSeenAt)}
+                                  </span>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                data-testid="notification-menu-toggle"
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  setActiveNotificationMenuId((current) => (current === item.id ? "" : item.id));
+                                }}
+                                className={`shrink-0 rounded-full p-1.5 ${
+                                  isDarkLibraryTheme
+                                    ? "text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+                                    : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                                }`}
+                                aria-label="Open notification actions"
+                              >
+                                <MoreHorizontal size={15} />
+                              </button>
+                            </div>
+                            <div className={`mt-2 text-xs leading-relaxed ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}`}>
+                              {item.message}
+                            </div>
+                          </div>
+                        </div>
+                        {activeNotificationMenuId === item.id && (
+                          <div
+                            data-testid="notification-actions-menu"
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
+                            className={`absolute right-3 top-9 z-10 w-[170px] rounded-xl border p-1.5 shadow-lg ${
+                              isDarkLibraryTheme ? "border-slate-700 bg-slate-900" : "border-gray-200 bg-white"
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              data-testid="notification-action-open"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                handleOpenNotificationTarget(item);
+                              }}
+                              onMouseDown={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                              }}
+                              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-semibold ${
+                                isDarkLibraryTheme ? "text-slate-200 hover:bg-slate-800" : "text-[#1A1A2E] hover:bg-gray-50"
+                              }`}
+                            >
+                              <BookIcon size={13} />
+                              <span>{item.bookId ? "Open in Reader" : "Open"}</span>
+                            </button>
+                            <button
+                              type="button"
+                              data-testid="notification-action-mark"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                handleNotificationReadState(item.id, !item.isRead);
+                                setActiveNotificationMenuId("");
+                              }}
+                              className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-xs font-semibold ${
+                                isDarkLibraryTheme ? "text-slate-200 hover:bg-slate-800" : "text-[#1A1A2E] hover:bg-gray-50"
+                              }`}
+                            >
+                              <span className="inline-flex items-center gap-2">
+                                <Mail size={13} />
+                                {item.isRead ? "Mark as unread" : "Mark as read"}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              data-testid="notification-action-archive"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                handleNotificationArchive(item.id);
+                              }}
+                              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-semibold ${
+                                isDarkLibraryTheme ? "text-slate-200 hover:bg-slate-800" : "text-[#1A1A2E] hover:bg-gray-50"
+                              }`}
+                            >
+                              <Archive size={13} />
+                              <span>Archive</span>
+                            </button>
+                            <button
+                              type="button"
+                              data-testid="notification-action-delete"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                handleNotificationDelete(item.id);
+                              }}
+                              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-semibold ${
+                                isDarkLibraryTheme ? "text-rose-300 hover:bg-rose-900/20" : "text-rose-600 hover:bg-rose-50"
+                              }`}
+                            >
+                              <Trash2 size={13} />
+                              <span>Delete</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )})
+                  )}
+                </div>
+              </div>
+            )}
           </div>
           )}
         </header>
@@ -2714,14 +4054,22 @@ export default function Home() {
           />
         )}
 
-        {!isAccountSection && (
+        {isStatisticsSection && (
+          <LibraryReadingStatisticsSection
+            isDarkLibraryTheme={isDarkLibraryTheme}
+            books={activeBooks}
+            buildReaderPath={buildReaderPath}
+            onOpenBook={handleOpenBook}
+          />
+        )}
+
+        {!isAccountSection && !isStatisticsSection && (
         <>
         {shouldShowContinueReading && (
           <section className="mb-8" data-testid="continue-reading-rail">
-            <div className="flex items-center justify-between gap-3 mb-3">
+            <div className="flex items-center justify-between gap-3 mb-4">
               <div>
                 <h2 className="text-lg font-bold text-gray-900">Continue Reading</h2>
-                <p className="text-xs text-gray-500">Quick resume for books you already started.</p>
               </div>
               <button
                 type="button"
@@ -2732,44 +4080,97 @@ export default function Home() {
               </button>
             </div>
 
-            <div className="flex gap-4 overflow-x-auto pb-2">
-              {continueReadingBooks.map((book) => (
-                <Link
-                  to={buildReaderPath(book.id)}
-                  key={`continue-${book.id}`}
-                  data-testid="continue-reading-card"
-                  onClick={() => handleOpenBook(book.id)}
-                  className="min-w-[240px] max-w-[240px] rounded-2xl border border-gray-200 bg-white shadow-sm hover:shadow-md transition-all"
-                >
-                  <div className="p-3 flex gap-3">
-                    <div className="w-14 h-20 bg-gray-200 rounded-lg overflow-hidden shrink-0">
-                      {book.cover ? (
-                        <img src={book.cover} alt={book.title} className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-gray-300">
-                          <BookIcon size={16} />
-                        </div>
-                      )}
-                    </div>
+            <div className="grid [grid-template-columns:repeat(auto-fit,minmax(340px,1fr))] gap-x-4 gap-y-10 pb-3 pr-2">
+              {continueReadingBooks.map((book) => {
+                const progress = Math.max(0, Math.min(100, normalizeNumber(book.progress)));
+                const estimatedRemainingSeconds = Number.isFinite(book?.__estimatedRemainingSeconds)
+                  ? book.__estimatedRemainingSeconds
+                  : getEstimatedRemainingSeconds(book);
+                const estimatedTimeLeft = formatEstimatedTimeLeft(estimatedRemainingSeconds);
+                const timeLeftTone = getContinueReadingTimeLeftTone(estimatedRemainingSeconds);
+                return (
+                  <div key={`continue-${book.id}`} className="pl-[88px] sm:pl-[100px] py-1">
+                    <Link
+                      id={`continue-reading-${book.id}`}
+                      to={buildReaderPath(book.id)}
+                      data-testid="continue-reading-card"
+                      onClick={() => handleOpenBook(book.id)}
+                      className={`group workspace-interactive-card relative block w-full min-h-[190px] sm:min-h-[196px] rounded-[24px] ${
+                        isDarkLibraryTheme ? "workspace-interactive-card-dark" : "workspace-interactive-card-light"
+                      } ${
+                        !isDarkLibraryTheme ? "shadow-[0_14px_34px_rgba(15,23,42,0.10)]" : ""
+                      } ${
+                        notificationFocusedBookId === book.id
+                          ? (isDarkLibraryTheme
+                              ? "ring-2 ring-blue-400 border-blue-400 bg-blue-950/30"
+                              : "ring-2 ring-blue-300 border-blue-300 bg-blue-50/60")
+                          : ""
+                      }`}
+                    >
+                      <div
+                        className={`absolute -left-[88px] sm:-left-[100px] top-1/2 h-[186px] w-[124px] sm:h-[206px] sm:w-[138px] -translate-y-1/2 overflow-hidden rounded-[16px] ${
+                          isDarkLibraryTheme
+                            ? "bg-slate-700 shadow-[0_14px_26px_rgba(2,8,23,0.45)]"
+                            : "bg-gray-200 shadow-[0_14px_26px_rgba(15,23,42,0.18)]"
+                        }`}
+                      >
+                        {book.cover ? (
+                          <img src={book.cover} alt={book.title} className="h-full w-full object-cover" />
+                        ) : (
+                          <div className={`h-full w-full flex items-center justify-center ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-300"}`}>
+                            <BookIcon size={18} />
+                          </div>
+                        )}
+                      </div>
 
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-bold text-gray-900 line-clamp-2">{book.title}</div>
-                      <div className="mt-1 text-xs text-gray-500 truncate">{book.author}</div>
-                      <div className="mt-2 text-[11px] text-blue-600 font-semibold">
-                        {normalizeNumber(book.progress)}% · {formatTime(book.readingTime)}
+                      <div className="ml-auto w-[75%] min-h-[178px] px-5 sm:px-6 py-5 sm:py-6 flex flex-col justify-between">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className={`text-[14px] sm:text-[15px] font-normal leading-tight ${isDarkLibraryTheme ? "text-slate-400" : "text-[#666666]"}`}>
+                            {book.author}
+                          </div>
+                          {book.isFavorite ? (
+                            <span
+                              title="Favorite"
+                              aria-label="Favorite book"
+                              data-testid="continue-reading-favorite-badge"
+                              className={`mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border ${
+                                isDarkLibraryTheme
+                                  ? "border-rose-900/50 bg-rose-900/30 text-rose-300"
+                                  : "border-rose-200 bg-rose-50 text-rose-500"
+                              }`}
+                            >
+                              <Heart size={13} className="fill-current" />
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className={`mt-1.5 text-[22px] sm:text-[24px] font-semibold leading-[1.12] tracking-tight line-clamp-2 ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+                          {book.title}
+                        </div>
+                        <div className="mt-3 inline-flex items-center gap-2 text-[#4CAF50]">
+                          <span className="relative inline-flex h-8 w-8 items-center justify-center" data-testid="continue-reading-ring">
+                            <span
+                              className="absolute inset-0 rounded-full"
+                              style={{ background: `conic-gradient(#4CAF50 ${progress * 3.6}deg, rgba(148, 163, 184, 0.28) 0deg)` }}
+                            />
+                            <span className={`absolute inset-[2px] rounded-full ${isDarkLibraryTheme ? "bg-slate-800" : "bg-white"}`} />
+                          </span>
+                          <span className="text-[16px] sm:text-[17px] font-medium leading-none">Continue</span>
+                        </div>
+                        {estimatedTimeLeft && (
+                          <div
+                            data-testid="continue-reading-time-left"
+                            data-tone={timeLeftTone.tone}
+                            className={`mt-2 inline-flex items-center gap-1.5 text-xs font-medium ${timeLeftTone.className}`}
+                          >
+                            <Clock size={12} />
+                            <span>{estimatedTimeLeft}</span>
+                          </div>
+                        )}
                       </div>
-                      {renderSessionTimeline(book, { compact: true })}
-                      <div className="mt-1 text-[10px] text-gray-400">{formatLastRead(book.lastRead)}</div>
-                      <div className="mt-2 w-full bg-gray-100 h-1.5 rounded-full overflow-hidden">
-                        <div
-                          className="bg-blue-600 h-full transition-all duration-700"
-                          style={{ width: `${normalizeNumber(book.progress)}%` }}
-                        />
-                      </div>
-                    </div>
+                    </Link>
                   </div>
-                </Link>
-              ))}
+                );
+              })}
             </div>
           </section>
         )}
@@ -2778,6 +4179,7 @@ export default function Home() {
           <LibraryToolbarSection
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
+            searchPlaceholder="Search library (title, author, notes, highlights, bookmarks)..."
             statusFilter={statusFilter}
             onStatusFilterChange={setStatusFilter}
             statusFilterOptions={statusFilterOptions}
@@ -2794,6 +4196,78 @@ export default function Home() {
             canShowResetFilters={canShowResetFilters}
             onResetFilters={resetLibraryFilters}
           />
+        )}
+        {shouldShowLibraryHomeContent && sortedBooks.length > 0 && (
+          isLibrarySelectionMode ? (
+            <div data-testid="library-bulk-actions" className="mb-6 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                data-testid="library-select-all"
+                onClick={handleToggleSelectAllLibrary}
+                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+              >
+                {allVisibleLibrarySelected ? "Unselect all" : "Select all"}
+              </button>
+              <span data-testid="library-selected-count" className="text-xs font-semibold text-gray-500">
+                {librarySelectedCount} selected
+              </span>
+              <button
+                type="button"
+                data-testid="library-bulk-to-read"
+                onClick={handleBulkMarkToRead}
+                disabled={!librarySelectedCount}
+                className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 enabled:hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Add to To Read
+              </button>
+              <button
+                type="button"
+                data-testid="library-bulk-favorite"
+                onClick={handleBulkFavorite}
+                disabled={!librarySelectedCount}
+                className="inline-flex items-center rounded-full border border-pink-200 bg-pink-50 px-3 py-1.5 text-xs font-semibold text-pink-700 enabled:hover:bg-pink-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Favorite selected
+              </button>
+              <button
+                type="button"
+                data-testid="library-bulk-trash"
+                onClick={handleBulkMoveToTrash}
+                disabled={!librarySelectedCount}
+                className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 enabled:hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Move to Trash
+              </button>
+              <button
+                type="button"
+                data-testid="library-clear-selection"
+                onClick={handleClearLibrarySelection}
+                disabled={!librarySelectedCount}
+                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 enabled:hover:border-blue-200 enabled:hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Clear selection
+              </button>
+              <button
+                type="button"
+                data-testid="library-exit-select-mode"
+                onClick={handleExitLibrarySelectionMode}
+                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+              >
+                Done
+              </button>
+            </div>
+          ) : (
+            <div data-testid="library-bulk-select-entry" className="mb-6 flex items-center gap-2">
+              <button
+                type="button"
+                data-testid="library-enter-select-mode"
+                onClick={handleEnterLibrarySelectionMode}
+                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+              >
+                Select
+              </button>
+            </div>
+          )
         )}
         {isTrashSection && (
           <>
@@ -2920,11 +4394,15 @@ export default function Home() {
             </div>
           </>
         )}
-        {isNotesCenterOpen && !isTrashSection && (
+        {isNotesSection && !isTrashSection && (
           <LibraryNotesCenterPanel
-            notesCenterFilteredEntries={notesCenterFilteredEntries}
+            isDarkLibraryTheme={isDarkLibraryTheme}
+            notesCenterFilteredEntries={notesCenterDisplayEntries}
             notesCenterPairs={notesCenterPairs}
-            searchQuery={searchQuery}
+            searchQuery={notesSearchQuery}
+            onSearchChange={setNotesSearchQuery}
+            sortBy={notesCenterSortBy}
+            onSortChange={setNotesCenterSortBy}
             contentPanelHeightClass={CONTENT_PANEL_HEIGHT_CLASS}
             contentScrollHeightClass={CONTENT_SCROLL_HEIGHT_CLASS}
             renderBookCard={renderGlobalSearchBookCard}
@@ -2940,11 +4418,15 @@ export default function Home() {
           />
         )}
 
-        {isHighlightsCenterOpen && !isTrashSection && (
+        {isHighlightsSection && !isTrashSection && (
           <LibraryHighlightsCenterPanel
-            highlightsCenterFilteredEntries={highlightsCenterFilteredEntries}
+            isDarkLibraryTheme={isDarkLibraryTheme}
+            highlightsCenterFilteredEntries={highlightsCenterDisplayEntries}
             highlightsCenterPairs={highlightsCenterPairs}
-            searchQuery={searchQuery}
+            searchQuery={highlightsSearchQuery}
+            onSearchChange={setHighlightsSearchQuery}
+            sortBy={highlightsCenterSortBy}
+            onSortChange={setHighlightsCenterSortBy}
             contentPanelHeightClass={CONTENT_PANEL_HEIGHT_CLASS}
             contentScrollHeightClass={CONTENT_SCROLL_HEIGHT_CLASS}
             renderBookCard={renderGlobalSearchBookCard}
@@ -3030,7 +4512,7 @@ export default function Home() {
                     }
                     handleOpenBook(book.id);
                   }}
-                  className={`group bg-white rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden border border-gray-100 flex flex-col relative ${
+                  className={`group workspace-interactive-card workspace-interactive-card-light rounded-2xl overflow-hidden flex flex-col relative ${
                     isRecent ? "ring-2 ring-amber-400 ring-offset-2 ring-offset-white shadow-[0_0_0_3px_rgba(251,191,36,0.2)]" : ""
                   }`}
                   style={VIRTUAL_GRID_CARD_STYLE}
@@ -3045,7 +4527,11 @@ export default function Home() {
                       </div>
                     )}
 
-                    <div className="absolute top-3 right-3 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                    <div
+                      className={`absolute top-4 right-4 z-10 flex translate-y-1 flex-col gap-2 rounded-2xl p-1 opacity-0 backdrop-blur-sm transition-all group-hover:translate-y-0 group-hover:opacity-100 ${
+                        isDarkLibraryTheme ? "bg-slate-900/45" : "bg-white/70"
+                      }`}
+                    >
                       {inTrash ? (
                         <>
                           <button
@@ -3159,6 +4645,29 @@ export default function Home() {
                         />
                       </label>
                     )}
+                    {!inTrash && isLibrarySelectionMode && (
+                      <label
+                        data-testid={`library-book-select-${book.id}`}
+                        className="absolute left-3 top-3 z-10 inline-flex items-center rounded-lg bg-white/95 px-2 py-1 text-[11px] font-semibold text-gray-700 shadow-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                        }}
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          data-testid={`library-book-select-input-${book.id}`}
+                          className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 accent-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
+                          checked={selectedLibraryBookIds.includes(book.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                          }}
+                          onChange={() => handleToggleLibrarySelection(book.id)}
+                        />
+                      </label>
+                    )}
                     
                     <div className="absolute bottom-3 right-3 bg-black/60 backdrop-blur-md text-white text-xs font-bold px-2 py-1 rounded-lg">
                       {book.progress}%
@@ -3225,11 +4734,11 @@ export default function Home() {
                   </div>
 
                   <div className="p-5 flex-1 flex flex-col">
-                    <h3 className="font-bold text-gray-900 text-lg leading-tight mb-2 line-clamp-2 group-hover:text-blue-600 transition-colors">
+                    <h3 className="font-semibold text-[#1A1A2E] text-[22px] leading-[1.12] mb-2 line-clamp-2 group-hover:text-blue-600 transition-colors">
                       {book.title}
                     </h3>
                     
-                    <div className="flex items-center gap-2 text-gray-500 text-sm mb-1">
+                    <div className="flex items-center gap-2 text-[#666666] text-[15px] mb-1">
                       <User size={14} />
                       <span className="truncate">{book.author}</span>
                     </div>
@@ -3237,26 +4746,15 @@ export default function Home() {
                     {renderMetadataBadges(book)}
                     {renderCollectionChips(book)}
 
-                    {renderReadingStateBadge(book, "mt-2")}
-                    {renderToReadTag(book, "mt-2")}
+                    {renderReadingStateBadge(book, "mt-1.5")}
                     {renderSessionTimeline(book)}
-
-                    <div className="mt-auto pt-4 flex justify-between items-center text-[10px] text-gray-400 font-medium">
-                      {book.pubDate ? (
-                        <div className="flex items-center gap-1">
-                          <Calendar size={10} />
-                          <span>{new Date(book.pubDate).getFullYear() || book.pubDate}</span>
-                        </div>
-                      ) : <span></span>}
-                      
-                      <span>{inTrash ? formatDeletedAt(book.deletedAt) : formatLastRead(book.lastRead)}</span>
+                    <div className="mt-1.5 min-h-[26px] flex flex-wrap items-center gap-1.5">
+                      {renderGenreChip(book)}
+                      {renderToReadTag(book)}
                     </div>
 
-                    <div className="w-full bg-gray-100 h-1.5 rounded-full mt-2 overflow-hidden">
-                      <div 
-                        className="bg-blue-600 h-full transition-all duration-1000" 
-                        style={{ width: `${book.progress}%` }}
-                      />
+                    <div className="mt-auto pt-4 text-[11px] text-gray-400 font-medium text-right">
+                      <span>{inTrash ? formatDeletedAt(book.deletedAt) : formatLastRead(book.lastRead)}</span>
                     </div>
 
                   </div>
@@ -3280,7 +4778,7 @@ export default function Home() {
                     }
                     handleOpenBook(book.id);
                   }}
-                  className={`group bg-white rounded-2xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden border border-gray-100 flex ${
+                  className={`group workspace-interactive-card workspace-interactive-card-light rounded-2xl overflow-hidden flex ${
                     isRecent ? "ring-2 ring-amber-400 ring-offset-2 ring-offset-white shadow-[0_0_0_3px_rgba(251,191,36,0.2)]" : ""
                   }`}
                   style={VIRTUAL_LIST_CARD_STYLE}
@@ -3301,11 +4799,11 @@ export default function Home() {
 
                   <div className="flex-1 p-4 flex flex-col md:flex-row md:items-center gap-4 min-w-0">
                     <div className="flex-1 min-w-0">
-                      <h3 className="font-bold text-gray-900 text-base leading-tight line-clamp-1 group-hover:text-blue-600 transition-colors">
+                      <h3 className="font-semibold text-[#1A1A2E] text-[22px] leading-[1.12] line-clamp-1 group-hover:text-blue-600 transition-colors">
                         {book.title}
                       </h3>
 
-                      <div className="mt-1 flex items-center gap-2 text-gray-500 text-sm">
+                      <div className="mt-1 flex items-center gap-2 text-[#666666] text-[15px]">
                         <User size={14} />
                         <span className="truncate">{book.author}</span>
                       </div>
@@ -3313,25 +4811,15 @@ export default function Home() {
                       {renderMetadataBadges(book)}
                       {renderCollectionChips(book)}
 
-                      {renderReadingStateBadge(book, "mt-2")}
-                      {renderToReadTag(book, "mt-2")}
+                      {renderReadingStateBadge(book, "mt-1.5")}
                       {renderSessionTimeline(book)}
-
-                      <div className="mt-2 text-[11px] text-gray-400 flex items-center justify-between gap-3">
-                        <span>{inTrash ? formatDeletedAt(book.deletedAt) : formatLastRead(book.lastRead)}</span>
-                        {book.pubDate ? (
-                          <span className="inline-flex items-center gap-1">
-                            <Calendar size={10} />
-                            <span>{new Date(book.pubDate).getFullYear() || book.pubDate}</span>
-                          </span>
-                        ) : <span />}
+                      <div className="mt-1.5 min-h-[26px] flex flex-wrap items-center gap-1.5">
+                        {renderGenreChip(book)}
+                        {renderToReadTag(book)}
                       </div>
 
-                      <div className="w-full bg-gray-100 h-1.5 rounded-full mt-3 overflow-hidden">
-                        <div
-                          className="bg-blue-600 h-full transition-all duration-700"
-                          style={{ width: `${book.progress}%` }}
-                        />
+                      <div className="mt-2 text-[11px] text-gray-400">
+                        <span>{inTrash ? formatDeletedAt(book.deletedAt) : formatLastRead(book.lastRead)}</span>
                       </div>
                     </div>
 
@@ -3356,6 +4844,29 @@ export default function Home() {
                               e.stopPropagation();
                             }}
                             onChange={() => handleToggleTrashSelection(book.id)}
+                          />
+                        </label>
+                      )}
+                    {!inTrash && isLibrarySelectionMode && (
+                        <label
+                          data-testid={`library-book-select-${book.id}`}
+                          className="inline-flex items-center justify-end gap-2 rounded-lg px-2 py-1 text-xs font-semibold text-gray-600"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                          }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            data-testid={`library-book-select-input-${book.id}`}
+                            className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 accent-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
+                            checked={selectedLibraryBookIds.includes(book.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                            }}
+                            onChange={() => handleToggleLibrarySelection(book.id)}
                           />
                         </label>
                       )}
@@ -3590,16 +5101,14 @@ export default function Home() {
             </div>
           </div>
         )}
-        {showUploadSuccess && (
-          <div className="fixed bottom-24 right-6 z-50">
-            <div
-              data-testid="upload-success-toast"
-              className="rounded-full border border-amber-300 px-4 py-2 text-xs font-semibold text-amber-700 bg-amber-50/40 backdrop-blur-sm shadow-sm"
-            >
-              {uploadSuccessMessage}
-            </div>
-          </div>
-        )}
+        <FeedbackToast
+          toast={feedbackToast}
+          isDark={isDarkLibraryTheme}
+          onDismiss={dismissFeedbackToast}
+          testId="library-feedback-toast"
+          actionTestId="library-feedback-action"
+          className="fixed bottom-6 right-6 z-50"
+        />
         {duplicatePrompt && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
             <div

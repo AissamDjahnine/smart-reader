@@ -20,3 +20,9 @@ This file tracks lightweight product/UI improvement ideas when requested.
   - Optional pulse animation only on milestone days (7, 30, 100).
   - Optional tooltip copy:
     - "Read today to keep your streak alive."
+
+## Reading Stats Backlog
+
+- Reintroduce a redesigned `Heatmap` mode in `Reading activity` after visual cleanup.
+  - Keep it optional in the activity view switch.
+  - Improve density/contrast so it feels lighter and less crowded.

@@ -4,7 +4,7 @@ import ePub from 'epubjs';
 const bookStore = localforage.createInstance({ name: "SmartReaderLib" });
 const collectionsStore = localforage.createInstance({ name: "SmartReaderLib", storeName: "collections" });
 const mutationQueues = new Map();
-const BOOK_METADATA_VERSION = 1;
+const BOOK_METADATA_VERSION = 2;
 const TRASH_RETENTION_DAYS = 30;
 const READING_SESSION_BREAK_MS = 10 * 60 * 1000;
 const MAX_READING_SESSIONS = 180;
@@ -82,18 +82,86 @@ const normalizeCollectionColor = (value) => {
   return ALLOWED_COLLECTION_COLORS.has(clean) ? clean : DEFAULT_COLLECTION_COLOR;
 };
 
+const cleanGenreToken = (value) =>
+  (value || "")
+    .toString()
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const normalizeGenreLabel = (value) => {
+  const clean = cleanGenreToken(value);
+  if (!clean) return "";
+  const lower = clean.toLowerCase();
+
+  if (/\b(science fiction|sci[- ]?fi)\b/.test(lower)) return "Science Fiction";
+  if (/\b(fantasy)\b/.test(lower)) return "Fantasy";
+  if (/\b(horror)\b/.test(lower)) return "Horror";
+  if (/\b(thriller|suspense)\b/.test(lower)) return "Thriller";
+  if (/\b(mystery|crime|detective)\b/.test(lower)) return "Mystery";
+  if (/\b(romance|love story)\b/.test(lower)) return "Romance";
+  if (/\b(classic|classics)\b/.test(lower)) return "Classic";
+  if (/\b(historical fiction|historical)\b/.test(lower)) return "Historical";
+  if (/\b(poetry|poems)\b/.test(lower)) return "Poetry";
+  if (/\b(drama|plays?)\b/.test(lower)) return "Drama";
+  if (/\b(biography|memoir|autobiography)\b/.test(lower)) return "Biography";
+  if (/\b(history)\b/.test(lower)) return "History";
+  if (/\b(philosophy)\b/.test(lower)) return "Philosophy";
+  if (/\b(non[- ]?fiction)\b/.test(lower)) return "Nonfiction";
+  if (/\b(fiction)\b/.test(lower)) return "Fiction";
+
+  return clean
+    .split(" ")
+    .map((word) => {
+      if (!word) return word;
+      const upper = word.toUpperCase();
+      if (upper.length <= 3) return upper;
+      return upper[0] + word.slice(1).toLowerCase();
+    })
+    .join(" ");
+};
+
+const pushGenreCandidate = (source, out) => {
+  if (source == null) return;
+  if (Array.isArray(source)) {
+    source.forEach((item) => pushGenreCandidate(item, out));
+    return;
+  }
+  if (typeof source === "object") {
+    const keys = ["genre", "subject", "subjects", "type", "types", "value", "label", "name", "text"];
+    keys.forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(source, key)) {
+        pushGenreCandidate(source[key], out);
+      }
+    });
+    return;
+  }
+  if (typeof source !== "string") return;
+  source
+    .split(/[,;|/]/)
+    .map((item) => cleanGenreToken(item))
+    .filter(Boolean)
+    .forEach((item) => out.push(item));
+};
+
 const extractGenre = (metadata = {}) => {
-  const candidates = [metadata.genre, metadata.subject, metadata.subjects, metadata.type];
+  const candidates = [];
+  [
+    metadata.genre,
+    metadata.subject,
+    metadata.subjects,
+    metadata.type,
+    metadata.types,
+    metadata["dc:subject"],
+    metadata["dc:type"],
+    metadata.subjectterm,
+    metadata.tags
+  ].forEach((value) => pushGenreCandidate(value, candidates));
+
   for (const candidate of candidates) {
-    if (Array.isArray(candidate)) {
-      const firstText = candidate.find((item) => typeof item === "string" && item.trim());
-      if (firstText) return firstText.trim();
-      continue;
-    }
-    if (typeof candidate === "string" && candidate.trim()) {
-      const [first] = candidate.split(/[,;|]/);
-      if (first?.trim()) return first.trim();
-    }
+    const normalized = normalizeGenreLabel(candidate);
+    if (normalized) return normalized;
   }
   return "";
 };
@@ -165,7 +233,7 @@ export const addBook = async (file, options = {}) => {
   const prepared = options.preparedMetadata || (await readEpubMetadata(file));
   const metadata = prepared?.metadata || {};
   const estimatedPages = prepared?.estimatedPages || null;
-  const genre = prepared?.genre || "";
+  const genre = prepared?.genre || extractGenre(metadata) || "";
   const finalCover = prepared?.cover || null;
   const baseTitle = metadata.title || file.name.replace('.epub', '');
   const bookTitle = options.titleOverride || baseTitle;

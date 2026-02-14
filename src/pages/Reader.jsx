@@ -3,6 +3,7 @@ import { useSearchParams, Link } from 'react-router-dom';
 import { getBook, updateBookProgress, saveHighlight, deleteHighlight, updateReadingStats, saveChapterSummary, savePageSummary, saveBookmark, deleteBookmark, updateHighlightNote, updateBookReaderSettings, markBookStarted } from '../services/db';
 import BookView from '../components/BookView';
 import { summarizeChapter } from '../services/ai'; 
+import FeedbackToast from '../components/FeedbackToast';
 
 import { 
   Moon, Sun, BookOpen, Scroll, Type, 
@@ -173,8 +174,10 @@ export default function Reader() {
   const [editingHighlight, setEditingHighlight] = useState(null);
   const [noteDraft, setNoteDraft] = useState('');
   const [pendingHighlightDelete, setPendingHighlightDelete] = useState(null);
+  const [readerToast, setReaderToast] = useState(null);
   const pendingHighlightDeleteRef = useRef(null);
   const pendingHighlightDeleteTimerRef = useRef(null);
+  const readerToastTimerRef = useRef(null);
   const [flashingHighlightCfi, setFlashingHighlightCfi] = useState(null);
   const [flashingHighlightPulse, setFlashingHighlightPulse] = useState(0);
   const highlightFlashTimersRef = useRef([]);
@@ -299,6 +302,35 @@ export default function Reader() {
     if (pendingHighlightDeleteTimerRef.current) {
       clearTimeout(pendingHighlightDeleteTimerRef.current);
       pendingHighlightDeleteTimerRef.current = null;
+    }
+    if (readerToastTimerRef.current) {
+      clearTimeout(readerToastTimerRef.current);
+      readerToastTimerRef.current = null;
+    }
+  }, []);
+
+  const dismissReaderToast = useCallback(() => {
+    if (readerToastTimerRef.current) {
+      clearTimeout(readerToastTimerRef.current);
+      readerToastTimerRef.current = null;
+    }
+    setReaderToast(null);
+  }, []);
+
+  const showReaderToast = useCallback((payload, options = {}) => {
+    const { duration = 2800 } = options;
+    if (!payload) return;
+    if (readerToastTimerRef.current) {
+      clearTimeout(readerToastTimerRef.current);
+      readerToastTimerRef.current = null;
+    }
+    const nextToast = { id: `${Date.now()}-${Math.random()}`, ...payload };
+    setReaderToast(nextToast);
+    if (duration > 0) {
+      readerToastTimerRef.current = setTimeout(() => {
+        setReaderToast((current) => (current?.id === nextToast.id ? null : current));
+        readerToastTimerRef.current = null;
+      }, duration);
     }
   }, []);
 
@@ -1770,6 +1802,11 @@ export default function Reader() {
       if (updated) {
         setHighlights(updated);
         setBook({ ...currentBook, highlights: updated });
+        showReaderToast({
+          tone: 'success',
+          title: 'Highlight saved',
+          message: 'Highlight added to this page.'
+        });
         if (selectionSnapshot?.pos) {
           const savedHighlight = updated.find((item) => item?.cfiRange === newHighlight.cfiRange) || newHighlight;
           setPostHighlightPrompt({
@@ -1783,6 +1820,11 @@ export default function Reader() {
       }
     } catch (err) {
       console.error(err);
+      showReaderToast({
+        tone: 'warning',
+        title: 'Could not save highlight',
+        message: 'Try again in a moment.'
+      });
     } finally {
       clearSelection();
     }
@@ -1805,9 +1847,19 @@ export default function Reader() {
         setHighlights(updated);
         setBook({ ...currentBook, highlights: updated });
         triggerHighlightFlash(nextHighlight.cfiRange);
+        showReaderToast({
+          tone: 'success',
+          title: 'Highlight updated',
+          message: 'Highlight color changed.'
+        });
       }
     } catch (err) {
       console.error(err);
+      showReaderToast({
+        tone: 'warning',
+        title: 'Could not update highlight',
+        message: 'Try again in a moment.'
+      });
     } finally {
       clearSelection();
     }
@@ -1975,8 +2027,18 @@ export default function Reader() {
         setHighlights(updated);
         setBook({ ...currentBook, highlights: updated });
       }
+      showReaderToast({
+        tone: 'success',
+        title: 'Note saved',
+        message: nextNote ? 'Highlight note updated.' : 'Highlight note removed.'
+      });
     } catch (err) {
       console.error(err);
+      showReaderToast({
+        tone: 'warning',
+        title: 'Could not save note',
+        message: 'Try again in a moment.'
+      });
     } finally {
       closeNoteEditor();
     }
@@ -2001,9 +2063,19 @@ export default function Reader() {
         setBook({ ...currentBook, highlights: updated });
       }
       closePostHighlightPrompt();
+      showReaderToast({
+        tone: 'success',
+        title: 'Note saved',
+        message: 'Note added to highlight.'
+      });
     } catch (err) {
       console.error(err);
       setPostHighlightNoteError('Could not save note. Try again.');
+      showReaderToast({
+        tone: 'warning',
+        title: 'Could not save note',
+        message: 'Try again in a moment.'
+      });
     } finally {
       setIsSavingPostHighlightNote(false);
     }
@@ -2311,6 +2383,11 @@ export default function Reader() {
       clearTimeout(pendingHighlightDeleteTimerRef.current);
       pendingHighlightDeleteTimerRef.current = null;
     }
+    if (readerToastTimerRef.current) {
+      clearTimeout(readerToastTimerRef.current);
+      readerToastTimerRef.current = null;
+    }
+    setReaderToast(null);
   }, [bookId, panelParam, cfiParam, searchTermParam, flashParam]);
 
   useEffect(() => {
@@ -4131,30 +4208,30 @@ export default function Reader() {
         </div>
       )}
 
-      {pendingHighlightDelete && (
-        <div
-          data-testid="highlight-undo-toast"
-          className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[69]"
-        >
-          <div className={`flex items-center gap-2 rounded-full border px-3 py-2 shadow-xl backdrop-blur ${
-            isReaderDark
-              ? 'bg-gray-800/95 border-gray-700 text-gray-100'
-              : 'bg-white/95 border-gray-200 text-gray-800'
-          }`}>
-            <span className={`text-xs font-medium ${isReaderDark ? 'text-gray-200' : 'text-gray-700'}`}>
-              Highlight deleted
-            </span>
-            <button
-              type="button"
-              data-testid="highlight-undo-action"
-              onClick={undoPendingHighlightDelete}
-              className="rounded-full bg-blue-600 px-3 py-1 text-[11px] font-semibold text-white hover:bg-blue-700"
-            >
-              Undo
-            </button>
-          </div>
-        </div>
-      )}
+      <FeedbackToast
+        toast={
+          pendingHighlightDelete
+            ? {
+              tone: 'destructive',
+              title: 'Highlight deleted',
+              message: 'You can undo this action.',
+              actionLabel: 'Undo',
+              onAction: undoPendingHighlightDelete
+            }
+            : readerToast
+        }
+        isDark={isReaderDark}
+        onDismiss={() => {
+          if (pendingHighlightDelete) {
+            setPendingHighlightDelete(null);
+            return;
+          }
+          dismissReaderToast();
+        }}
+        testId={pendingHighlightDelete ? 'highlight-undo-toast' : 'reader-feedback-toast'}
+        actionTestId={pendingHighlightDelete ? 'highlight-undo-action' : 'reader-feedback-action'}
+        className="fixed bottom-20 left-1/2 z-[69] -translate-x-1/2"
+      />
 
       {showSidebar && (
         <div className="fixed inset-0 z-[65]" data-testid="chapters-panel">
