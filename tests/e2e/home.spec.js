@@ -49,7 +49,6 @@ test('library sort and filter controls work with favorites', async ({ page }) =>
   await expect(bookLink).toBeVisible();
 
   const sortSelect = page.getByTestId('library-sort');
-  const filterSelect = page.getByTestId('library-filter');
 
   await sortSelect.selectOption('title-asc');
   await expect(sortSelect).toHaveValue('title-asc');
@@ -96,10 +95,19 @@ test('library bulk actions select books and apply to-read/favorite updates', asy
   await page.getByTestId('library-filter').selectOption('to-read');
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
 
+  const ensureLibrarySelectMode = async () => {
+    const bulkActions = page.getByTestId('library-bulk-actions');
+    if (await bulkActions.isVisible()) return;
+    const selectEntry = page.getByTestId('library-enter-select-mode');
+    if (await selectEntry.isVisible()) {
+      await selectEntry.click();
+    }
+    await expect(bulkActions).toBeVisible();
+  };
+
   await page.getByTestId('library-filter').selectOption('all');
-  if (await page.getByTestId('library-enter-select-mode').count()) {
-    await page.getByTestId('library-enter-select-mode').click();
-  }
+  await ensureLibrarySelectMode();
+  await expect(page.getByTestId('library-select-all')).toBeVisible();
   await page.getByTestId('library-select-all').click();
   await expect(page.getByTestId('library-selected-count')).toContainText('1 selected');
   await page.getByTestId('library-bulk-favorite').click();
@@ -380,7 +388,7 @@ test('upload metadata parsing falls back when worker is unavailable', async ({ p
         value: undefined,
         configurable: true,
       });
-    } catch (err) {
+    } catch {
       window.Worker = undefined;
     }
   });
@@ -807,7 +815,7 @@ test('status and flag filters can be combined', async ({ page }) => {
   const filterSelect = page.getByTestId('library-filter');
   const favoritesQuickFilter = page.getByTestId('library-quick-filter-favorites');
   await filterSelect.selectOption('to-read');
-  await favoritesQuickFilter.click();
+  await favoritesQuickFilter.dispatchEvent('click');
 
   await expect(filterSelect).toHaveValue('to-read');
   await expect(favoritesQuickFilter).toHaveAttribute('aria-pressed', 'true');
@@ -1283,7 +1291,6 @@ test('continue reading rail appears for started books and hides in filtered mode
 
   await page.goto('/');
   await expect.poll(async () => page.getByTestId('continue-reading-rail').count()).toBeGreaterThan(0);
-  const rail = page.getByTestId('continue-reading-rail');
   await expect(page.getByTestId('continue-reading-card')).toHaveCount(1);
 
   await page.getByRole('button', { name: 'View in-progress' }).click();

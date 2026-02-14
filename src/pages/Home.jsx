@@ -71,6 +71,16 @@ import LibraryCollectionsBoard from './library/LibraryCollectionsBoard';
 import LibraryGlobalSearchPanel from './library/LibraryGlobalSearchPanel';
 import LibraryToolbarSection from './library/LibraryToolbarSection';
 import LibraryReadingStatisticsSection from './library/LibraryReadingStatisticsSection';
+import {
+  buildDuplicateIndex,
+  buildDuplicateTitle,
+  findDuplicateBooks,
+  isDuplicateTitleBook,
+  stripDuplicateTitleSuffix
+} from './library/duplicateBooks';
+import { buildLibraryNotifications } from './library/libraryNotifications';
+import { buildContinueReadingBooks } from './library/continueReading';
+import { areAllVisibleIdsSelected, pruneSelectionByAllowedIds } from './library/selectionState';
 import FeedbackToast from '../components/FeedbackToast';
 
 const STARTED_BOOK_IDS_KEY = 'library-started-book-ids';
@@ -86,7 +96,6 @@ const LANGUAGE_DISPLAY_NAMES =
   typeof Intl !== "undefined" && typeof Intl.DisplayNames === "function"
     ? new Intl.DisplayNames(["en"], { type: "language" })
     : null;
-const DUPLICATE_TITLE_SUFFIX_REGEX = /\s*\(duplicate\s+\d+\)\s*$/i;
 
 const getPerfNow = () => {
   if (typeof performance !== "undefined" && typeof performance.now === "function") {
@@ -298,7 +307,11 @@ const formatMetadataValue = (rawValue, key = "") => {
 const toSafeFilename = (value, fallback = "book") => {
   const normalized = compactWhitespace(value || "");
   if (!normalized) return fallback;
-  return normalized.replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_").slice(0, 120) || fallback;
+  const unsafeChars = new Set(["<", ">", ":", "\"", "/", "\\", "|", "?", "*"]);
+  const safe = Array.from(normalized)
+    .map((char) => (unsafeChars.has(char) || char.charCodeAt(0) < 32 ? "_" : char))
+    .join("");
+  return safe.slice(0, 120) || fallback;
 };
 
 const triggerBlobDownload = (blob, filename) => {
@@ -1631,52 +1644,6 @@ export default function Home() {
     }));
   };
 
-  const normalizeDuplicateValue = (value) => (value || "").toString().trim().toLowerCase();
-  const stripDuplicateTitleSuffix = (title) =>
-    (title || "").toString().replace(DUPLICATE_TITLE_SUFFIX_REGEX, "").trim();
-  const isDuplicateTitleBook = (book) =>
-    DUPLICATE_TITLE_SUFFIX_REGEX.test((book?.title || "").toString());
-  const getDuplicateKey = (title, author) =>
-    `${normalizeDuplicateValue(title)}::${normalizeDuplicateValue(author)}`;
-
-  const buildDuplicateIndex = (sourceBooks = []) => {
-    const byKey = new Map();
-    const titleSet = new Set();
-    sourceBooks.forEach((book) => {
-      if (!book || book.isDeleted) return;
-      const key = getDuplicateKey(book.title, book.author);
-      const existing = byKey.get(key) || [];
-      byKey.set(key, [...existing, book]);
-      titleSet.add(normalizeDuplicateValue(book.title));
-    });
-    return { byKey, titleSet };
-  };
-
-  const findDuplicateBooks = (title, author, sourceBooks = books, duplicateIndex = null) => {
-    if (duplicateIndex) {
-      return duplicateIndex.byKey.get(getDuplicateKey(title, author)) || [];
-    }
-    const key = getDuplicateKey(title, author);
-    return sourceBooks.filter((book) => !book.isDeleted && getDuplicateKey(book.title, book.author) === key);
-  };
-
-  const buildDuplicateTitle = (baseTitle, sourceBooks = books, duplicateIndex = null) => {
-    const existingTitles = duplicateIndex
-      ? duplicateIndex.titleSet
-      : new Set(
-        sourceBooks
-          .filter((book) => !book.isDeleted)
-          .map((book) => normalizeDuplicateValue(book.title))
-      );
-    let idx = 1;
-    let candidate = `${baseTitle} (Duplicate ${idx})`;
-    while (existingTitles.has(normalizeDuplicateValue(candidate))) {
-      idx += 1;
-      candidate = `${baseTitle} (Duplicate ${idx})`;
-    }
-    return candidate;
-  };
-
   const completeAddBook = async (file, preparedMetadata, options = {}) => {
     const newBook = await addBook(file, {
       preparedMetadata,
@@ -2115,7 +2082,6 @@ export default function Home() {
     ],
     [activeBooks]
   );
-  const normalizedDebouncedSearchQuery = normalizeString(debouncedSearchQuery.trim());
   const normalizedDebouncedNotesSearchQuery = normalizeString(debouncedNotesSearchQuery.trim());
   const normalizedDebouncedHighlightsSearchQuery = normalizeString(debouncedHighlightsSearchQuery.trim());
   const notesCenterEntries = useMemo(
@@ -2570,40 +2536,14 @@ export default function Home() {
   const showGlobalSearchSplitColumns = showGlobalSearchBooksColumn && globalMatchedBookPairs.length === 0;
 
   const continueReadingBooks = useMemo(
-    () => [...books]
-      .filter((book) => {
-        if (book.isDeleted) return false;
-        if (isDuplicateTitleBook(book)) return false;
-        const progress = normalizeNumber(book.progress);
-        const hasStarted = isBookStarted(book);
-        return hasStarted && progress < 100;
-      })
-      .map((book) => {
-        const progress = Math.max(0, Math.min(100, normalizeNumber(book?.progress)));
-        const spentSeconds = Math.max(0, Number(book?.readingTime) || 0);
-        const estimatedRemainingSeconds =
-          progress > 0 && progress < 100 && spentSeconds > 0
-            ? Math.round((spentSeconds * (100 - progress)) / progress)
-            : 0;
-        const lastReadMs = normalizeTime(book?.lastRead);
-        const ageDays = lastReadMs > 0 ? Math.max(0, (Date.now() - lastReadMs) / (1000 * 60 * 60 * 24)) : Number.POSITIVE_INFINITY;
-        const recencyScore = Number.isFinite(ageDays) ? 1 / (1 + ageDays) : 0;
-        const nearFinishScore = progress / 100;
-        const continuePriorityScore = (recencyScore * 0.68) + (nearFinishScore * 0.32);
-        return {
-          ...book,
-          __estimatedRemainingSeconds: estimatedRemainingSeconds,
-          __continuePriorityScore: continuePriorityScore
-        };
-      })
-      .sort((left, right) => {
-        const priorityDiff = (right.__continuePriorityScore || 0) - (left.__continuePriorityScore || 0);
-        if (Math.abs(priorityDiff) > 0.0001) return priorityDiff;
-        const recencyDiff = normalizeTime(right.lastRead) - normalizeTime(left.lastRead);
-        if (recencyDiff !== 0) return recencyDiff;
-        return normalizeNumber(right.progress) - normalizeNumber(left.progress);
-      })
-      .slice(0, 8),
+    () =>
+      buildContinueReadingBooks({
+        books,
+        isDuplicateTitleBook,
+        isBookStarted,
+        normalizeNumber,
+        normalizeTime
+      }),
     [books]
   );
 
@@ -3066,12 +3006,8 @@ const formatNotificationTimeAgo = (value) => {
   const visibleLibraryIds = Array.from(new Set(sortedBooks.map((book) => book.id)));
   const trashSelectedCount = selectedTrashBookIds.length;
   const librarySelectedCount = selectedLibraryBookIds.length;
-  const allVisibleTrashSelected =
-    visibleTrashIds.length > 0 &&
-    visibleTrashIds.every((id) => selectedTrashBookIds.includes(id));
-  const allVisibleLibrarySelected =
-    visibleLibraryIds.length > 0 &&
-    visibleLibraryIds.every((id) => selectedLibraryBookIds.includes(id));
+  const allVisibleTrashSelected = areAllVisibleIdsSelected(visibleTrashIds, selectedTrashBookIds);
+  const allVisibleLibrarySelected = areAllVisibleIdsSelected(visibleLibraryIds, selectedLibraryBookIds);
   useEffect(() => {
     if (librarySection !== "library") {
       setSelectedLibraryBookIds([]);
@@ -3080,8 +3016,7 @@ const formatNotificationTimeAgo = (value) => {
     }
     setSelectedLibraryBookIds((current) => {
       if (!current.length) return current;
-      const allowed = new Set(sortedBooks.map((book) => book.id));
-      const next = current.filter((id) => allowed.has(id));
+      const next = pruneSelectionByAllowedIds(current, sortedBooks.map((book) => book.id));
       return next.length === current.length ? current : next;
     });
     if (!sortedBooks.length) {
@@ -3117,154 +3052,35 @@ const formatNotificationTimeAgo = (value) => {
   const readingSnapshotProgress = readingSnapshot.totalBooks > 0
     ? Math.max(0, Math.min(100, Math.round((readingSnapshot.finishedBooks / readingSnapshot.totalBooks) * 100)))
     : 0;
-  const libraryNotifications = useMemo(() => {
-    const nowIso = new Date().toISOString();
-    const todayKey = toLocalDateKey(new Date());
-    const duplicateReminderWeekKey = Math.floor(Date.now() / (1000 * 60 * 60 * 24 * 7));
-    const items = [];
-    const duplicateTitleBooks = activeBooks.filter((book) => isDuplicateTitleBook(book));
-    const inProgressBooks = activeBooks
-      .filter((book) => {
-        const progress = Math.max(0, Math.min(100, normalizeNumber(book?.progress)));
-        return progress > 0 && progress < 100 && !book?.isDeleted;
-      })
-      .sort((left, right) => normalizeTime(right.lastRead) - normalizeTime(left.lastRead));
-
-    if (streakCount > 0 && !readToday) {
-      items.push({
-        id: `streak-risk-${todayKey}`,
-        kind: "streak-risk",
-        title: "Streak at risk",
-        message: `Keep your ${streakCount}-day streak alive — read 5 min now.`,
-        createdAt: nowIso,
-        priority: 0,
-        actionType: "open-library-in-progress",
-        actionLabel: "Read now"
-      });
-    }
-
-    inProgressBooks
-      .map((book) => {
-        const remainingSeconds = getEstimatedRemainingSeconds(book);
-        return {
-          id: `finish-soon-${book.id}`,
-          kind: "finish-soon",
-          bookId: book.id,
-          title: book.title,
-          author: book.author,
-          message: `Can be finished in ${formatEstimatedTimeLeft(remainingSeconds).replace(" left", "")}. Pick it up now.`,
-          remainingSeconds,
-          createdAt: book.lastRead || nowIso,
-          priority: 1,
-          actionType: "open-reader",
-          actionLabel: "Open book"
-        };
-      })
-      .filter((item) => item.remainingSeconds > 0 && item.remainingSeconds <= 30 * 60)
-      .sort((left, right) => left.remainingSeconds - right.remainingSeconds)
-      .forEach((item) => items.push(item));
-
-    inProgressBooks
-      .filter((book) => getCalendarDayDiff(book.lastRead) >= 3)
-      .slice(0, 3)
-      .forEach((book) => {
-        const progress = Math.max(0, Math.min(100, normalizeNumber(book.progress)));
-        items.push({
-          id: `resume-abandoned-${book.id}`,
-          kind: "resume-abandoned",
-          bookId: book.id,
-          title: "Resume reading",
-          author: book.author,
-          message: `Back to ${book.title}? You're ${Math.round(progress)}% in.`,
-          createdAt: book.lastRead || nowIso,
-          priority: 2,
-          actionType: "open-reader",
-          actionLabel: "Resume"
-        });
-      });
-
-    inProgressBooks
-      .filter((book) => getCalendarDayDiff(book.lastRead) <= 2)
-      .slice(0, 4)
-      .forEach((book) => {
-        const progress = Math.max(0, Math.min(100, normalizeNumber(book.progress)));
-        const milestone = [90, 75, 50, 25].find((threshold) => progress >= threshold);
-        if (!milestone || progress >= 100) return;
-        items.push({
-          id: `milestone-${book.id}-${milestone}`,
-          kind: "milestone",
-          bookId: book.id,
-          title: "Milestone reached",
-          author: book.author,
-          message: `Nice progress — you reached ${milestone}% in ${book.title}.`,
-          createdAt: book.lastRead || nowIso,
-          priority: 3,
-          actionType: "open-reader",
-          actionLabel: "Keep going"
-        });
-      });
-
-    if (!readToday) {
-      items.push({
-        id: `daily-goal-${todayKey}`,
-        kind: "daily-goal",
-        title: "Daily micro-goal",
-        message: "A 10-minute session today keeps your reading momentum.",
-        createdAt: nowIso,
-        priority: 4,
-        actionType: "open-library-in-progress",
-        actionLabel: "Start 10 min"
-      });
-    }
-
-    const untouchedToRead = activeBooks.filter((book) => {
-      if (!isBookToRead(book)) return false;
-      if (isBookStarted(book)) return false;
-      const ageDays = getCalendarDayDiff(book?.addedAt || book?.lastRead || 0);
-      return ageDays >= 7;
-    });
-    if (untouchedToRead.length > 0) {
-      items.push({
-        id: `to-read-nudge-${todayKey}`,
-        kind: "to-read-nudge",
-        title: "To Read reminder",
-        message: `Pick your next book: ${untouchedToRead.length} title${untouchedToRead.length === 1 ? "" : "s"} waiting in To Read.`,
-        createdAt: nowIso,
-        priority: 5,
-        actionType: "open-library-to-read",
-        actionLabel: "Review list"
-      });
-    }
-
-    if (duplicateTitleBooks.length > 0) {
-      const duplicateBaseTitleSet = new Set(
-        duplicateTitleBooks
-          .map((book) => stripDuplicateTitleSuffix(book.title))
-          .filter(Boolean)
-      );
-      const sampleTitles = Array.from(duplicateBaseTitleSet).slice(0, 2);
-      const sampleLabel = sampleTitles.length
-        ? ` (${sampleTitles.join(", ")}${duplicateBaseTitleSet.size > 2 ? ", ..." : ""})`
-        : "";
-      items.push({
-        id: `duplicate-cleanup-${duplicateReminderWeekKey}`,
-        kind: "duplicate-cleanup",
-        title: "Duplicate cleanup recommended",
-        message: `${duplicateTitleBooks.length} duplicate copy${duplicateTitleBooks.length === 1 ? "" : "ies"} detected${sampleLabel}. They add no value and should be deleted.`,
-        createdAt: nowIso,
-        priority: 4,
-        actionType: "open-library-duplicates",
-        actionLabel: "Review duplicates"
-      });
-    }
-
-    return items
-      .sort((left, right) => {
-        if (left.priority !== right.priority) return left.priority - right.priority;
-        return normalizeTime(right.createdAt) - normalizeTime(left.createdAt);
-      })
-      .slice(0, 16);
-  }, [activeBooks, streakCount, readToday]);
+  const libraryNotifications = useMemo(() => (
+    buildLibraryNotifications({
+      activeBooks,
+      streakCount,
+      readToday,
+      todayKey: toLocalDateKey(new Date()),
+      nowIso: new Date().toISOString(),
+      normalizeNumber,
+      getEstimatedRemainingSeconds,
+      formatEstimatedTimeLeft,
+      getCalendarDayDiff,
+      isBookToRead,
+      isBookStarted,
+      isDuplicateTitleBook,
+      stripDuplicateTitleSuffix
+    })
+  ), [
+    activeBooks,
+    streakCount,
+    readToday,
+    normalizeNumber,
+    getEstimatedRemainingSeconds,
+    formatEstimatedTimeLeft,
+    getCalendarDayDiff,
+    isBookToRead,
+    isBookStarted,
+    isDuplicateTitleBook,
+    stripDuplicateTitleSuffix
+  ]);
   useEffect(() => {
     setNotificationStateById((current) => {
       const nowIso = new Date().toISOString();
@@ -3384,23 +3200,6 @@ const formatNotificationTimeAgo = (value) => {
           snoozedUntil: prev.snoozedUntil || null,
           archivedAt: prev.archivedAt || null,
           deletedAt: prev.deletedAt || null
-        }
-      };
-    });
-  };
-
-  const handleNotificationSnooze = (id, hours = 24) => {
-    const snoozedUntil = new Date(Date.now() + (hours * 60 * 60 * 1000)).toISOString();
-    setNotificationStateById((current) => {
-      const previous = current[id] || {};
-      return {
-        ...current,
-        [id]: {
-          firstSeenAt: previous.firstSeenAt || new Date().toISOString(),
-          readAt: previous.readAt || null,
-          snoozedUntil,
-          archivedAt: previous.archivedAt || null,
-          deletedAt: previous.deletedAt || null
         }
       };
     });

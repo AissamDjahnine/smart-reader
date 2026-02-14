@@ -1176,7 +1176,7 @@ test('highlights selection controls drive export availability', async ({ page })
   await expect(exportButton).toBeDisabled();
 
   const firstItem = panel.getByTestId('highlight-item').first();
-  await firstItem.locator('button[title=\"Select highlight\"]').click();
+  await firstItem.locator('button[title="Select highlight"]').click();
   await expect(panel.getByText('1 selected')).toBeVisible();
   await expect(exportButton).toBeEnabled();
 

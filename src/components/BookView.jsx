@@ -56,7 +56,7 @@ const isLikelyFootnoteAnchor = (anchor) => {
 
   if (!href.includes('#')) return false;
   if (!markerText || markerText.length > 8) return false;
-  return /^[\d*†‡§\[\]()]+$/.test(markerText);
+  return /^(?:\d|\*|†|‡|§|\[|\]|\(|\))+$/.test(markerText);
 };
 
 const findSpineItemByHref = (book, hrefPath) => {
@@ -596,7 +596,7 @@ export default function BookView({
 
               if (emitSelection(toViewportAnchor(e?.clientX, e?.clientY, e?.target?.ownerDocument || null))) return;
 
-              const rangeCandidate = book.getRange(h.cfiRange);
+              const rangeCandidate = rendition.book?.getRange?.(h.cfiRange);
               Promise.resolve(rangeCandidate)
                 .then((resolvedRange) => {
                   if (!resolvedRange || !onSelectionRef.current) return;
@@ -701,7 +701,7 @@ export default function BookView({
               cleanup: () => marker.removeEventListener('click', clickHandler)
             });
             break;
-          } catch (err) {
+          } catch {
             // CFI may not exist in this rendered frame.
           }
         }

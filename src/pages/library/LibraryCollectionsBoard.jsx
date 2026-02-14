@@ -71,22 +71,15 @@ export default function LibraryCollectionsBoard({
     return collections.filter((collection) => (collection.name || "").toLowerCase().includes(query));
   }, [collections, collectionSearch]);
 
-  useEffect(() => {
-    if (!collections.length) {
-      setSelectedCollectionId("");
-      return;
-    }
-    if (!collections.some((collection) => collection.id === selectedCollectionId)) {
-      setSelectedCollectionId(collections[0].id);
-    }
-  }, [collections, selectedCollectionId]);
-
-  useEffect(() => {
-    if (!filteredCollections.length) return;
-    if (!filteredCollections.some((collection) => collection.id === selectedCollectionId)) {
-      setSelectedCollectionId(filteredCollections[0].id);
-    }
-  }, [filteredCollections, selectedCollectionId]);
+  const activeSelectedCollectionId = useMemo(() => {
+    if (!collections.length) return "";
+    const baseId = collections.some((collection) => collection.id === selectedCollectionId)
+      ? selectedCollectionId
+      : collections[0].id;
+    if (!filteredCollections.length) return baseId;
+    if (filteredCollections.some((collection) => collection.id === baseId)) return baseId;
+    return filteredCollections[0].id;
+  }, [collections, filteredCollections, selectedCollectionId]);
 
   useEffect(() => {
     const onResize = () => setBoardColumnCount(getBoardColumnCount());
@@ -95,7 +88,7 @@ export default function LibraryCollectionsBoard({
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const selectedCollection = collections.find((collection) => collection.id === selectedCollectionId) || null;
+  const selectedCollection = collections.find((collection) => collection.id === activeSelectedCollectionId) || null;
   const selectedCollectionBooks = selectedCollection ? (booksByCollection[selectedCollection.id] || []) : [];
   const addTargetCollection = collections.find((collection) => collection.id === addBooksCollectionId) || null;
 
@@ -388,7 +381,7 @@ export default function LibraryCollectionsBoard({
                   ) : (
                     filteredCollections.map((collection) => {
                       const items = booksByCollection[collection.id] || [];
-                      const isSelected = collection.id === selectedCollectionId;
+                      const isSelected = collection.id === activeSelectedCollectionId;
                       const isEditing = editingCollectionId === collection.id;
 
                       return (

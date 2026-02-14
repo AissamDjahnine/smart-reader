@@ -106,9 +106,9 @@ export default function Reader() {
   const [showHighlightsPanel, setShowHighlightsPanel] = useState(false);
   const [showBookmarksPanel, setShowBookmarksPanel] = useState(false);
   const [isExportingHighlights, setIsExportingHighlights] = useState(false);
-  const [isPageSummarizing, setIsPageSummarizing] = useState(false);
+  const [isPageSummarizing] = useState(false);
   const [isChapterSummarizing, setIsChapterSummarizing] = useState(false);
-  const [isStoryRecapping, setIsStoryRecapping] = useState(false);
+  const [isStoryRecapping] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [isDefining, setIsDefining] = useState(false);
   const [toc, setToc] = useState([]);
@@ -121,12 +121,12 @@ export default function Reader() {
   // Flag to indicate a background summary is in progress.  Prevents overlapping requests.
   const isBackgroundSummarizingRef = useRef(false);
   // Determines which type of analysis is being displayed in the AI modal ("page" or "story").
-  const [modalMode, setModalMode] = useState(null);
+  const [modalMode] = useState(null);
   // Holds the contextual page explanation returned from the AI.
-  const [pageSummary, setPageSummary] = useState("");
+  const [pageSummary] = useState("");
   // Holds the story-so-far recap returned from the AI.
   const [storyRecap, setStoryRecap] = useState("");
-  const [pageError, setPageError] = useState("");
+  const [pageError] = useState("");
   const [storyError, setStoryError] = useState("");
   const [isRebuildingMemory, setIsRebuildingMemory] = useState(false);
   const [rebuildProgress, setRebuildProgress] = useState({ current: 0, total: 0 });
@@ -225,8 +225,6 @@ export default function Reader() {
     lastPct: -1,
     pending: null
   });
-
-  const aiUnavailableMessage = "AI features are not available now.";
 
   const clearReturnSpotTimer = useCallback(() => {
     if (returnSpotTimerRef.current) {
@@ -385,7 +383,7 @@ export default function Reader() {
         const range = content?.range ? content.range(cfiRange) : null;
         const anchor = resolveAnchorFromRange(range, content?.document || null);
         if (anchor) return anchor;
-      } catch (err) {
+      } catch {
         // CFI can legitimately belong to another rendered section.
       }
     }
@@ -396,7 +394,7 @@ export default function Reader() {
         const anchor = resolveAnchorFromRange(rangeCandidate);
         if (anchor) return anchor;
       }
-    } catch (err) {
+    } catch {
       // Ignore fallback failures; caller can keep previous anchor.
     }
     return null;
@@ -748,146 +746,6 @@ export default function Reader() {
     return true;
   };
 
-  const sentenceSplit = (text) => {
-    if (!text) return [];
-    const cleaned = text.replace(/\s+/g, ' ').trim();
-    if (!cleaned) return [];
-    const matches = cleaned.match(/[^.!?]+[.!?]+|[^.!?]+$/g);
-    return matches ? matches.map((s) => s.trim()).filter(Boolean) : [cleaned];
-  };
-
-  const clampText = (text, max = 320) => {
-    if (!text) return '';
-    if (text.length <= max) return text;
-    return `${text.slice(0, max - 1).trim()}…`;
-  };
-
-  const normalizeForMatch = (text) => {
-    if (!text) return { normalized: '', map: [] };
-    const map = [];
-    let normalized = '';
-    let lastWasSpace = false;
-
-    for (let i = 0; i < text.length; i += 1) {
-      let ch = text[i];
-      if (ch === '’' || ch === '‘') ch = "'";
-      if (ch === '“' || ch === '”') ch = '"';
-      if (ch === '…') ch = '.';
-
-      if (/\s/.test(ch)) {
-        if (!lastWasSpace) {
-          normalized += ' ';
-          map.push(i);
-          lastWasSpace = true;
-        }
-        continue;
-      }
-
-      lastWasSpace = false;
-      normalized += ch.toLowerCase();
-      map.push(i);
-    }
-
-    return { normalized, map };
-  };
-
-  const findSentenceBounds = (text, startIndex, endIndex) => {
-    const isBoundary = (idx) => {
-      const ch = text[idx];
-      return ch === '.' || ch === '!' || ch === '?';
-    };
-
-    let prev = -1;
-    for (let i = startIndex - 1; i >= 0; i -= 1) {
-      if (isBoundary(i)) { prev = i; break; }
-    }
-
-    let next = text.length;
-    for (let i = endIndex; i < text.length; i += 1) {
-      if (isBoundary(i)) { next = i + 1; break; }
-    }
-
-    return { prev, next };
-  };
-
-  const segmentSentences = (text) => {
-    if (!text) return [];
-    if (typeof Intl !== 'undefined' && Intl.Segmenter) {
-      try {
-        const segmenter = new Intl.Segmenter('en', { granularity: 'sentence' });
-        const segments = [];
-        for (const segment of segmenter.segment(text)) {
-          const trimmed = segment.segment.trim();
-          if (!trimmed) continue;
-          segments.push({
-            text: trimmed,
-            start: segment.index,
-            end: segment.index + segment.segment.length
-          });
-        }
-        return segments;
-      } catch (err) {
-        console.error(err);
-      }
-    }
-    return [];
-  };
-
-  const extractSentenceContext = (raw, highlightText) => {
-    const target = (highlightText || '').replace(/\s+/g, ' ').trim();
-    if (!raw) return { before: '', current: target, after: '' };
-
-    const rawClean = raw.replace(/\s+/g, ' ').trim();
-    if (!target) return { before: '', current: clampText(rawClean), after: '' };
-
-    const { normalized: rawNorm, map } = normalizeForMatch(rawClean);
-    const { normalized: targetNorm } = normalizeForMatch(target);
-    let matchIndex = rawNorm.indexOf(targetNorm);
-
-    if (matchIndex < 0 && targetNorm.length) {
-      const words = targetNorm.split(' ').filter(Boolean);
-      if (words.length >= 3) {
-        const probe = words.slice(0, 4).join(' ');
-        matchIndex = rawNorm.indexOf(probe);
-      }
-    }
-
-    if (matchIndex < 0) {
-      return { before: '', current: clampText(rawClean), after: '' };
-    }
-
-    const startOriginal = map[matchIndex] ?? 0;
-    const endOriginal = map[Math.min(matchIndex + targetNorm.length - 1, map.length - 1)] ?? startOriginal;
-
-    const segments = segmentSentences(rawClean);
-    if (segments.length) {
-      const idx = segments.findIndex((seg) => seg.start <= startOriginal && seg.end >= endOriginal);
-      const currentSeg = segments[idx >= 0 ? idx : 0];
-      const beforeSeg = idx > 0 ? segments[idx - 1] : null;
-      const afterSeg = idx >= 0 && idx + 1 < segments.length ? segments[idx + 1] : null;
-      return {
-        before: clampText(beforeSeg?.text || ''),
-        current: clampText(currentSeg?.text || target),
-        after: clampText(afterSeg?.text || '')
-      };
-    }
-
-    const { prev, next } = findSentenceBounds(rawClean, startOriginal, endOriginal);
-    const current = rawClean.slice(prev + 1, next).trim();
-
-    const { prev: prevPrev } = findSentenceBounds(rawClean, Math.max(prev, 0), Math.max(prev, 0));
-    const before = prev >= 0 ? rawClean.slice(prevPrev + 1, prev + 1).trim() : '';
-
-    const { next: nextNext } = findSentenceBounds(rawClean, next + 1, next + 1);
-    const after = next < rawClean.length ? rawClean.slice(next, nextNext).trim() : '';
-
-    return {
-      before: clampText(before),
-      current: clampText(current || target),
-      after: clampText(after)
-    };
-  };
-
   const hexToRgba = (hex, alpha = 0.35) => {
     if (!hex) return `rgba(250, 204, 21, ${alpha})`;
     const clean = hex.replace('#', '').trim();
@@ -904,24 +762,6 @@ export default function Reader() {
       return `rgba(${r}, ${g}, ${b}, ${alpha})`;
     }
     return `rgba(250, 204, 21, ${alpha})`;
-  };
-
-  const buildHighlightContext = async (cfiRange, highlightText) => {
-    try {
-      if (!rendition?.book) return { before: '', current: highlightText, after: '' };
-      if (rendition.book?.ready) await rendition.book.ready;
-      const range = await rendition.book.getRange(cfiRange);
-      if (!range) return { before: '', current: highlightText, after: '' };
-      const node = range.commonAncestorContainer?.nodeType === 3
-        ? range.commonAncestorContainer.parentElement
-        : range.commonAncestorContainer;
-      const block = node?.closest?.('p, li, blockquote') || node?.closest?.('div') || node;
-      const raw = block?.textContent || '';
-      return extractSentenceContext(raw, highlightText);
-    } catch (err) {
-      console.error(err);
-      return { before: '', current: highlightText, after: '' };
-    }
   };
 
   const exportHighlightsPdf = async () => {
@@ -1526,7 +1366,7 @@ export default function Reader() {
         let data = {};
         try {
           data = await response.json();
-        } catch (err) {
+        } catch {
           data = {};
         }
 
@@ -2168,100 +2008,6 @@ export default function Reader() {
       console.error(err);
     } finally {
       setIsChapterSummarizing(false);
-    }
-  };
-
-  // Explain the currently visible page in context.  This function
-  // is invoked when the user clicks the "Explain Page" button.  It explains
-  // the current page in the context of the story so far without updating memory.
-  const handleManualPageSummary = async () => {
-    const currentBook = bookRef.current;
-    if (!rendition || !currentBook) return;
-    setModalMode('page');
-    setShowAIModal(true);
-    setIsPageSummarizing(true);
-    setPageSummary("");
-    setPageError("");
-
-    try {
-      const viewer = rendition.getContents()[0];
-      const pageText = viewer?.document?.body?.innerText || "";
-      if (!pageText) {
-        setPageError('Unable to read the current page.');
-        return;
-      }
-      const memory = getStoryMemory(currentBook);
-      const result = await summarizeChapter(pageText, memory, "contextual");
-      if (result.text) {
-        setPageSummary(result.text);
-      } else if (result.error) {
-        setPageError(aiUnavailableMessage);
-      } else {
-        setPageSummary("");
-      }
-    } catch (err) { console.error(err); } finally {
-      setIsPageSummarizing(false);
-    }
-  };
-
-  // Provide a story-so-far recap using the accumulated story memory.
-  const handleStoryRecap = async () => {
-    const currentBook = bookRef.current;
-    if (!currentBook) return;
-    setModalMode('story');
-    setShowAIModal(true);
-    setStoryRecap("");
-    setStoryError("");
-
-    const memory = getStoryMemory(currentBook);
-
-    setIsStoryRecapping(true);
-    try {
-      let pageText = "";
-      if (rendition) {
-        try {
-          const viewer = rendition.getContents()[0];
-          pageText = viewer?.document?.body?.innerText || "";
-        } catch (err) {
-          console.error(err);
-        }
-      }
-      if (!memory && !pageText) {
-        setStoryError('Unable to read the current page.');
-        return;
-      }
-      let effectiveMemory = memory;
-      if (!effectiveMemory && pageText) {
-        const seed = await summarizeChapter(pageText, "", "cumulative");
-        if (seed.text) {
-          effectiveMemory = seed.text;
-          const updatedBook = await savePageSummary(currentBook.id, `seed-${Date.now()}`, seed.text, seed.text);
-          if (updatedBook) mergeBookUpdate(updatedBook);
-        } else if (seed.error) {
-          setStoryError(aiUnavailableMessage);
-        }
-      }
-
-      if (!effectiveMemory) {
-        setStoryError((prev) => prev || 'No story memory yet. Read a bit more, then try again.');
-        return;
-      }
-
-      const recapResult = await summarizeChapter(pageText, effectiveMemory, "recap");
-      if (recapResult.text) {
-        setStoryRecap(recapResult.text);
-      } else if (recapResult.error) {
-        setStoryError(aiUnavailableMessage);
-        setStoryRecap(effectiveMemory);
-      } else {
-        setStoryRecap(effectiveMemory);
-      }
-    } catch (err) {
-      console.error(err);
-      if (memory) setStoryRecap(memory);
-      setStoryError(aiUnavailableMessage);
-    } finally {
-      setIsStoryRecapping(false);
     }
   };
 

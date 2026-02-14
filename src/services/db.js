@@ -283,7 +283,7 @@ export const addBook = async (file, options = {}) => {
 
 export const getAllBooks = async () => {
   const books = [];
-  await bookStore.iterate((value, key) => {
+  await bookStore.iterate((value) => {
     const normalized = normalizeBookCollections(value);
     books.push(normalized);
   });
@@ -498,7 +498,7 @@ export const toggleFavorite = async (id) => {
 
 export const toggleToRead = async (id) => {
   return runBookMutation(id, (book) => {
-    book.isToRead = !Boolean(book.isToRead);
+    book.isToRead = !book.isToRead;
     return book;
   });
 };
