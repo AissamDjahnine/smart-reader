@@ -505,6 +505,8 @@ export default function Home() {
   const [librarySection, setLibrarySection] = useState("library");
   const [trashSortBy, setTrashSortBy] = useState("deleted-desc");
   const [selectedTrashBookIds, setSelectedTrashBookIds] = useState([]);
+  const [selectedLibraryBookIds, setSelectedLibraryBookIds] = useState([]);
+  const [isLibrarySelectionMode, setIsLibrarySelectionMode] = useState(false);
   const [libraryRenderLimit, setLibraryRenderLimit] = useState(LIBRARY_RENDER_BATCH_SIZE);
   const [trashRenderLimit, setTrashRenderLimit] = useState(LIBRARY_RENDER_BATCH_SIZE);
   const [flagFilters, setFlagFilters] = useState([]);
@@ -1230,6 +1232,96 @@ export default function Home() {
       if (!nextIds.length) return [];
       const allSelected = nextIds.every((id) => current.includes(id));
       return allSelected ? [] : nextIds;
+    });
+  };
+
+  const handleToggleLibrarySelection = (id) => {
+    setSelectedLibraryBookIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return Array.from(next);
+    });
+  };
+
+  const handleToggleSelectAllLibrary = () => {
+    setSelectedLibraryBookIds((current) => {
+      const nextIds = Array.from(new Set(sortedBooks.map((book) => book.id)));
+      if (!nextIds.length) return [];
+      const allSelected = nextIds.every((id) => current.includes(id));
+      return allSelected ? [] : nextIds;
+    });
+  };
+
+  const handleClearLibrarySelection = () => {
+    setSelectedLibraryBookIds([]);
+  };
+
+  const handleEnterLibrarySelectionMode = () => {
+    setIsLibrarySelectionMode(true);
+  };
+
+  const handleExitLibrarySelectionMode = () => {
+    setSelectedLibraryBookIds([]);
+    setIsLibrarySelectionMode(false);
+  };
+
+  const handleBulkMarkToRead = async () => {
+    if (!selectedLibraryBookIds.length) return;
+    const selectedBooks = activeBooks.filter((book) => selectedLibraryBookIds.includes(book.id));
+    const toUpdate = selectedBooks.filter((book) => !isBookToRead(book));
+    if (!toUpdate.length) {
+      showFeedbackToast({
+        tone: "info",
+        title: "Already tagged",
+        message: "Selected books are already in To Read."
+      });
+      return;
+    }
+    await Promise.all(toUpdate.map((book) => toggleToRead(book.id)));
+    await loadLibrary();
+    showFeedbackToast({
+      tone: "success",
+      title: "To Read updated",
+      message: `${toUpdate.length} book${toUpdate.length === 1 ? "" : "s"} added to To Read.`
+    });
+  };
+
+  const handleBulkFavorite = async () => {
+    if (!selectedLibraryBookIds.length) return;
+    const selectedBooks = activeBooks.filter((book) => selectedLibraryBookIds.includes(book.id));
+    const toUpdate = selectedBooks.filter((book) => !book.isFavorite);
+    if (!toUpdate.length) {
+      showFeedbackToast({
+        tone: "info",
+        title: "Already favorites",
+        message: "Selected books are already marked as favorites."
+      });
+      return;
+    }
+    await Promise.all(toUpdate.map((book) => toggleFavorite(book.id)));
+    await loadLibrary();
+    showFeedbackToast({
+      tone: "success",
+      title: "Favorites updated",
+      message: `${toUpdate.length} book${toUpdate.length === 1 ? "" : "s"} marked as favorites.`
+    });
+  };
+
+  const handleBulkMoveToTrash = async () => {
+    if (!selectedLibraryBookIds.length) return;
+    const selectedBooks = activeBooks.filter((book) => selectedLibraryBookIds.includes(book.id));
+    if (!selectedBooks.length) return;
+    await Promise.all(selectedBooks.map((book) => moveBookToTrash(book.id)));
+    setSelectedLibraryBookIds([]);
+    await loadLibrary();
+    showFeedbackToast({
+      tone: "warning",
+      title: "Moved to Trash",
+      message: `${selectedBooks.length} book${selectedBooks.length === 1 ? "" : "s"} moved to Trash.`
     });
   };
 
@@ -2971,10 +3063,31 @@ const formatNotificationTimeAgo = (value) => {
   );
   const showRenderSentinel = isTrashSection ? hasMoreTrashBooks : hasMoreLibraryBooks;
   const visibleTrashIds = Array.from(new Set(sortedTrashBooks.map((book) => book.id)));
+  const visibleLibraryIds = Array.from(new Set(sortedBooks.map((book) => book.id)));
   const trashSelectedCount = selectedTrashBookIds.length;
+  const librarySelectedCount = selectedLibraryBookIds.length;
   const allVisibleTrashSelected =
     visibleTrashIds.length > 0 &&
     visibleTrashIds.every((id) => selectedTrashBookIds.includes(id));
+  const allVisibleLibrarySelected =
+    visibleLibraryIds.length > 0 &&
+    visibleLibraryIds.every((id) => selectedLibraryBookIds.includes(id));
+  useEffect(() => {
+    if (librarySection !== "library") {
+      setSelectedLibraryBookIds([]);
+      setIsLibrarySelectionMode(false);
+      return;
+    }
+    setSelectedLibraryBookIds((current) => {
+      if (!current.length) return current;
+      const allowed = new Set(sortedBooks.map((book) => book.id));
+      const next = current.filter((id) => allowed.has(id));
+      return next.length === current.length ? current : next;
+    });
+    if (!sortedBooks.length) {
+      setIsLibrarySelectionMode(false);
+    }
+  }, [librarySection, sortedBooks]);
   const readingSnapshot = useMemo(() => {
     const liveBooks = books.filter((book) => !book?.isDeleted);
     const totalBooks = liveBooks.length;
@@ -4084,6 +4197,78 @@ const formatNotificationTimeAgo = (value) => {
             onResetFilters={resetLibraryFilters}
           />
         )}
+        {shouldShowLibraryHomeContent && sortedBooks.length > 0 && (
+          isLibrarySelectionMode ? (
+            <div data-testid="library-bulk-actions" className="mb-6 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                data-testid="library-select-all"
+                onClick={handleToggleSelectAllLibrary}
+                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+              >
+                {allVisibleLibrarySelected ? "Unselect all" : "Select all"}
+              </button>
+              <span data-testid="library-selected-count" className="text-xs font-semibold text-gray-500">
+                {librarySelectedCount} selected
+              </span>
+              <button
+                type="button"
+                data-testid="library-bulk-to-read"
+                onClick={handleBulkMarkToRead}
+                disabled={!librarySelectedCount}
+                className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 enabled:hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Add to To Read
+              </button>
+              <button
+                type="button"
+                data-testid="library-bulk-favorite"
+                onClick={handleBulkFavorite}
+                disabled={!librarySelectedCount}
+                className="inline-flex items-center rounded-full border border-pink-200 bg-pink-50 px-3 py-1.5 text-xs font-semibold text-pink-700 enabled:hover:bg-pink-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Favorite selected
+              </button>
+              <button
+                type="button"
+                data-testid="library-bulk-trash"
+                onClick={handleBulkMoveToTrash}
+                disabled={!librarySelectedCount}
+                className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 enabled:hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Move to Trash
+              </button>
+              <button
+                type="button"
+                data-testid="library-clear-selection"
+                onClick={handleClearLibrarySelection}
+                disabled={!librarySelectedCount}
+                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 enabled:hover:border-blue-200 enabled:hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Clear selection
+              </button>
+              <button
+                type="button"
+                data-testid="library-exit-select-mode"
+                onClick={handleExitLibrarySelectionMode}
+                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+              >
+                Done
+              </button>
+            </div>
+          ) : (
+            <div data-testid="library-bulk-select-entry" className="mb-6 flex items-center gap-2">
+              <button
+                type="button"
+                data-testid="library-enter-select-mode"
+                onClick={handleEnterLibrarySelectionMode}
+                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+              >
+                Select
+              </button>
+            </div>
+          )
+        )}
         {isTrashSection && (
           <>
             <div
@@ -4460,6 +4645,29 @@ const formatNotificationTimeAgo = (value) => {
                         />
                       </label>
                     )}
+                    {!inTrash && isLibrarySelectionMode && (
+                      <label
+                        data-testid={`library-book-select-${book.id}`}
+                        className="absolute left-3 top-3 z-10 inline-flex items-center rounded-lg bg-white/95 px-2 py-1 text-[11px] font-semibold text-gray-700 shadow-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                        }}
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          data-testid={`library-book-select-input-${book.id}`}
+                          className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 accent-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
+                          checked={selectedLibraryBookIds.includes(book.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                          }}
+                          onChange={() => handleToggleLibrarySelection(book.id)}
+                        />
+                      </label>
+                    )}
                     
                     <div className="absolute bottom-3 right-3 bg-black/60 backdrop-blur-md text-white text-xs font-bold px-2 py-1 rounded-lg">
                       {book.progress}%
@@ -4636,6 +4844,29 @@ const formatNotificationTimeAgo = (value) => {
                               e.stopPropagation();
                             }}
                             onChange={() => handleToggleTrashSelection(book.id)}
+                          />
+                        </label>
+                      )}
+                    {!inTrash && isLibrarySelectionMode && (
+                        <label
+                          data-testid={`library-book-select-${book.id}`}
+                          className="inline-flex items-center justify-end gap-2 rounded-lg px-2 py-1 text-xs font-semibold text-gray-600"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                          }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            data-testid={`library-book-select-input-${book.id}`}
+                            className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 accent-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
+                            checked={selectedLibraryBookIds.includes(book.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                            }}
+                            onChange={() => handleToggleLibrarySelection(book.id)}
                           />
                         </label>
                       )}

@@ -71,6 +71,73 @@ test('library sort and filter controls work with favorites', async ({ page }) =>
   await expect(bookLink).toBeVisible();
 });
 
+test('library bulk actions select books and apply to-read/favorite updates', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  const bookLink = page.getByRole('link', { name: /Test Book/i }).first();
+  await expect(bookLink).toBeVisible();
+
+  await expect(page.getByTestId('library-bulk-select-entry')).toBeVisible();
+  await expect(page.locator('[data-testid^="library-book-select-input-"]')).toHaveCount(0);
+  await page.getByTestId('library-enter-select-mode').click();
+  await expect(page.getByTestId('library-bulk-actions')).toBeVisible();
+  await expect(page.getByTestId('library-selected-count')).toContainText('0 selected');
+
+  await page.getByTestId('library-select-all').click();
+  await expect(page.getByTestId('library-selected-count')).toContainText('1 selected');
+
+  await page.getByTestId('library-bulk-to-read').click();
+  await page.getByTestId('library-filter').selectOption('to-read');
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await page.getByTestId('library-filter').selectOption('all');
+  if (await page.getByTestId('library-enter-select-mode').count()) {
+    await page.getByTestId('library-enter-select-mode').click();
+  }
+  await page.getByTestId('library-select-all').click();
+  await expect(page.getByTestId('library-selected-count')).toContainText('1 selected');
+  await page.getByTestId('library-bulk-favorite').click();
+  const favoritesQuickFilter = page.getByTestId('library-quick-filter-favorites');
+  await favoritesQuickFilter.click();
+  await expect(favoritesQuickFilter).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await page.getByTestId('library-clear-selection').click();
+  await expect(page.getByTestId('library-selected-count')).toContainText('0 selected');
+  await page.getByTestId('library-exit-select-mode').click();
+  await expect(page.getByTestId('library-bulk-select-entry')).toBeVisible();
+});
+
+test('library bulk move to trash sends selected books to trash section', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.deleteDatabase('SmartReaderLib');
+    localStorage.clear();
+  });
+  await page.goto('/');
+
+  const fileInput = page.locator('input[type="file"][accept=".epub"]');
+  await fileInput.setInputFiles(fixturePath);
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+
+  await page.getByTestId('library-enter-select-mode').click();
+  await page.getByTestId('library-select-all').click();
+  await expect(page.getByTestId('library-selected-count')).toContainText('1 selected');
+  await page.getByTestId('library-bulk-trash').click();
+
+  await expect(page.getByText('Moved to Trash', { exact: true })).toBeVisible();
+  await expect(page.getByText('No books found matching your criteria.')).toBeVisible();
+
+  await page.getByTestId('sidebar-trash').click();
+  await expect(page.getByTestId('trash-retention-note')).toBeVisible();
+  await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
+});
+
 test('collections create and assign flow works', async ({ page }) => {
   await page.addInitScript(() => {
     indexedDB.deleteDatabase('SmartReaderLib');
