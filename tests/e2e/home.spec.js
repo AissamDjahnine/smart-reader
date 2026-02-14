@@ -95,10 +95,19 @@ test('library bulk actions select books and apply to-read/favorite updates', asy
   await page.getByTestId('library-filter').selectOption('to-read');
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
 
+  const ensureLibrarySelectMode = async () => {
+    const bulkActions = page.getByTestId('library-bulk-actions');
+    if (await bulkActions.isVisible()) return;
+    const selectEntry = page.getByTestId('library-enter-select-mode');
+    if (await selectEntry.isVisible()) {
+      await selectEntry.click();
+    }
+    await expect(bulkActions).toBeVisible();
+  };
+
   await page.getByTestId('library-filter').selectOption('all');
-  if (await page.getByTestId('library-enter-select-mode').count()) {
-    await page.getByTestId('library-enter-select-mode').click();
-  }
+  await ensureLibrarySelectMode();
+  await expect(page.getByTestId('library-select-all')).toBeVisible();
   await page.getByTestId('library-select-all').click();
   await expect(page.getByTestId('library-selected-count')).toContainText('1 selected');
   await page.getByTestId('library-bulk-favorite').click();
