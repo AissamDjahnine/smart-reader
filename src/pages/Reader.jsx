@@ -68,6 +68,7 @@ const toPaletteHighlightColor = (color, paletteMode) => {
 };
 const READER_SEARCH_HISTORY_KEY = 'reader-search-history-v1';
 const READER_ANNOTATION_HISTORY_KEY = 'reader-annotation-search-history-v1';
+const READER_HIGHLIGHT_COLOR_ORDER_KEY = 'reader-highlight-color-order-v1';
 const MAX_RECENT_QUERIES = 8;
 
 const parseStoredQueryHistory = (raw) => {
@@ -102,6 +103,27 @@ const appendRecentQuery = (history, query) => {
     ...history.filter((item) => item.toLowerCase() !== normalized)
   ];
   return next.slice(0, MAX_RECENT_QUERIES);
+};
+
+const parseStoredColorOrder = (raw, allowedColors = []) => {
+  if (!raw) return [];
+  const allowed = new Set(allowedColors.map((value) => value.toLowerCase()));
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    const normalized = [];
+    parsed.forEach((value) => {
+      const color = (value || '').toString().trim().toLowerCase();
+      if (!color || seen.has(color) || (allowed.size > 0 && !allowed.has(color))) return;
+      seen.add(color);
+      normalized.push(color);
+    });
+    return normalized;
+  } catch (err) {
+    console.error(err);
+    return [];
+  }
 };
 
 function OwlIcon({ size = 18, className = '' }) {
@@ -731,6 +753,35 @@ export default function Reader() {
     () => (settings.colorPalette === 'daltonian' ? DALTONIAN_HIGHLIGHT_COLORS : STANDARD_HIGHLIGHT_COLORS),
     [settings.colorPalette]
   );
+  const [highlightColorOrder, setHighlightColorOrder] = useState(() => {
+    if (typeof window === 'undefined') return [];
+    const allowed = STANDARD_HIGHLIGHT_COLORS.map((entry) => entry.value);
+    return parseStoredColorOrder(window.localStorage.getItem(READER_HIGHLIGHT_COLOR_ORDER_KEY), allowed);
+  });
+  const orderedHighlightColors = useMemo(() => {
+    if (!highlightColorOrder.length) return highlightColors;
+    const rank = new Map(highlightColorOrder.map((value, index) => [value, index]));
+    return [...highlightColors].sort((a, b) => {
+      const aKey = toStandardHighlightColor(a.value).toString().toLowerCase();
+      const bKey = toStandardHighlightColor(b.value).toString().toLowerCase();
+      const aRank = rank.has(aKey) ? rank.get(aKey) : Number.POSITIVE_INFINITY;
+      const bRank = rank.has(bKey) ? rank.get(bKey) : Number.POSITIVE_INFINITY;
+      if (aRank !== bRank) return aRank - bRank;
+      return 0;
+    });
+  }, [highlightColors, highlightColorOrder]);
+
+  const rememberHighlightColor = useCallback((color) => {
+    const normalized = toStandardHighlightColor(color).toString().trim().toLowerCase();
+    if (!normalized) return;
+    setHighlightColorOrder((prev) => {
+      const next = [normalized, ...prev.filter((value) => value !== normalized)];
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(READER_HIGHLIGHT_COLOR_ORDER_KEY, JSON.stringify(next));
+      }
+      return next;
+    });
+  }, []);
 
   const languageOptions = [
     { code: 'en', label: 'English' },
@@ -1697,6 +1748,7 @@ export default function Reader() {
     try {
       const updated = await saveHighlight(currentBook.id, newHighlight);
       if (updated) {
+        rememberHighlightColor(color);
         setHighlights(updated);
         setBook({ ...currentBook, highlights: updated });
         showReaderToast({
@@ -1741,6 +1793,7 @@ export default function Reader() {
     try {
       const updated = await saveHighlight(currentBook.id, nextHighlight);
       if (updated) {
+        rememberHighlightColor(color);
         setHighlights(updated);
         setBook({ ...currentBook, highlights: updated });
         triggerHighlightFlash(nextHighlight.cfiRange);
@@ -1760,6 +1813,16 @@ export default function Reader() {
     } finally {
       clearSelection();
     }
+  };
+
+  const applyPrimaryHighlightChoice = () => {
+    const primaryColor = orderedHighlightColors[0]?.value;
+    if (!primaryColor) return;
+    if (selection?.isExisting) {
+      recolorExistingHighlight(primaryColor);
+      return;
+    }
+    addHighlight(primaryColor);
   };
 
   const removeHighlight = async (cfiRange) => {
@@ -3801,7 +3864,7 @@ export default function Reader() {
           }`}>
             {selectionMode === 'colors' ? (
               <>
-                {highlightColors.map((c, index) => (
+                {orderedHighlightColors.map((c, index) => (
                   <button
                     key={c.name}
                     onClick={() => {
@@ -3834,11 +3897,17 @@ export default function Reader() {
                 </button>
                 <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
                 <button
-                  onClick={() => setSelectionMode('colors')}
+                  onClick={applyPrimaryHighlightChoice}
                   className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1"
                 >
                   <Highlighter size={12} />
-                  Color
+                  Highlight
+                </button>
+                <button
+                  onClick={() => setSelectionMode('colors')}
+                  className="text-[11px] font-semibold text-blue-500 hover:text-blue-600"
+                >
+                  Colors
                 </button>
                 <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
                 <button
@@ -3868,11 +3937,17 @@ export default function Reader() {
                 </button>
                 <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
                 <button
-                  onClick={() => setSelectionMode('colors')}
+                  onClick={applyPrimaryHighlightChoice}
                   className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1"
                 >
                   <Highlighter size={12} />
                   Highlight
+                </button>
+                <button
+                  onClick={() => setSelectionMode('colors')}
+                  className="text-[11px] font-semibold text-blue-500 hover:text-blue-600"
+                >
+                  Colors
                 </button>
                 <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
                 <button

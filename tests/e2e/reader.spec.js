@@ -97,7 +97,7 @@ test('selection toolbar closes automatically when selection is cleared', async (
   await selectTextInBook(page);
 
   const frame = page.frameLocator('iframe');
-  await frame.locator('body').click({ position: { x: 24, y: 24 } });
+  await frame.locator('body').click({ position: { x: 360, y: 24 } });
   await expect(page.getByTestId('selection-toolbar')).toHaveCount(0);
 });
 
@@ -1450,7 +1450,6 @@ test('post-highlight note prompt supports direct note entry and save', async ({ 
 
   const toolbar = page.getByTestId('selection-toolbar');
   await toolbar.getByRole('button', { name: 'Highlight' }).click();
-  await toolbar.getByTitle('Highlight Amber').click();
 
   const notePrompt = page.getByTestId('post-highlight-note-prompt');
   await expect(notePrompt).toBeVisible();
@@ -1470,12 +1469,28 @@ test('post-highlight note prompt can be dismissed with Later', async ({ page }) 
 
   const toolbar = page.getByTestId('selection-toolbar');
   await toolbar.getByRole('button', { name: 'Highlight' }).click();
-  await toolbar.getByTitle('Highlight Amber').click();
 
   const notePrompt = page.getByTestId('post-highlight-note-prompt');
   await expect(notePrompt).toBeVisible();
   await notePrompt.getByRole('button', { name: 'Later' }).click();
   await expect(page.getByTestId('post-highlight-note-prompt')).toHaveCount(0);
+});
+
+test('highlight color options are ordered by last used first', async ({ page }) => {
+  await openFixtureBook(page);
+  await selectTextInBook(page);
+
+  const toolbar = page.getByTestId('selection-toolbar');
+  await toolbar.getByRole('button', { name: 'Colors' }).click();
+  await toolbar.getByTitle('Highlight Lime').click();
+  await expect(page.getByTestId('post-highlight-note-prompt')).toBeVisible();
+  await page.getByRole('button', { name: 'Later' }).click();
+
+  await selectTextInBook(page);
+  await page.getByTestId('selection-toolbar').getByRole('button', { name: 'Colors' }).click();
+  await expect(
+    page.getByTestId('selection-toolbar').locator('button[title^="Highlight "]').first()
+  ).toHaveAttribute('title', 'Highlight Lime');
 });
 
 test('bookmarks panel supports jump-close and delete flow', async ({ page }) => {
