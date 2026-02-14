@@ -118,6 +118,7 @@ ariadne is built around real reading behavior:
 ### Reader Built for Focus
 
 - Paginated and infinite-scroll modes
+- Paginated mode supports subtle edge click/tap zones for next/previous page turns (no intrusive on-page arrow buttons)
 - Centered portrait-style reading column in scroll mode
 - Per-book reading preferences:
   - Theme
@@ -125,6 +126,7 @@ ariadne is built around real reading behavior:
   - Font family
   - Reading flow
 - Light mode, dark mode, and sepia reading mode
+- Upper-right reader icon controls include hover tooltips for faster discoverability
 - Keyboard navigation support (Left/Right in paginated mode, Up/Down in infinite mode with gradual acceleration on hold)
 - Chapter menu + table of contents navigation
 - Reader search keyboard shortcuts (`Ctrl+F` to open search, `Esc` to close)
@@ -155,6 +157,8 @@ ariadne is built around real reading behavior:
 ### Highlights, Notes, and Study Workflow
 
 - Multi-color highlights
+- One-click `Highlight` now applies your most recently used color
+- `Colors` chooser is ordered by recency (last used color appears first)
 - Highlights panel defaults to no pre-selected items (`Select all` / `Unselect all` workflow)
 - Re-clicking an existing highlight opens a contextual action popup anchored next to that highlight (delete, dictionary, translate)
 - Existing highlights support in-place color changes from the same contextual popup (no delete/recreate needed)
