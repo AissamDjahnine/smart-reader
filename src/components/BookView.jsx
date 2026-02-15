@@ -106,6 +106,136 @@ const getContrastTextColor = (color) => {
   return luminance > 0.62 ? '#111827' : '#ffffff';
 };
 
+const normalizeHighlightText = (value = '') => value.toLowerCase().replace(/\s+/g, ' ').trim();
+
+const normalizeHrefMatch = (value = '') => value.toString().split('#')[0].replace(/^\/+/, '');
+
+const isSameHref = (left = '', right = '') => {
+  const a = normalizeHrefMatch(left);
+  const b = normalizeHrefMatch(right);
+  if (!a || !b) return false;
+  return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+};
+
+const buildDocTextIndex = (doc) => {
+  const root = doc?.body || doc?.documentElement;
+  if (!root) return { text: '', segments: [] };
+  const nodeFilter = doc.defaultView?.NodeFilter || window.NodeFilter;
+  if (!nodeFilter) return { text: '', segments: [] };
+
+  const walker = doc.createTreeWalker(
+    root,
+    nodeFilter.SHOW_TEXT,
+    {
+      acceptNode(node) {
+        const text = (node?.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!text) return nodeFilter.FILTER_REJECT;
+        const parent = node.parentElement;
+        if (!parent) return nodeFilter.FILTER_REJECT;
+        if (parent.closest?.('script,style,noscript,svg,math')) return nodeFilter.FILTER_REJECT;
+        return nodeFilter.FILTER_ACCEPT;
+      }
+    }
+  );
+
+  const segments = [];
+  let text = '';
+  let cursor = 0;
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const source = node.textContent || '';
+    const normalized = source.replace(/\s+/g, ' ').trim();
+    if (!normalized) continue;
+    if (text) {
+      text += ' ';
+      cursor += 1;
+    }
+    const start = cursor;
+    text += normalized;
+    cursor += normalized.length;
+    segments.push({ node, start, end: cursor, source });
+  }
+
+  return { text, segments };
+};
+
+const findSegmentAtOffset = (segments, offset) => {
+  if (!Array.isArray(segments) || !segments.length) return null;
+  return segments.find((segment) => offset >= segment.start && offset < segment.end)
+    || segments[segments.length - 1];
+};
+
+const resolveNodeOffset = (segment, absoluteOffset) => {
+  if (!segment) return 0;
+  const localOffset = Math.max(0, absoluteOffset - segment.start);
+  const normalizedSource = (segment.source || '').replace(/\s+/g, ' ').trim();
+  if (!normalizedSource) return 0;
+  return Math.min(normalizedSource.length, localOffset);
+};
+
+const findRangeByQuote = (doc, quote, contextPrefix = '', contextSuffix = '') => {
+  const normalizedQuote = normalizeHighlightText(quote);
+  if (!doc || !normalizedQuote) return null;
+
+  const { text, segments } = buildDocTextIndex(doc);
+  if (!text || !segments.length) return null;
+
+  const haystack = normalizeHighlightText(text);
+  const variants = [normalizedQuote];
+  if (quote && quote.trim()) {
+    variants.push(quote.trim().toLowerCase());
+  }
+
+  let matches = [];
+  variants.forEach((needle) => {
+    if (!needle) return;
+    let from = 0;
+    while (from < haystack.length) {
+      const at = haystack.indexOf(needle, from);
+      if (at < 0) break;
+      matches.push({ start: at, end: at + needle.length });
+      from = at + 1;
+    }
+  });
+  if (!matches.length) return null;
+
+  const prefixNorm = normalizeHighlightText(contextPrefix);
+  const suffixNorm = normalizeHighlightText(contextSuffix);
+  matches = matches
+    .map((match) => {
+      let score = 0;
+      if (prefixNorm) {
+        const leftWindow = haystack.slice(Math.max(0, match.start - Math.max(12, prefixNorm.length + 6)), match.start);
+        if (leftWindow.includes(prefixNorm)) score += 1;
+      }
+      if (suffixNorm) {
+        const rightWindow = haystack.slice(match.end, Math.min(haystack.length, match.end + Math.max(12, suffixNorm.length + 6)));
+        if (rightWindow.includes(suffixNorm)) score += 1;
+      }
+      return { ...match, score };
+    })
+    .sort((a, b) => b.score - a.score || a.start - b.start);
+
+  const winner = matches[0];
+  const startSegment = findSegmentAtOffset(segments, winner.start);
+  const endSegment = findSegmentAtOffset(segments, Math.max(winner.end - 1, winner.start));
+  if (!startSegment || !endSegment) return null;
+
+  const startOffset = resolveNodeOffset(startSegment, winner.start);
+  const endOffsetRaw = resolveNodeOffset(endSegment, winner.end);
+  const endOffset = Math.max(endOffsetRaw, startOffset + 1);
+
+  try {
+    const range = doc.createRange();
+    range.setStart(startSegment.node, Math.min(startOffset, (startSegment.node.textContent || '').length));
+    range.setEnd(endSegment.node, Math.min(endOffset, (endSegment.node.textContent || '').length));
+    return range;
+  } catch (err) {
+    console.error('Quote range recovery failed', err);
+    return null;
+  }
+};
+
 export default function BookView({ 
   bookData, 
   settings, 
@@ -140,6 +270,7 @@ export default function BookView({
   const onInlineNoteMarkerActivateRef = useRef(onInlineNoteMarkerActivate);
   const onFootnotePreviewRef = useRef(onFootnotePreview);
   const appliedHighlightsRef = useRef(new Map());
+  const resolvedHighlightTargetsRef = useRef(new Map());
   const appliedSearchRef = useRef(new Map());
   const selectionCleanupRef = useRef([]);
   const inlineNoteMarkersRef = useRef([]);
@@ -273,6 +404,7 @@ export default function BookView({
     });
     renditionRef.current = rendition;
     appliedHighlightsRef.current = new Map();
+    resolvedHighlightTargetsRef.current = new Map();
     appliedSearchRef.current = new Map();
 
     if (onRenditionReady) onRenditionReady(rendition);
@@ -552,28 +684,134 @@ export default function BookView({
 
   useEffect(() => {
     if (!renditionRef.current) return;
+    let cancelled = false;
     const timer = setTimeout(() => {
       if (!renditionRef.current) return;
       const rendition = renditionRef.current;
-      const nextMap = new Map();
-      highlights.forEach((h) => {
-        if (!h?.cfiRange || !h?.color) return;
-        const isFlashing = flashingHighlightCfi === h.cfiRange && flashingHighlightPulse > 0;
-        const flashOn = isFlashing && flashingHighlightPulse % 2 === 1;
-        const fillOpacity = flashOn ? '0.78' : '0.35';
-        const styleKey = `${h.color}|${fillOpacity}`;
-        nextMap.set(h.cfiRange, styleKey);
-        const prevStyle = appliedHighlightsRef.current.get(h.cfiRange);
-        if (prevStyle !== styleKey) {
-          if (prevStyle) {
+      const resolveHighlightTargetCfi = async (highlight) => {
+        const originalCfi = highlight?.cfiRange;
+        if (!originalCfi) return '';
+
+        const quote = (highlight?.textQuote || highlight?.text || '').trim();
+        const normalizedQuote = normalizeHighlightText(quote);
+        const verifyCfi = async (candidateCfi) => {
+          if (!candidateCfi) return false;
+          try {
+            const range = await Promise.resolve(rendition.book?.getRange?.(candidateCfi));
+            if (!range) return false;
+            if (!normalizedQuote) return true;
+            const candidateText = normalizeHighlightText(range.toString() || '');
+            if (!candidateText) return false;
+            return candidateText === normalizedQuote
+              || candidateText.includes(normalizedQuote)
+              || normalizedQuote.includes(candidateText);
+          } catch {
+            return false;
+          }
+        };
+
+        const cached = resolvedHighlightTargetsRef.current.get(originalCfi);
+        if (cached && await verifyCfi(cached)) return cached;
+        if (await verifyCfi(originalCfi)) return originalCfi;
+        if (!normalizedQuote) return originalCfi;
+
+        const prefix = highlight?.contextPrefix || '';
+        const suffix = highlight?.contextSuffix || '';
+        const chapterHref = highlight?.chapterHref || '';
+        const renderedContents = rendition.getContents?.() || [];
+        const orderedContents = chapterHref
+          ? [
+              ...renderedContents.filter((content) => isSameHref(content?.section?.href || '', chapterHref)),
+              ...renderedContents.filter((content) => !isSameHref(content?.section?.href || '', chapterHref))
+            ]
+          : renderedContents;
+
+        for (const content of orderedContents) {
+          try {
+            const doc = content?.document;
+            if (!doc || !content?.cfiFromRange) continue;
+            const recoveredRange = findRangeByQuote(doc, quote, prefix, suffix);
+            if (!recoveredRange) continue;
+            const recoveredCfi = content.cfiFromRange(recoveredRange);
+            if (recoveredCfi && await verifyCfi(recoveredCfi)) {
+              resolvedHighlightTargetsRef.current.set(originalCfi, recoveredCfi);
+              return recoveredCfi;
+            }
+          } catch (err) {
+            console.error('Rendered quote recovery failed', err);
+          }
+        }
+
+        if (chapterHref) {
+          try {
+            const spineItem = bookRef.current?.spine?.get?.(chapterHref)
+              || findSpineItemByHref(bookRef.current, chapterHref);
+            if (spineItem) {
+              await spineItem.load(bookRef.current.load.bind(bookRef.current));
+              const doc = spineItem.document;
+              const recoveredRange = findRangeByQuote(doc, quote, prefix, suffix);
+              if (recoveredRange && typeof spineItem.cfiFromRange === 'function') {
+                const recoveredCfi = spineItem.cfiFromRange(recoveredRange);
+                if (recoveredCfi && await verifyCfi(recoveredCfi)) {
+                  resolvedHighlightTargetsRef.current.set(originalCfi, recoveredCfi);
+                  spineItem.unload?.();
+                  return recoveredCfi;
+                }
+              }
+              spineItem.unload?.();
+            }
+          } catch (err) {
+            console.error('Chapter quote recovery failed', err);
+          }
+        }
+
+        return originalCfi;
+      };
+
+      const renderHighlights = async () => {
+        const layoutSignature = [
+          settings.fontSize,
+          settings.fontFamily,
+          settings.flow,
+          settings.theme,
+          settings.lineSpacing,
+          settings.textMargin,
+          settings.textAlign
+        ].join('|');
+        const nextMap = new Map();
+        const resolvedTargets = new Map();
+
+        for (const h of highlights) {
+          if (!h?.cfiRange || !h?.color) continue;
+          const targetCfi = await resolveHighlightTargetCfi(h);
+          if (!targetCfi) continue;
+          resolvedTargets.set(h.cfiRange, targetCfi);
+
+          const isFlashing = flashingHighlightCfi === h.cfiRange && flashingHighlightPulse > 0;
+          const flashOn = isFlashing && flashingHighlightPulse % 2 === 1;
+          const fillOpacity = flashOn ? '0.78' : '0.35';
+          // Include layout signature so highlights are re-applied after text style/layout changes.
+          const styleKey = `${h.color}|${fillOpacity}|${layoutSignature}`;
+          nextMap.set(h.cfiRange, { styleKey, targetCfi });
+
+          const prevState = appliedHighlightsRef.current.get(h.cfiRange);
+          if (
+            prevState?.styleKey === styleKey &&
+            prevState?.targetCfi === targetCfi
+          ) {
+            continue;
+          }
+
+          if (prevState?.targetCfi) {
             try {
-              rendition.annotations.remove(h.cfiRange, USER_HIGHLIGHT_ANNOTATION_TYPE);
+              rendition.annotations.remove(prevState.targetCfi, USER_HIGHLIGHT_ANNOTATION_TYPE);
             } catch (err) {
               console.error('Highlight cleanup failed', err);
             }
           }
+
           try {
-            rendition.annotations.add(USER_HIGHLIGHT_ANNOTATION_TYPE, h.cfiRange, {}, (e) => {
+            rendition.annotations.add(USER_HIGHLIGHT_ANNOTATION_TYPE, targetCfi, {}, (e) => {
               if (!onSelectionRef.current) return;
               const toViewportAnchor = (x, y, doc = null) => {
                 let nextX = Number(x);
@@ -609,7 +847,7 @@ export default function BookView({
 
                 for (const content of candidates) {
                   try {
-                    const range = content?.range ? content.range(h.cfiRange) : null;
+                    const range = content?.range ? content.range(targetCfi) : null;
                     if (!range) continue;
                     const rects = range.getClientRects?.() || [];
                     const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect?.();
@@ -623,10 +861,9 @@ export default function BookView({
               };
 
               if (emitSelection(getRenderedRangeAnchor())) return;
-
               if (emitSelection(toViewportAnchor(e?.clientX, e?.clientY, e?.target?.ownerDocument || null))) return;
 
-              const rangeCandidate = rendition.book?.getRange?.(h.cfiRange);
+              const rangeCandidate = rendition.book?.getRange?.(targetCfi);
               Promise.resolve(rangeCandidate)
                 .then((resolvedRange) => {
                   if (!resolvedRange || !onSelectionRef.current) return;
@@ -648,96 +885,103 @@ export default function BookView({
             console.error('Highlight render failed', err);
           }
         }
-      });
-      appliedHighlightsRef.current.forEach((_, cfi) => {
-        if (!nextMap.has(cfi)) {
+
+        if (cancelled) return;
+
+        appliedHighlightsRef.current.forEach((prevState, originalCfi) => {
+          if (nextMap.has(originalCfi)) return;
+          if (!prevState?.targetCfi) return;
           try {
-            rendition.annotations.remove(cfi, USER_HIGHLIGHT_ANNOTATION_TYPE);
+            rendition.annotations.remove(prevState.targetCfi, USER_HIGHLIGHT_ANNOTATION_TYPE);
           } catch (err) {
             console.error('Highlight cleanup failed', err);
           }
-        }
-      });
-      appliedHighlightsRef.current = nextMap;
+        });
+        appliedHighlightsRef.current = nextMap;
 
-      clearInlineNoteMarkers();
-      const renderedContents = rendition.getContents?.() || [];
-      highlights.forEach((h) => {
-        const noteValue = typeof h?.note === 'string' ? h.note.trim() : '';
-        if (!noteValue || !h?.cfiRange) return;
+        clearInlineNoteMarkers();
+        const renderedContents = rendition.getContents?.() || [];
+        highlights.forEach((h) => {
+          const noteValue = typeof h?.note === 'string' ? h.note.trim() : '';
+          if (!noteValue || !h?.cfiRange) return;
+          const targetCfi = resolvedTargets.get(h.cfiRange) || h.cfiRange;
 
-        for (const content of renderedContents) {
-          try {
-            const doc = content?.document;
-            const win = content?.window;
-            if (!doc || !win || !content?.range) continue;
+          for (const content of renderedContents) {
+            try {
+              const doc = content?.document;
+              const win = content?.window;
+              if (!doc || !win || !content?.range) continue;
 
-            const range = content.range(h.cfiRange);
-            if (!range) continue;
-            const rects = range.getClientRects?.() || [];
-            const firstRect = rects.length ? rects[0] : range.getBoundingClientRect?.();
-            if (!firstRect) continue;
+              const range = content.range(targetCfi);
+              if (!range) continue;
+              const rects = range.getClientRects?.() || [];
+              const firstRect = rects.length ? rects[0] : range.getBoundingClientRect?.();
+              if (!firstRect) continue;
 
-            if (doc.defaultView?.getComputedStyle(doc.body).position === 'static') {
-              doc.body.style.position = 'relative';
-            }
+              if (doc.defaultView?.getComputedStyle(doc.body).position === 'static') {
+                doc.body.style.position = 'relative';
+              }
 
-            const marker = doc.createElement('button');
-            marker.type = 'button';
-            marker.setAttribute('aria-label', 'Open highlight note');
-            marker.setAttribute('data-testid', 'inline-note-marker');
-            marker.className = 'sr-inline-note-marker';
-            marker.textContent = '✎';
-            marker.title = noteValue.slice(0, 180);
-            marker.style.position = 'absolute';
-            marker.style.left = `${firstRect.right + win.scrollX + 2}px`;
-            marker.style.top = `${firstRect.top + win.scrollY - 8}px`;
-            marker.style.width = '13px';
-            marker.style.height = '13px';
-            marker.style.display = 'flex';
-            marker.style.alignItems = 'center';
-            marker.style.justifyContent = 'center';
-            marker.style.borderRadius = '999px';
-            marker.style.border = '1px solid rgba(15, 23, 42, 0.28)';
-            marker.style.background = h.color || '#fca5a5';
-            marker.style.color = getContrastTextColor(h.color || '#fca5a5');
-            marker.style.fontSize = '9px';
-            marker.style.fontWeight = '700';
-            marker.style.fontFamily = "'Inter', Arial, sans-serif";
-            marker.style.lineHeight = '1';
-            marker.style.boxShadow = '0 1px 3px rgba(15, 23, 42, 0.35)';
-            marker.style.zIndex = '22';
-            marker.style.cursor = 'pointer';
-            marker.style.padding = '0';
-            marker.style.userSelect = 'none';
+              const marker = doc.createElement('button');
+              marker.type = 'button';
+              marker.setAttribute('aria-label', 'Open highlight note');
+              marker.setAttribute('data-testid', 'inline-note-marker');
+              marker.className = 'sr-inline-note-marker';
+              marker.textContent = '✎';
+              marker.title = noteValue.slice(0, 180);
+              marker.style.position = 'absolute';
+              marker.style.left = `${firstRect.right + win.scrollX + 2}px`;
+              marker.style.top = `${firstRect.top + win.scrollY - 8}px`;
+              marker.style.width = '13px';
+              marker.style.height = '13px';
+              marker.style.display = 'flex';
+              marker.style.alignItems = 'center';
+              marker.style.justifyContent = 'center';
+              marker.style.borderRadius = '999px';
+              marker.style.border = '1px solid rgba(15, 23, 42, 0.28)';
+              marker.style.background = h.color || '#fca5a5';
+              marker.style.color = getContrastTextColor(h.color || '#fca5a5');
+              marker.style.fontSize = '9px';
+              marker.style.fontWeight = '700';
+              marker.style.fontFamily = "'Inter', Arial, sans-serif";
+              marker.style.lineHeight = '1';
+              marker.style.boxShadow = '0 1px 3px rgba(15, 23, 42, 0.35)';
+              marker.style.zIndex = '22';
+              marker.style.cursor = 'pointer';
+              marker.style.padding = '0';
+              marker.style.userSelect = 'none';
 
-            const clickHandler = (event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              if (!onInlineNoteMarkerActivateRef.current) return;
-              const frameRect = win.frameElement?.getBoundingClientRect();
-              const anchor = frameRect
-                ? { x: frameRect.left + firstRect.right, y: frameRect.top + firstRect.bottom }
-                : { x: firstRect.right, y: firstRect.bottom };
-              onInlineNoteMarkerActivateRef.current({
-                highlight: h,
-                anchor
+              const clickHandler = (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (!onInlineNoteMarkerActivateRef.current) return;
+                const frameRect = win.frameElement?.getBoundingClientRect();
+                const anchor = frameRect
+                  ? { x: frameRect.left + firstRect.right, y: frameRect.top + firstRect.bottom }
+                  : { x: firstRect.right, y: firstRect.bottom };
+                onInlineNoteMarkerActivateRef.current({
+                  highlight: h,
+                  anchor
+                });
+              };
+              marker.addEventListener('click', clickHandler);
+              doc.body.appendChild(marker);
+              inlineNoteMarkersRef.current.push({
+                element: marker,
+                cleanup: () => marker.removeEventListener('click', clickHandler)
               });
-            };
-            marker.addEventListener('click', clickHandler);
-            doc.body.appendChild(marker);
-            inlineNoteMarkersRef.current.push({
-              element: marker,
-              cleanup: () => marker.removeEventListener('click', clickHandler)
-            });
-            break;
-          } catch {
-            // CFI may not exist in this rendered frame.
+              break;
+            } catch {
+              // CFI may not exist in this rendered frame.
+            }
           }
-        }
-      });
+        });
+      };
+
+      void renderHighlights();
     }, 40);
     return () => {
+      cancelled = true;
       clearTimeout(timer);
       clearInlineNoteMarkers();
     };

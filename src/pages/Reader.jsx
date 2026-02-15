@@ -853,7 +853,11 @@ export default function Reader() {
         left.cfiRange !== right.cfiRange ||
         left.color !== right.color ||
         left.note !== right.note ||
-        left.text !== right.text
+        left.text !== right.text ||
+        left.textQuote !== right.textQuote ||
+        left.chapterHref !== right.chapterHref ||
+        left.contextPrefix !== right.contextPrefix ||
+        left.contextSuffix !== right.contextSuffix
       ) {
         return false;
       }
@@ -1775,10 +1779,68 @@ export default function Reader() {
     const currentBook = bookRef.current;
     if (!currentBook || !selection?.cfiRange) return;
     const selectionSnapshot = selection ? { ...selection } : null;
+    const buildHighlightAnchorMeta = async () => {
+      const chapterHref = normalizeHref(
+        currentHref || rendition?.currentLocation?.()?.start?.href || ''
+      );
+      const textQuote = (selectionSnapshot?.text || '').trim();
+      const context = { contextPrefix: '', contextSuffix: '' };
+      const cfi = selectionSnapshot?.cfiRange || '';
+      if (!rendition || !cfi) {
+        return { chapterHref, textQuote, ...context };
+      }
+
+      const extractContext = (range) => {
+        if (!range) return context;
+        const startContainer = range.startContainer;
+        const endContainer = range.endContainer;
+        const prefixSource = startContainer?.nodeType === Node.TEXT_NODE
+          ? startContainer.textContent || ''
+          : startContainer?.textContent || '';
+        const suffixSource = endContainer?.nodeType === Node.TEXT_NODE
+          ? endContainer.textContent || ''
+          : endContainer?.textContent || '';
+        const prefixRaw = (prefixSource || '').slice(Math.max(0, range.startOffset - 36), range.startOffset);
+        const suffixRaw = (suffixSource || '').slice(range.endOffset, Math.min((suffixSource || '').length, range.endOffset + 36));
+        return {
+          contextPrefix: prefixRaw.replace(/\s+/g, ' ').trim(),
+          contextSuffix: suffixRaw.replace(/\s+/g, ' ').trim()
+        };
+      };
+
+      try {
+        const contents = rendition.getContents?.() || [];
+        for (const content of contents) {
+          if (!content?.range) continue;
+          try {
+            const range = content.range(cfi);
+            if (range) return { chapterHref, textQuote, ...extractContext(range) };
+          } catch {
+            // Continue fallback attempts.
+          }
+        }
+      } catch (err) {
+        console.error(err);
+      }
+
+      try {
+        const fallbackRange = await Promise.resolve(rendition.book?.getRange?.(cfi));
+        return { chapterHref, textQuote, ...extractContext(fallbackRange) };
+      } catch (err) {
+        console.error(err);
+      }
+      return { chapterHref, textQuote, ...context };
+    };
+
+    const anchorMeta = await buildHighlightAnchorMeta();
     const newHighlight = {
       cfiRange: selection.cfiRange,
       text: selection.text,
       color: toStandardHighlightColor(color),
+      chapterHref: anchorMeta.chapterHref || '',
+      textQuote: anchorMeta.textQuote || selection.text,
+      contextPrefix: anchorMeta.contextPrefix || '',
+      contextSuffix: anchorMeta.contextSuffix || '',
       createdAt: new Date().toISOString()
     };
 

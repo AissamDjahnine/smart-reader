@@ -87,6 +87,9 @@ test('library bulk actions select books and apply to-read/favorite updates', asy
   await page.getByTestId('library-enter-select-mode').click();
   await expect(page.getByTestId('library-bulk-actions')).toBeVisible();
   await expect(page.getByTestId('library-selected-count')).toContainText('0 selected');
+  await expect
+    .poll(async () => page.locator('[data-testid^="library-book-select-input-"]').count(), { timeout: 15000 })
+    .toBeGreaterThan(0);
 
   await page.getByTestId('library-select-all').click();
   await expect(page.getByTestId('library-selected-count')).toContainText('1 selected');
@@ -108,6 +111,9 @@ test('library bulk actions select books and apply to-read/favorite updates', asy
   await page.getByTestId('library-filter').selectOption('all');
   await ensureLibrarySelectMode();
   await expect(page.getByTestId('library-select-all')).toBeVisible();
+  await expect
+    .poll(async () => page.locator('[data-testid^="library-book-select-input-"]').count(), { timeout: 15000 })
+    .toBeGreaterThan(0);
   await page.getByTestId('library-select-all').click();
   await expect(page.getByTestId('library-selected-count')).toContainText('1 selected');
   await page.getByTestId('library-bulk-favorite').click();
@@ -808,8 +814,7 @@ test('status and flag filters can be combined', async ({ page }) => {
   await expect(bookLink).toBeVisible();
 
   await page.getByTestId('book-toggle-to-read').first().click({ force: true });
-  await bookLink.hover();
-  await bookLink.locator('button[title="Favorite"]').click({ force: true });
+  await page.locator('button[title="Favorite"]').first().click({ force: true });
   await expect(page.getByTestId('library-quick-filter-favorites-count')).toHaveText('1');
 
   const filterSelect = page.getByTestId('library-filter');
