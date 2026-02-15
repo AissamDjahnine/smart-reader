@@ -1831,16 +1831,6 @@ export default function Reader() {
     }
   };
 
-  const applyPrimaryHighlightChoice = () => {
-    const primaryColor = orderedHighlightColors[0]?.value;
-    if (!primaryColor) return;
-    if (selection?.isExisting) {
-      recolorExistingHighlight(primaryColor);
-      return;
-    }
-    addHighlight(primaryColor);
-  };
-
   const removeHighlight = async (cfiRange) => {
     const normalizeCfi = (value) => (value || '').toString().replace(/\s+/g, '');
     const clearPendingTimer = () => {
