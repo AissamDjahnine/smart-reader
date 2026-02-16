@@ -152,9 +152,13 @@ const readStoredAccountProfile = () => {
     const raw = window.localStorage.getItem(ACCOUNT_PROFILE_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
     const fallbackLanguage = window.localStorage.getItem(LIBRARY_LANGUAGE_KEY) || "en";
+    const storedEmail = typeof parsed?.email === "string" && parsed.email.trim() ? parsed.email.trim() : "";
+    const resolvedEmail = isCollabMode
+      ? (sessionEmail || storedEmail || ACCOUNT_DEFAULT_EMAIL)
+      : (storedEmail || sessionEmail || ACCOUNT_DEFAULT_EMAIL);
     return {
       firstName: typeof parsed?.firstName === "string" ? parsed.firstName : "",
-      email: typeof parsed?.email === "string" && parsed.email.trim() ? parsed.email.trim() : (sessionEmail || ACCOUNT_DEFAULT_EMAIL),
+      email: resolvedEmail,
       preferredLanguage:
         typeof parsed?.preferredLanguage === "string" && parsed.preferredLanguage.trim()
           ? parsed.preferredLanguage
@@ -599,6 +603,16 @@ export default function Home() {
   const duplicateDecisionResolverRef = useRef(null);
   const notificationsMenuRef = useRef(null);
   const notificationFocusTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (!isCollabMode) return;
+    const sessionEmail = (getCurrentUser()?.email || "").trim();
+    if (!sessionEmail) return;
+    setAccountProfile((current) => {
+      if ((current?.email || "").trim() === sessionEmail) return current;
+      return { ...current, email: sessionEmail };
+    });
+  }, []);
 
   const openInfoPopover = (book, rect, pinned = false) => {
     if (!book || !rect) return;
