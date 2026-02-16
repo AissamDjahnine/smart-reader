@@ -4,6 +4,7 @@ import { getBook, updateBookProgress, saveHighlight, deleteHighlight, updateRead
 import BookView from '../components/BookView';
 import { summarizeChapter } from '../services/ai'; 
 import FeedbackToast from '../components/FeedbackToast';
+import { getCurrentUser } from '../services/session';
 
 import { 
   Moon, Sun, BookOpen, Scroll, 
@@ -233,6 +234,7 @@ export default function Reader() {
   const [storyRecap, setStoryRecap] = useState("");
   const [pageError] = useState("");
   const [storyError, setStoryError] = useState("");
+  const currentUserId = getCurrentUser()?.id || "";
   const [isRebuildingMemory, setIsRebuildingMemory] = useState(false);
   const [rebuildProgress, setRebuildProgress] = useState({ current: 0, total: 0 });
   const [searchQuery, setSearchQuery] = useState("");
@@ -4042,6 +4044,11 @@ export default function Reader() {
                       >
                         Highlight {idx + 1}
                       </div>
+                      {(h?.createdBy?.email || h?.createdBy?.displayName) && (
+                        <div className={`mb-1 text-[10px] ${isReaderDark ? 'text-gray-500' : 'text-gray-500'}`}>
+                          by {h?.createdBy?.displayName || h?.createdBy?.email}
+                        </div>
+                      )}
                       <div
                         data-testid="highlight-item-text"
                         className={`text-sm line-clamp-3 ${isReaderDark ? 'text-gray-200' : 'text-gray-800'}`}
@@ -4061,18 +4068,24 @@ export default function Reader() {
                   <div className="mt-2 flex items-center justify-between gap-2">
                     <div data-testid="highlight-item-color-bar" className="h-1.5 rounded-full flex-1" style={{ background: h.color }} />
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => openNoteEditor(h)}
-                        className="text-xs text-blue-500 hover:text-blue-600"
-                      >
-                        {h.note ? 'Edit note' : 'Add note'}
-                      </button>
-                      <button
-                        onClick={() => removeHighlight(h.cfiRange)}
-                        className="text-xs text-red-500 hover:text-red-600"
-                      >
-                        Delete
-                      </button>
+                      {(!h?.createdByUserId || h?.createdByUserId === currentUserId) ? (
+                        <>
+                          <button
+                            onClick={() => openNoteEditor(h)}
+                            className="text-xs text-blue-500 hover:text-blue-600"
+                          >
+                            {h.note ? 'Edit note' : 'Add note'}
+                          </button>
+                          <button
+                            onClick={() => removeHighlight(h.cfiRange)}
+                            className="text-xs text-red-500 hover:text-red-600"
+                          >
+                            Delete
+                          </button>
+                        </>
+                      ) : (
+                        <span className={`text-[10px] ${isReaderDark ? 'text-gray-500' : 'text-gray-500'}`}>Shared highlight</span>
+                      )}
                     </div>
                   </div>
                 </div>

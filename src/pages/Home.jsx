@@ -62,12 +62,16 @@ import {
   Archive,
   Check,
   Mail,
+  Send,
 } from 'lucide-react';
+import { createBookShare, fetchShareInbox, isCollabMode } from '../services/collabApi';
+import { clearSession } from '../services/session';
 import LibraryAccountSection from './library/LibraryAccountSection';
 import { LibraryWorkspaceSidebar, LibraryWorkspaceMobileNav } from './library/LibraryWorkspaceNav';
 import LibraryNotesCenterPanel from './library/LibraryNotesCenterPanel';
 import LibraryHighlightsCenterPanel from './library/LibraryHighlightsCenterPanel';
 import LibraryCollectionsBoard from './library/LibraryCollectionsBoard';
+import LibraryShareInboxPanel from './library/LibraryShareInboxPanel';
 import LibraryGlobalSearchPanel from './library/LibraryGlobalSearchPanel';
 import LibraryToolbarSection from './library/LibraryToolbarSection';
 import LibraryReadingStatisticsSection from './library/LibraryReadingStatisticsSection';
@@ -569,6 +573,12 @@ export default function Home() {
   const [notificationView, setNotificationView] = useState("all");
   const [notificationStateById, setNotificationStateById] = useState(() => readStoredNotificationState());
   const [notificationFocusedBookId, setNotificationFocusedBookId] = useState("");
+  const [shareInboxCount, setShareInboxCount] = useState(0);
+  const [shareDialogBook, setShareDialogBook] = useState(null);
+  const [shareRecipientEmail, setShareRecipientEmail] = useState("");
+  const [shareMessage, setShareMessage] = useState("");
+  const [shareError, setShareError] = useState("");
+  const [isSharingBook, setIsSharingBook] = useState(false);
   const contentSearchTokenRef = useRef(0);
   const uploadTimerRef = useRef(null);
   const feedbackToastTimerRef = useRef(null);
@@ -614,7 +624,10 @@ export default function Home() {
     }
   };
 
-  useEffect(() => { loadLibrary(); }, []);
+  useEffect(() => {
+    loadLibrary();
+    refreshShareInboxCount();
+  }, []);
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("library-view-mode", viewMode);
@@ -953,10 +966,16 @@ export default function Home() {
 
   const loadLibrary = async () => {
     const loadStartAt = getPerfNow();
-    await purgeExpiredTrashBooks(TRASH_RETENTION_DAYS);
+    if (!isCollabMode) {
+      await purgeExpiredTrashBooks(TRASH_RETENTION_DAYS);
+    }
     const [storedBooks, storedCollections] = await Promise.all([getAllBooks(), getAllCollections()]);
     setBooks(storedBooks);
     setCollections(storedCollections);
+
+    if (isCollabMode) {
+      return;
+    }
 
     const legacyBookIds = storedBooks
       .filter((book) => {
@@ -990,6 +1009,58 @@ export default function Home() {
       collections: storedCollections.length,
       legacyBackfills: legacyBookIds.length
     });
+  };
+
+  const refreshShareInboxCount = async () => {
+    if (!isCollabMode) {
+      setShareInboxCount(0);
+      return;
+    }
+    try {
+      const shares = await fetchShareInbox();
+      setShareInboxCount(Array.isArray(shares) ? shares.length : 0);
+    } catch {
+      setShareInboxCount(0);
+    }
+  };
+
+  const openShareDialog = (event, book) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setShareDialogBook(book);
+    setShareRecipientEmail("");
+    setShareMessage("");
+    setShareError("");
+  };
+
+  const closeShareDialog = () => {
+    setShareDialogBook(null);
+    setShareRecipientEmail("");
+    setShareMessage("");
+    setShareError("");
+    setIsSharingBook(false);
+  };
+
+  const handleShareBook = async () => {
+    if (!shareDialogBook?.id || !shareRecipientEmail.trim() || isSharingBook) return;
+    setIsSharingBook(true);
+    setShareError("");
+    try {
+      await createBookShare({
+        bookId: shareDialogBook.id,
+        toEmail: shareRecipientEmail.trim(),
+        message: shareMessage.trim() || undefined
+      });
+      showFeedbackToast({
+        title: "Share sent",
+        message: `Invitation sent to ${shareRecipientEmail.trim()}.`
+      });
+      closeShareDialog();
+      refreshShareInboxCount();
+    } catch (err) {
+      setShareError(err?.response?.data?.error || "Could not share this book");
+      setIsSharingBook(false);
+    }
   };
 
   const readStartedBookIds = () => {
@@ -1571,6 +1642,12 @@ export default function Home() {
       setIsNotesCenterOpen(false);
       setSelectedTrashBookIds([]);
       return;
+    }
+    if (section === "inbox") {
+      setStatusFilter("all");
+      setCollectionFilter("all");
+      setSelectedTrashBookIds([]);
+      refreshShareInboxCount();
     }
     if (section === "account" || section === "statistics") {
       setStatusFilter("all");
@@ -2942,6 +3019,7 @@ const formatNotificationTimeAgo = (value) => {
   const isCollectionsPage = librarySection === "collections";
   const isNotesSection = librarySection === "notes";
   const isHighlightsSection = librarySection === "highlights";
+  const isInboxSection = librarySection === "inbox";
   const isTrashSection = librarySection === "trash";
   const shouldShowLibraryHomeContent = librarySection === "library";
   const sectionHeader = useMemo(() => {
@@ -2975,6 +3053,13 @@ const formatNotificationTimeAgo = (value) => {
         summary: `${count} highlight${count === 1 ? "" : "s"} shown`
       };
     }
+    if (isInboxSection) {
+      return {
+        title: "Inbox",
+        subtitle: "Pending book shares from other Ariadne users.",
+        summary: `${shareInboxCount} pending share${shareInboxCount === 1 ? "" : "s"}`
+      };
+    }
     if (isCollectionsPage) {
       return {
         title: "My Collections",
@@ -3004,9 +3089,11 @@ const formatNotificationTimeAgo = (value) => {
     isHighlightsSection,
     isCollectionsPage,
     isTrashSection,
+    isInboxSection,
     activeBooks.length,
     notesCenterDisplayEntries.length,
     highlightsCenterDisplayEntries.length,
+    shareInboxCount,
     collections.length,
     sortedTrashBooks.length,
     trashedBooksCount,
@@ -3372,6 +3459,10 @@ const formatNotificationTimeAgo = (value) => {
       return;
     }
     if (actionKey === "sign-out") {
+      clearSession();
+      if (typeof window !== "undefined") {
+        window.location.reload();
+      }
       handleSidebarSectionSelect("library");
     }
   };
@@ -3459,6 +3550,7 @@ const formatNotificationTimeAgo = (value) => {
             isDarkLibraryTheme={isDarkLibraryTheme}
             notesCount={notesCenterEntries.length}
             highlightsCount={highlightsCenterEntries.length}
+            inboxCount={shareInboxCount}
             trashCount={trashedBooksCount}
             onSelectSection={handleSidebarSectionSelect}
             className={showReadingSnapshot ? "mt-4" : ""}
@@ -4288,6 +4380,14 @@ const formatNotificationTimeAgo = (value) => {
             onOpenReader={handleOpenHighlightInReader}
           />
         )}
+        {isInboxSection && !isTrashSection && (
+          <LibraryShareInboxPanel
+            onAccepted={async () => {
+              await loadLibrary();
+              await refreshShareInboxCount();
+            }}
+          />
+        )}
         {isCollectionsPage && !isTrashSection && (
           <LibraryCollectionsBoard
             collections={collections}
@@ -4457,6 +4557,16 @@ const formatNotificationTimeAgo = (value) => {
                           >
                             <Heart size={16} fill={book.isFavorite ? "currentColor" : "none"} />
                           </button>
+                          {isCollabMode && (
+                            <button
+                              type="button"
+                              onClick={(e) => openShareDialog(e, book)}
+                              className="p-2 bg-white text-gray-400 hover:text-blue-600 rounded-xl shadow-md transition-transform active:scale-95"
+                              title="Share book"
+                            >
+                              <Send size={16} />
+                            </button>
+                          )}
                           <button
                             type="button"
                             data-testid="book-info"
@@ -4800,6 +4910,16 @@ const formatNotificationTimeAgo = (value) => {
                             >
                               <Heart size={16} fill={book.isFavorite ? "currentColor" : "none"} />
                             </button>
+                            {isCollabMode && (
+                              <button
+                                type="button"
+                                onClick={(e) => openShareDialog(e, book)}
+                                className="p-2 bg-white border border-gray-200 text-gray-400 hover:text-blue-600 rounded-xl shadow-sm transition-transform active:scale-95"
+                                title="Share book"
+                              >
+                                <Send size={16} />
+                              </button>
+                            )}
                             <button
                               data-testid="book-move-trash"
                               onClick={(e) => handleDeleteBook(e, book.id)}
@@ -4925,6 +5045,50 @@ const formatNotificationTimeAgo = (value) => {
             <Plus size={28} />
             <input type="file" accept=".epub" multiple className="hidden" onChange={handleFileUpload} />
           </label>
+        )}
+        {shareDialogBook && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/30" onClick={closeShareDialog} />
+            <div className="relative w-full max-w-md rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl">
+              <h3 className="text-lg font-semibold text-gray-900">Share Book</h3>
+              <p className="mt-1 text-sm text-gray-600">
+                Share <span className="font-semibold text-gray-900">{shareDialogBook.title}</span> with another user.
+              </p>
+              <div className="mt-4 space-y-3">
+                <input
+                  type="email"
+                  value={shareRecipientEmail}
+                  onChange={(e) => setShareRecipientEmail(e.target.value)}
+                  placeholder="Recipient email"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+                <textarea
+                  value={shareMessage}
+                  onChange={(e) => setShareMessage(e.target.value)}
+                  placeholder="Message (optional)"
+                  className="min-h-[90px] w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+                {shareError && <p className="text-xs text-rose-600">{shareError}</p>}
+              </div>
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeShareDialog}
+                  className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleShareBook}
+                  disabled={!shareRecipientEmail.trim() || isSharingBook}
+                  className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {isSharingBook ? "Sharing..." : "Send share"}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
         {uploadStage === "reading" && (
           <div

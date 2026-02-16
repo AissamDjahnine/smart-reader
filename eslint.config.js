@@ -34,4 +34,12 @@ export default defineConfig([
       },
     },
   },
+  {
+    files: ['server/**/*.js'],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
 ])

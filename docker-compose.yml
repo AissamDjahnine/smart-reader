@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ariadne
+      POSTGRES_USER: ariadne
+      POSTGRES_PASSWORD: ariadne
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  backend:
+    build:
+      context: ./server
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://ariadne:ariadne@db:5432/ariadne
+      PORT: 4000
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+      JWT_EXPIRES_IN: 7d
+      APP_BASE_URL: ${APP_BASE_URL:-http://127.0.0.1:4000}
+      EPUB_UPLOAD_DIR: /app/uploads/epubs
+    volumes:
+      - epub_data:/app/uploads/epubs
+    ports:
+      - "4000:4000"
+
+  frontend:
+    profiles: ["frontend"]
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://127.0.0.1:4000}
+    ports:
+      - "5173:5173"
+
+volumes:
+  pg_data:
+  epub_data:

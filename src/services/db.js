@@ -1,5 +1,19 @@
 import localforage from 'localforage';
 import ePub from 'epubjs';
+import {
+  isCollabMode,
+  fetchBooks,
+  createOrAttachBook,
+  fetchBook,
+  fetchBookBinary,
+  saveProgress,
+  fetchHighlights,
+  createHighlight,
+  updateHighlightById,
+  deleteHighlightById,
+  getFileUrl
+} from './collabApi';
+import { getCurrentUser } from './session';
 
 const bookStore = localforage.createInstance({ name: "SmartReaderLib" });
 const collectionsStore = localforage.createInstance({ name: "SmartReaderLib", storeName: "collections" });
@@ -18,6 +32,84 @@ const ALLOWED_COLLECTION_COLORS = new Set([
   "#0891b2",
   "#4b5563"
 ]);
+
+const remoteBookDefaults = {
+  metadataVersion: BOOK_METADATA_VERSION,
+  publisher: "Unknown Publisher",
+  pubDate: "",
+  epubMetadata: {},
+  hasStarted: false,
+  bookmarks: [],
+  readerSettings: {
+    fontSize: 100,
+    theme: 'light',
+    flow: 'paginated',
+    fontFamily: 'publisher',
+    lineSpacing: 1.6,
+    textMargin: 32,
+    textAlign: 'left'
+  },
+  isFavorite: false,
+  isToRead: false,
+  collectionIds: [],
+  isDeleted: false,
+  deletedAt: null,
+  readingTime: 0,
+  readingSessions: [],
+  lastRead: new Date().toISOString(),
+  addedAt: new Date().toISOString(),
+  aiSummaries: [],
+  pageSummaries: [],
+  chapterSummaries: [],
+  globalSummary: ""
+};
+
+const normalizeRemoteHighlight = (item = {}) => ({
+  id: item.id,
+  cfiRange: item.cfiRange || "",
+  text: item.text || "",
+  note: item.note || "",
+  color: item.color || "#fcd34d",
+  contextPrefix: item.contextPrefix || "",
+  contextSuffix: item.contextSuffix || "",
+  chapterHref: item.chapterHref || "",
+  createdAt: item.createdAt || new Date().toISOString(),
+  createdByUserId: item.createdByUserId || "",
+  createdBy: item.createdBy || null
+});
+
+const normalizeRemoteBook = async (book = {}) => {
+  const highlights = await fetchHighlights(book.id).catch(() => []);
+  return {
+    ...remoteBookDefaults,
+    id: book.id,
+    title: book.title || "Untitled",
+    author: book.author || "Unknown Author",
+    language: book.language || "",
+    genre: "",
+    estimatedPages: null,
+    cover: book.cover || null,
+    data: getFileUrl(book.id),
+    progress: Math.max(0, Math.min(100, Number(book.progress || 0))),
+    lastLocation: book.lastLocation || "",
+    lastOpenedAt: book.userBook?.lastOpenedAt || null,
+    highlights: Array.isArray(highlights) ? highlights.map(normalizeRemoteHighlight) : []
+  };
+};
+
+const computeEpubHash = async (file) => {
+  if (!file) return "";
+  try {
+    const buffer = await file.arrayBuffer();
+    if (typeof crypto !== "undefined" && crypto?.subtle?.digest) {
+      const digest = await crypto.subtle.digest("SHA-256", buffer);
+      return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+  } catch (err) {
+    console.error("Unable to compute epub hash", err);
+  }
+  return `${file.name || "book"}-${file.size || 0}-${file.lastModified || 0}`;
+};
 
 const runBookMutation = async (id, mutator) => {
   const previous = mutationQueues.get(id) || Promise.resolve();
@@ -229,6 +321,19 @@ const needsMetadataBackfill = (book) => {
 };
 
 export const addBook = async (file, options = {}) => {
+  if (isCollabMode) {
+    const epubHash = options?.epubHash || (await computeEpubHash(file));
+    const book = await createOrAttachBook({
+      file,
+      epubHash,
+      title: options?.titleOverride || file?.name?.replace('.epub', '') || "Untitled",
+      author: options?.preparedMetadata?.metadata?.creator || "Unknown Author",
+      language: options?.preparedMetadata?.metadata?.language || "",
+      cover: options?.preparedMetadata?.cover || null
+    });
+    return normalizeRemoteBook(book);
+  }
+
   const id = Date.now().toString();
   const prepared = options.preparedMetadata || (await readEpubMetadata(file));
   const metadata = prepared?.metadata || {};
@@ -285,6 +390,12 @@ export const addBook = async (file, options = {}) => {
 };
 
 export const getAllBooks = async () => {
+  if (isCollabMode) {
+    const books = await fetchBooks();
+    const normalized = await Promise.all((books || []).map((book) => normalizeRemoteBook(book)));
+    return normalized.sort((a, b) => new Date(b.addedAt) - new Date(a.addedAt));
+  }
+
   const books = [];
   await bookStore.iterate((value) => {
     const normalized = normalizeBookCollections(value);
@@ -364,9 +475,28 @@ export const backfillBookMetadata = async (id) => {
   });
 };
 
-export const getBook = async (id) => await bookStore.getItem(id);
+export const getBook = async (id) => {
+  if (isCollabMode) {
+    const book = await fetchBook(id);
+    const normalized = await normalizeRemoteBook(book);
+    try {
+      const binary = await fetchBookBinary(id);
+      normalized.data = binary;
+    } catch (err) {
+      console.error("Failed to fetch remote book binary", err);
+    }
+    return normalized;
+  }
+  return bookStore.getItem(id);
+};
 
 export const updateBookProgress = async (id, location, percentage) => {
+  if (isCollabMode) {
+    const progressPercent = Math.min(Math.max(Math.floor((percentage || 0) * 100), 0), 100);
+    const updated = await saveProgress(id, progressPercent, location || "");
+    return normalizeRemoteBook(updated);
+  }
+
   await runBookMutation(id, (book) => {
     book.lastLocation = location;
     book.progress = Math.min(Math.max(Math.floor(percentage * 100), 0), 100); 
@@ -376,6 +506,19 @@ export const updateBookProgress = async (id, location, percentage) => {
 };
 
 export const updateBookReaderSettings = async (id, readerSettings) => {
+  if (isCollabMode) {
+    return {
+      fontSize: 100,
+      theme: 'light',
+      flow: 'paginated',
+      fontFamily: 'publisher',
+      lineSpacing: 1.6,
+      textMargin: 32,
+      textAlign: 'left',
+      ...(readerSettings || {})
+    };
+  }
+
   const updatedBook = await runBookMutation(id, (book) => {
     const current = book.readerSettings || {};
     book.readerSettings = {
@@ -388,6 +531,15 @@ export const updateBookReaderSettings = async (id, readerSettings) => {
 };
 
 export const updateReadingStats = async (id, secondsToAdd) => {
+  if (isCollabMode) {
+    const current = await getBook(id);
+    return {
+      ...current,
+      readingTime: (current?.readingTime || 0) + Math.max(0, Number(secondsToAdd) || 0),
+      lastRead: new Date().toISOString()
+    };
+  }
+
   return runBookMutation(id, (book) => {
     const safeSeconds = Math.max(0, Number(secondsToAdd) || 0);
     const now = new Date();
@@ -428,6 +580,10 @@ export const updateReadingStats = async (id, secondsToAdd) => {
 };
 
 export const markBookStarted = async (id) => {
+  if (isCollabMode) {
+    return getBook(id);
+  }
+
   return runBookMutation(id, (book) => {
     if (!book.hasStarted) {
       book.hasStarted = true;
@@ -507,6 +663,7 @@ export const toggleToRead = async (id) => {
 };
 
 export const getAllCollections = async () => {
+  if (isCollabMode) return [];
   const collections = [];
   await collectionsStore.iterate((value) => {
     if (!value || typeof value !== "object") return;
@@ -529,6 +686,16 @@ export const getAllCollections = async () => {
 };
 
 export const createCollection = async (name, color = DEFAULT_COLLECTION_COLOR) => {
+  if (isCollabMode) {
+    return {
+      id: `disabled-${Date.now()}`,
+      name: normalizeCollectionName(name),
+      color: normalizeCollectionColor(color),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+  }
+
   const cleanName = normalizeCollectionName(name);
   if (!cleanName) throw new Error("Collection name is required.");
   const existing = await getAllCollections();
@@ -549,6 +716,15 @@ export const createCollection = async (name, color = DEFAULT_COLLECTION_COLOR) =
 };
 
 export const renameCollection = async (id, name) => {
+  if (isCollabMode) {
+    return {
+      id,
+      name: normalizeCollectionName(name),
+      color: DEFAULT_COLLECTION_COLOR,
+      updatedAt: new Date().toISOString()
+    };
+  }
+
   if (!id) throw new Error("Collection id is required.");
   const cleanName = normalizeCollectionName(name);
   if (!cleanName) throw new Error("Collection name is required.");
@@ -573,6 +749,7 @@ export const renameCollection = async (id, name) => {
 };
 
 export const deleteCollection = async (id) => {
+  if (isCollabMode) return;
   if (!id) return;
   await collectionsStore.removeItem(id);
 
@@ -591,6 +768,7 @@ export const deleteCollection = async (id) => {
 };
 
 export const toggleBookCollection = async (bookId, collectionId) => {
+  if (isCollabMode) return [];
   if (!bookId || !collectionId) return [];
   const collection = await collectionsStore.getItem(collectionId);
   if (!collection) throw new Error("Collection not found.");
@@ -607,6 +785,19 @@ export const toggleBookCollection = async (bookId, collectionId) => {
 };
 
 export const saveHighlight = async (bookId, highlight) => {
+  if (isCollabMode) {
+    const updated = await createHighlight(bookId, {
+      cfiRange: highlight.cfiRange,
+      text: highlight.text,
+      note: highlight.note || null,
+      color: highlight.color || null,
+      contextPrefix: highlight.contextPrefix || null,
+      contextSuffix: highlight.contextSuffix || null,
+      chapterHref: highlight.chapterHref || null
+    });
+    return updated.map(normalizeRemoteHighlight);
+  }
+
   const updatedBook = await runBookMutation(bookId, (book) => {
     if (!book.highlights) book.highlights = [];
     const idx = book.highlights.findIndex((h) => h.cfiRange === highlight.cfiRange);
@@ -626,6 +817,23 @@ export const saveHighlight = async (bookId, highlight) => {
 };
 
 export const updateHighlightNote = async (bookId, cfiRange, note) => {
+  if (isCollabMode) {
+    const highlights = await fetchHighlights(bookId);
+    const userId = getCurrentUser()?.id || "";
+    const target = highlights.find((item) => {
+      const source = (item?.cfiRange || "").replace(/\s+/g, "");
+      const targetCfi = (cfiRange || "").replace(/\s+/g, "");
+      if (!source || !targetCfi) return false;
+      const cfiMatch = source === targetCfi || source.includes(targetCfi) || targetCfi.includes(source);
+      if (!cfiMatch) return false;
+      if (!userId) return true;
+      return item?.createdByUserId === userId;
+    });
+    if (!target?.id) return highlights.map(normalizeRemoteHighlight);
+    const updated = await updateHighlightById(target.id, { note: note || "" });
+    return updated.map(normalizeRemoteHighlight);
+  }
+
   const updatedBook = await runBookMutation(bookId, (book) => {
     if (!book.highlights) book.highlights = [];
     const normalizeCfi = (value) => (value || '').toString().replace(/\s+/g, '');
@@ -648,6 +856,19 @@ export const updateHighlightNote = async (bookId, cfiRange, note) => {
 };
 
 export const deleteHighlight = async (bookId, cfiRange) => {
+  if (isCollabMode) {
+    const highlights = await fetchHighlights(bookId);
+    const userId = getCurrentUser()?.id || "";
+    const target = highlights.find((item) => {
+      if ((item?.cfiRange || "") !== cfiRange) return false;
+      if (!userId) return true;
+      return item?.createdByUserId === userId;
+    });
+    if (!target?.id) return highlights.map(normalizeRemoteHighlight);
+    const updated = await deleteHighlightById(target.id);
+    return updated.map(normalizeRemoteHighlight);
+  }
+
   const updatedBook = await runBookMutation(bookId, (book) => {
     book.highlights = book.highlights.filter(h => h.cfiRange !== cfiRange);
     return book;

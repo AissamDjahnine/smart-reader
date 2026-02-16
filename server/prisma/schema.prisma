@@ -1,0 +1,134 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserBookStatus {
+  TO_READ
+  IN_PROGRESS
+  FINISHED
+}
+
+enum ShareStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+model User {
+  id           String      @id @default(cuid())
+  email        String      @unique
+  passwordHash String
+  displayName  String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  userBooks    UserBook[]
+  notes        Note[]
+  highlights   Highlight[]
+  sentShares   BookShare[] @relation("shares_sent")
+  recvShares   BookShare[] @relation("shares_received")
+}
+
+model InviteCode {
+  id         String   @id @default(cuid())
+  code       String   @unique
+  isActive   Boolean  @default(true)
+  maxUses    Int?
+  usedCount  Int      @default(0)
+  createdAt  DateTime @default(now())
+}
+
+model Book {
+  id          String      @id @default(cuid())
+  epubHash    String      @unique
+  title       String
+  author      String?
+  language    String?
+  cover       String?
+  filePath    String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  userBooks   UserBook[]
+  notes       Note[]
+  highlights  Highlight[]
+  shares      BookShare[]
+}
+
+model UserBook {
+  id              String         @id @default(cuid())
+  userId          String
+  bookId          String
+  status          UserBookStatus @default(TO_READ)
+  progressPercent Int            @default(0)
+  progressCfi     String?
+  lastOpenedAt    DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book            Book           @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, bookId])
+  @@index([bookId])
+}
+
+model Note {
+  id              String   @id @default(cuid())
+  bookId          String
+  createdByUserId String
+  cfi             String?
+  text            String
+  message         String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  book            Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  createdBy       User     @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  @@index([bookId])
+}
+
+model Highlight {
+  id              String   @id @default(cuid())
+  bookId          String
+  createdByUserId String
+  cfiRange        String
+  text            String
+  note            String?
+  color           String?
+  contextPrefix   String?
+  contextSuffix   String?
+  chapterHref     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  book            Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  createdBy       User     @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  @@unique([bookId, cfiRange, createdByUserId])
+  @@index([bookId])
+}
+
+model BookShare {
+  id         String      @id @default(cuid())
+  bookId      String
+  fromUserId  String
+  toUserId    String
+  message     String?
+  status      ShareStatus @default(PENDING)
+  createdAt   DateTime    @default(now())
+  acceptedAt  DateTime?
+
+  book        Book       @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  fromUser    User       @relation("shares_sent", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser      User       @relation("shares_received", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@index([toUserId, status])
+  @@unique([bookId, fromUserId, toUserId])
+}

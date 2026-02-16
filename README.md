@@ -213,6 +213,59 @@ npm run dev
 
 Open the app at the local Vite URL (usually `http://localhost:5173`).
 
+## Shared Server Mode (Tailscale)
+
+This repository now includes a collaborative backend for multi-user sharing on one server.
+
+### Topology
+
+- One shared server runs `docker-compose` (backend + postgres).
+- All users access the app from a browser over the same tailnet.
+- No per-user Docker setup is required.
+- No public Funnel is required.
+
+### Run on shared server
+
+1. Copy backend env:
+
+```bash
+cp server/.env.example server/.env
+```
+
+2. Set at least:
+- `JWT_SECRET` to a strong secret.
+- `APP_BASE_URL` to your server Tailscale URL, for example `http://100.64.0.10:4000`.
+
+3. Start backend + DB:
+
+```bash
+docker compose up -d --build backend db
+```
+
+4. Optional: run frontend in Docker too:
+
+```bash
+docker compose --profile frontend up -d --build frontend
+```
+
+### Frontend env for collaborative mode
+
+Set `VITE_API_BASE_URL` to your backend Tailscale URL (for example `http://100.64.0.10:4000`).
+When this variable is set:
+
+- Email/password registration/login is enabled.
+- JWT auth is required.
+- Books/progress/highlights are loaded from shared backend.
+- Share Inbox and book sharing UI are enabled.
+
+### Access control model
+
+- `Book` is global/shared by `epubHash`.
+- Per-user progress is in `UserBook`.
+- Notes/highlights are shared per `Book` and include author.
+- Book access requires `UserBook` relation.
+- Shares are invitation-like records in `BookShare` and become active when accepted.
+
 ## Main App Areas
 
 - `src/pages/Home.jsx` - Library page orchestrator (state, data loading, feature composition)
