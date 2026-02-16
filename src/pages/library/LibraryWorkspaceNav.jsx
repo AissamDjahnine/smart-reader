@@ -29,7 +29,7 @@ export function LibraryWorkspaceSidebar({
   return (
     <aside
       data-testid="library-sidebar"
-      className={`workspace-surface hidden h-fit sticky top-8 md:block p-4 ${isDarkLibraryTheme ? "workspace-surface-dark" : "workspace-surface-light"} ${className}`}
+      className={`workspace-surface hidden h-fit sticky top-8 md:block p-4 ${isDarkLibraryTheme ? "workspace-surface-dark" : "workspace-surface-light library-zone-sidebar-light"} ${className}`}
     >
       <div className={`text-[12px] font-semibold uppercase tracking-[0.16em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-600"}`}>Workspace</div>
       <nav className="mt-3 space-y-2">

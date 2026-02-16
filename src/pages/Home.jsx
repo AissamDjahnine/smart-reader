@@ -3382,21 +3382,18 @@ const formatNotificationTimeAgo = (value) => {
         <div className="hidden md:flex md:flex-col pt-3">
           <div
             data-testid="library-logo-slot"
-            className={`mb-4 flex items-center justify-center rounded-3xl border py-4 ${
-              isDarkLibraryTheme ? "border-slate-700 bg-slate-900/70" : "border-blue-100 bg-blue-50/55"
+            className={`mb-5 mt-1 flex items-center justify-start border-b px-2 pb-4 ${
+              isDarkLibraryTheme ? "border-slate-700/70" : "border-gray-200/80"
             }`}
           >
-            <div
-              className={`h-20 w-20 rounded-full border-2 border-dashed flex items-center justify-center text-lg font-black tracking-wide ${
-                isDarkLibraryTheme
-                  ? "border-slate-500 text-slate-300 bg-slate-800/70"
-                  : "border-blue-300 text-blue-600 bg-white/95"
-              }`}
-              title="App logo slot"
-              aria-label="App logo slot"
-            >
-              LOGO
-            </div>
+            <img
+              src="/brand/logo.png"
+              alt="Ariadne logo"
+              className="h-14 w-auto max-w-[200px] origin-left scale-110 object-contain"
+              onError={(event) => {
+                event.currentTarget.style.display = "none";
+              }}
+            />
           </div>
           {showReadingSnapshot && (
             <aside
