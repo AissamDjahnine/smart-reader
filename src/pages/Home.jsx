@@ -237,6 +237,48 @@ const formatGenreLabel = (value) => {
 const compactWhitespace = (value) => (value || "").toString().replace(/\s+/g, " ").trim();
 const EXCLUDED_METADATA_KEYS = new Set(["modified", "identifier"]);
 const PRIORITIZED_METADATA_KEYS = ["title", "creator", "author", "language"];
+const FAQ_ITEMS = [
+  {
+    question: "How do I add a new book?",
+    answer: "Go to My Library and upload one or more EPUB files. Ariadne extracts metadata and adds them to your library automatically."
+  },
+  {
+    question: "Why does each user have different progress for the same book?",
+    answer: "Progress is personal per user. Shared books keep separate progress and last position for each account."
+  },
+  {
+    question: "How does sharing a book work?",
+    answer: "Open a book, click Share, enter a recipient email, and send. The recipient accepts from Inbox to add the book."
+  },
+  {
+    question: "Are highlights and notes private?",
+    answer: "Highlights and notes are shared for users who have access to that book. Reading progress remains private."
+  },
+  {
+    question: "How do I change reading mode after starting a book?",
+    answer: "Use Change reading mode in the reader. You can restart from 0% or choose a chapter and continue from there."
+  },
+  {
+    question: "Why am I not asked for reading mode every time?",
+    answer: "Mode is chosen once for a new book. Reopening an in-progress book continues directly without re-asking."
+  },
+  {
+    question: "Can I recover deleted books?",
+    answer: "Yes. Deleted books go to Trash first, where you can restore selected items or restore all."
+  },
+  {
+    question: "How do Collections help?",
+    answer: "Collections are custom shelves. You can organize books by theme, project, or reading plan and assign one book to multiple shelves."
+  },
+  {
+    question: "Where are account data and profile pictures stored?",
+    answer: "Your account data and profile image are stored on the shared backend and linked to your user profile."
+  },
+  {
+    question: "What should I do if the UI looks outdated after an update?",
+    answer: "Refresh the page first. If needed, clear browser cache for the site and reload to fetch the latest frontend build."
+  }
+];
 
 const decodeHtmlEntities = (value) => {
   if (typeof value !== "string") return value;
@@ -1703,7 +1745,7 @@ export default function Home() {
       setSelectedTrashBookIds([]);
       refreshShareInboxCount();
     }
-    if (section === "account" || section === "statistics") {
+    if (section === "account" || section === "statistics" || section === "faq") {
       setStatusFilter("all");
       setCollectionFilter("all");
       setSelectedTrashBookIds([]);
@@ -3139,6 +3181,7 @@ const formatNotificationTimeAgo = (value) => {
   const isHighlightsSection = librarySection === "highlights";
   const isInboxSection = librarySection === "inbox";
   const isTrashSection = librarySection === "trash";
+  const isFaqSection = librarySection === "faq";
   const shouldShowLibraryHomeContent = librarySection === "library";
   const sectionHeader = useMemo(() => {
     if (isAccountSection) {
@@ -3178,6 +3221,13 @@ const formatNotificationTimeAgo = (value) => {
         summary: `${shareInboxCount} pending share${shareInboxCount === 1 ? "" : "s"}`
       };
     }
+    if (isFaqSection) {
+      return {
+        title: "FAQ",
+        subtitle: "Answers to the most common questions about Ariadne.",
+        summary: `${FAQ_ITEMS.length} questions`
+      };
+    }
     if (isCollectionsPage) {
       return {
         title: "My Collections",
@@ -3208,6 +3258,7 @@ const formatNotificationTimeAgo = (value) => {
     isCollectionsPage,
     isTrashSection,
     isInboxSection,
+    isFaqSection,
     activeBooks.length,
     notesCenterDisplayEntries.length,
     highlightsCenterDisplayEntries.length,
@@ -3588,9 +3639,7 @@ const formatNotificationTimeAgo = (value) => {
       return;
     }
     if (actionKey === "faq") {
-      if (typeof window !== "undefined") {
-        window.open("https://github.com/AissamDjahnine/smart-reader#faq", "_blank", "noopener,noreferrer");
-      }
+      handleSidebarSectionSelect("faq");
       return;
     }
     if (actionKey === "sign-out") {
@@ -4173,7 +4222,32 @@ const formatNotificationTimeAgo = (value) => {
           />
         )}
 
-        {!isAccountSection && !isStatisticsSection && (
+        {isFaqSection && (
+          <section
+            data-testid="library-faq-section"
+            className={`rounded-2xl border p-5 space-y-3 ${
+              isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "border-gray-200 bg-white"
+            }`}
+          >
+            {FAQ_ITEMS.map((item, index) => (
+              <article
+                key={`faq-${index}`}
+                className={`rounded-xl border p-4 ${
+                  isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/50"
+                }`}
+              >
+                <h3 className={`text-sm font-bold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
+                  {item.question}
+                </h3>
+                <p className={`mt-1 text-sm leading-relaxed ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}`}>
+                  {item.answer}
+                </p>
+              </article>
+            ))}
+          </section>
+        )}
+
+        {!isAccountSection && !isStatisticsSection && !isFaqSection && (
         <>
         {shouldShowContinueReading && (
           <section
