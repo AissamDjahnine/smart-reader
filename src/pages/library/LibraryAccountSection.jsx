@@ -4,7 +4,9 @@ export default function LibraryAccountSection({
   isDarkLibraryTheme,
   accountProfile,
   accountSaveMessage,
+  isUploadingAvatar = false,
   onFieldChange,
+  onAvatarUpload,
   onSave
 }) {
   return (
@@ -15,6 +17,44 @@ export default function LibraryAccountSection({
       }`}
     >
       <div className="mx-auto max-w-5xl">
+        <div className="mb-6 flex items-center gap-4">
+          <div className={`h-16 w-16 overflow-hidden rounded-full border ${isDarkLibraryTheme ? "border-slate-600" : "border-gray-200"}`}>
+            {accountProfile?.avatarUrl ? (
+              <img
+                src={accountProfile.avatarUrl}
+                alt="Profile avatar"
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <div className={`flex h-full w-full items-center justify-center text-lg font-semibold ${isDarkLibraryTheme ? "bg-slate-800 text-slate-300" : "bg-gray-100 text-gray-500"}`}>
+                {(accountProfile?.firstName || accountProfile?.email || "R").trim().charAt(0).toUpperCase() || "R"}
+              </div>
+            )}
+          </div>
+          <div className="flex flex-col gap-2">
+            <label
+              htmlFor="account-avatar-input"
+              className="inline-flex h-10 cursor-pointer items-center rounded-lg bg-blue-600 px-4 text-sm font-bold text-white hover:bg-blue-700"
+            >
+              {isUploadingAvatar ? "Uploading..." : "Upload picture"}
+            </label>
+            <input
+              id="account-avatar-input"
+              data-testid="library-account-avatar-input"
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) onAvatarUpload?.(file);
+                event.target.value = "";
+              }}
+            />
+            <span className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-slate-500"}`}>
+              PNG/JPG up to 2MB
+            </span>
+          </div>
+        </div>
         <div className="grid gap-4 md:grid-cols-2">
           <div>
             <label htmlFor="account-first-name" className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-200" : "text-slate-700"}`}>

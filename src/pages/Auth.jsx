@@ -11,8 +11,9 @@ export default function Auth({ onAuthed }) {
 
   const canSubmit = useMemo(() => {
     if (!email.trim() || !password.trim()) return false;
+    if (mode === 'register' && !displayName.trim()) return false;
     return true;
-  }, [email, password]);
+  }, [email, password, displayName, mode]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -49,7 +50,7 @@ export default function Auth({ onAuthed }) {
             <input
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="Display name (optional)"
+              placeholder="Display name"
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
             />
           )}

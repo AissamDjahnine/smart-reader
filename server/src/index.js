@@ -28,6 +28,10 @@ const storage = multer.diskStorage({
   }
 });
 const upload = multer({ storage });
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 }
+});
 
 const getBaseUrl = (req) => {
   if (config.appBaseUrl) return config.appBaseUrl.replace(/\/$/, '');
@@ -40,9 +44,16 @@ const includeBookGraph = {
 
 const includeShareGraph = {
   book: true,
-  fromUser: { select: { id: true, email: true, displayName: true } },
-  toUser: { select: { id: true, email: true, displayName: true } }
+  fromUser: { select: { id: true, email: true, displayName: true, avatarUrl: true } },
+  toUser: { select: { id: true, email: true, displayName: true, avatarUrl: true } }
 };
+
+const toUserResponse = (user) => ({
+  id: user.id,
+  email: user.email,
+  displayName: user.displayName || null,
+  avatarUrl: user.avatarUrl || null
+});
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
@@ -52,7 +63,7 @@ app.post('/auth/register', async (req, res) => {
   const schema = z.object({
     email: z.string().email(),
     password: z.string().min(8),
-    displayName: z.string().optional()
+    displayName: z.string().min(1)
   });
 
   const parsed = schema.safeParse(req.body || {});
@@ -67,14 +78,14 @@ app.post('/auth/register', async (req, res) => {
     data: {
       email,
       passwordHash,
-      displayName: (parsed.data.displayName || '').trim() || null
+      displayName: (parsed.data.displayName || '').trim()
     }
   });
 
   const token = signToken(user);
   return res.status(201).json({
     token,
-    user: { id: user.id, email: user.email, displayName: user.displayName }
+    user: toUserResponse(user)
   });
 });
 
@@ -95,17 +106,55 @@ app.post('/auth/login', async (req, res) => {
   const token = signToken(user);
   return res.json({
     token,
-    user: { id: user.id, email: user.email, displayName: user.displayName }
+    user: toUserResponse(user)
   });
 });
 
 app.get('/auth/me', requireAuth, async (req, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.auth.userId },
-    select: { id: true, email: true, displayName: true, createdAt: true }
+    select: { id: true, email: true, displayName: true, avatarUrl: true, createdAt: true }
   });
   if (!user) return res.status(404).json({ error: 'User not found' });
-  return res.json({ user });
+  return res.json({ user: toUserResponse(user) });
+});
+
+app.get('/users/me', requireAuth, async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.auth.userId },
+    select: { id: true, email: true, displayName: true, avatarUrl: true }
+  });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  return res.json({ user: toUserResponse(user) });
+});
+
+app.patch('/users/me', requireAuth, async (req, res) => {
+  const schema = z.object({
+    displayName: z.string().min(1).max(120)
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const user = await prisma.user.update({
+    where: { id: req.auth.userId },
+    data: { displayName: parsed.data.displayName.trim() },
+    select: { id: true, email: true, displayName: true, avatarUrl: true }
+  });
+  return res.json({ user: toUserResponse(user) });
+});
+
+app.post('/users/me/avatar', requireAuth, avatarUpload.single('avatar'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Avatar file is required' });
+  const mime = (req.file.mimetype || '').toLowerCase();
+  if (!mime.startsWith('image/')) return res.status(400).json({ error: 'Avatar must be an image' });
+  const avatarUrl = `data:${mime};base64,${req.file.buffer.toString('base64')}`;
+
+  const user = await prisma.user.update({
+    where: { id: req.auth.userId },
+    data: { avatarUrl },
+    select: { id: true, email: true, displayName: true, avatarUrl: true }
+  });
+  return res.json({ user: toUserResponse(user) });
 });
 
 app.get('/books', requireAuth, async (req, res) => {
@@ -248,7 +297,7 @@ app.get('/books/:bookId/highlights', requireAuth, requireBookAccess, async (req,
   const highlights = await prisma.highlight.findMany({
     where: { bookId: req.params.bookId },
     include: {
-      createdBy: { select: { id: true, email: true, displayName: true } }
+      createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } }
     },
     orderBy: { createdAt: 'asc' }
   });
@@ -299,7 +348,7 @@ app.post('/books/:bookId/highlights', requireAuth, requireBookAccess, async (req
 
   const highlights = await prisma.highlight.findMany({
     where: { bookId: req.params.bookId },
-    include: { createdBy: { select: { id: true, email: true, displayName: true } } },
+    include: { createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } } },
     orderBy: { createdAt: 'asc' }
   });
 
@@ -343,7 +392,7 @@ app.patch('/highlights/:highlightId', requireAuth, async (req, res) => {
 
   const highlights = await prisma.highlight.findMany({
     where: { bookId: existing.bookId },
-    include: { createdBy: { select: { id: true, email: true, displayName: true } } },
+    include: { createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } } },
     orderBy: { createdAt: 'asc' }
   });
 
@@ -360,7 +409,7 @@ app.delete('/highlights/:highlightId', requireAuth, async (req, res) => {
   await prisma.highlight.delete({ where: { id: existing.id } });
   const highlights = await prisma.highlight.findMany({
     where: { bookId: existing.bookId },
-    include: { createdBy: { select: { id: true, email: true, displayName: true } } },
+    include: { createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } } },
     orderBy: { createdAt: 'asc' }
   });
 
@@ -370,7 +419,7 @@ app.delete('/highlights/:highlightId', requireAuth, async (req, res) => {
 app.get('/books/:bookId/notes', requireAuth, requireBookAccess, async (req, res) => {
   const notes = await prisma.note.findMany({
     where: { bookId: req.params.bookId },
-    include: { createdBy: { select: { id: true, email: true, displayName: true } } },
+    include: { createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } } },
     orderBy: { createdAt: 'asc' }
   });
   return res.json({ notes });
@@ -393,7 +442,7 @@ app.post('/books/:bookId/notes', requireAuth, requireBookAccess, async (req, res
       cfi: parsed.data.cfi || null,
       message: parsed.data.message || null
     },
-    include: { createdBy: { select: { id: true, email: true, displayName: true } } }
+    include: { createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } } }
   });
 
   return res.status(201).json({ note });
@@ -421,7 +470,7 @@ app.patch('/notes/:noteId', requireAuth, async (req, res) => {
       cfi: parsed.data.cfi === undefined ? existing.cfi : parsed.data.cfi,
       message: parsed.data.message === undefined ? existing.message : parsed.data.message
     },
-    include: { createdBy: { select: { id: true, email: true, displayName: true } } }
+    include: { createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } } }
   });
 
   return res.json({ note });

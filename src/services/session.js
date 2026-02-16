@@ -32,4 +32,13 @@ export const getCurrentUser = () => {
   }
 };
 
+export const setCurrentUser = (user) => {
+  if (typeof window === 'undefined') return;
+  if (!user) {
+    window.localStorage.removeItem(USER_KEY);
+    return;
+  }
+  window.localStorage.setItem(USER_KEY, JSON.stringify(user));
+};
+
 export const hasSession = () => Boolean(getToken());

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { getToken, setSession } from './session';
+import { getToken, setCurrentUser, setSession } from './session';
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/$/, '');
 export const isCollabMode = Boolean(API_BASE_URL);
@@ -31,6 +31,22 @@ export const authRegister = async ({ email, password, displayName }) => {
 
 export const authMe = async () => {
   const { data } = await client.get('/auth/me');
+  return data.user;
+};
+
+export const updateMe = async ({ displayName }) => {
+  const { data } = await client.patch('/users/me', { displayName });
+  if (data?.user) setCurrentUser(data.user);
+  return data.user;
+};
+
+export const uploadMyAvatar = async (file) => {
+  const payload = new FormData();
+  payload.append('avatar', file);
+  const { data } = await client.post('/users/me/avatar', payload, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  });
+  if (data?.user) setCurrentUser(data.user);
   return data.user;
 };
 

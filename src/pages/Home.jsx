@@ -64,8 +64,8 @@ import {
   Mail,
   Send,
 } from 'lucide-react';
-import { createBookShare, fetchShareInbox, isCollabMode } from '../services/collabApi';
-import { clearSession, getCurrentUser } from '../services/session';
+import { createBookShare, fetchShareInbox, isCollabMode, updateMe, uploadMyAvatar } from '../services/collabApi';
+import { clearSession, getCurrentUser, setCurrentUser } from '../services/session';
 import LibraryAccountSection from './library/LibraryAccountSection';
 import { LibraryWorkspaceSidebar, LibraryWorkspaceMobileNav } from './library/LibraryWorkspaceNav';
 import LibraryNotesCenterPanel from './library/LibraryNotesCenterPanel';
@@ -139,11 +139,27 @@ const readStoredAccountProfile = () => {
       return "";
     }
   })();
+  const sessionDisplayName = (() => {
+    try {
+      return (getCurrentUser()?.displayName || "").trim();
+    } catch {
+      return "";
+    }
+  })();
+  const sessionAvatarUrl = (() => {
+    try {
+      return (getCurrentUser()?.avatarUrl || "").trim();
+    } catch {
+      return "";
+    }
+  })();
+  const sessionFirstName = sessionDisplayName ? sessionDisplayName.split(/\s+/).filter(Boolean)[0] || "" : "";
 
   if (typeof window === "undefined") {
     return {
-      firstName: "",
+      firstName: sessionFirstName,
       email: sessionEmail || ACCOUNT_DEFAULT_EMAIL,
+      avatarUrl: sessionAvatarUrl,
       preferredLanguage: "en",
       emailNotifications: "yes"
     };
@@ -156,9 +172,12 @@ const readStoredAccountProfile = () => {
     const resolvedEmail = isCollabMode
       ? (sessionEmail || storedEmail || ACCOUNT_DEFAULT_EMAIL)
       : (storedEmail || sessionEmail || ACCOUNT_DEFAULT_EMAIL);
+    const storedFirstName = typeof parsed?.firstName === "string" ? parsed.firstName : "";
+    const storedAvatar = typeof parsed?.avatarUrl === "string" ? parsed.avatarUrl.trim() : "";
     return {
-      firstName: typeof parsed?.firstName === "string" ? parsed.firstName : "",
+      firstName: isCollabMode ? (sessionFirstName || storedFirstName) : storedFirstName,
       email: resolvedEmail,
+      avatarUrl: isCollabMode ? (sessionAvatarUrl || storedAvatar) : storedAvatar,
       preferredLanguage:
         typeof parsed?.preferredLanguage === "string" && parsed.preferredLanguage.trim()
           ? parsed.preferredLanguage
@@ -168,8 +187,9 @@ const readStoredAccountProfile = () => {
   } catch (err) {
     console.error(err);
     return {
-      firstName: "",
+      firstName: sessionFirstName,
       email: sessionEmail || ACCOUNT_DEFAULT_EMAIL,
+      avatarUrl: sessionAvatarUrl,
       preferredLanguage: "en",
       emailNotifications: "yes"
     };
@@ -559,6 +579,7 @@ export default function Home() {
   });
   const [accountProfile, setAccountProfile] = useState(() => readStoredAccountProfile());
   const [accountSaveMessage, setAccountSaveMessage] = useState("");
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [isNotesCenterOpen, setIsNotesCenterOpen] = useState(false);
   const [isHighlightsCenterOpen, setIsHighlightsCenterOpen] = useState(false);
   const [notesCenterSortBy, setNotesCenterSortBy] = useState("recent");
@@ -606,11 +627,27 @@ export default function Home() {
 
   useEffect(() => {
     if (!isCollabMode) return;
-    const sessionEmail = (getCurrentUser()?.email || "").trim();
-    if (!sessionEmail) return;
+    const sessionUser = getCurrentUser() || {};
+    const sessionEmail = (sessionUser.email || "").trim();
+    const sessionDisplayName = (sessionUser.displayName || "").trim();
+    const sessionAvatarUrl = (sessionUser.avatarUrl || "").trim();
+    const sessionFirstName = sessionDisplayName ? sessionDisplayName.split(/\s+/).filter(Boolean)[0] || "" : "";
+    if (!sessionEmail && !sessionFirstName && !sessionAvatarUrl) return;
     setAccountProfile((current) => {
-      if ((current?.email || "").trim() === sessionEmail) return current;
-      return { ...current, email: sessionEmail };
+      const next = {
+        ...current,
+        email: sessionEmail || current?.email || "",
+        firstName: sessionFirstName || current?.firstName || "",
+        avatarUrl: sessionAvatarUrl || current?.avatarUrl || ""
+      };
+      if (
+        (next.email || "") === (current?.email || "") &&
+        (next.firstName || "") === (current?.firstName || "") &&
+        (next.avatarUrl || "") === (current?.avatarUrl || "")
+      ) {
+        return current;
+      }
+      return next;
     });
   }, []);
 
@@ -1691,9 +1728,38 @@ export default function Home() {
     const nextProfile = {
       firstName: (accountProfile.firstName || "").trim(),
       email: (accountProfile.email || fallbackEmail).trim() || fallbackEmail,
+      avatarUrl: (accountProfile.avatarUrl || "").trim(),
       preferredLanguage: accountProfile.preferredLanguage || "en",
       emailNotifications: accountProfile.emailNotifications === "no" ? "no" : "yes"
     };
+
+    if (isCollabMode) {
+      const name = nextProfile.firstName || "Reader";
+      updateMe({ displayName: name })
+        .then((user) => {
+          if (user) setCurrentUser(user);
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem(ACCOUNT_PROFILE_KEY, JSON.stringify({
+              ...nextProfile,
+              firstName: user?.displayName ? user.displayName.split(/\s+/).filter(Boolean)[0] || nextProfile.firstName : nextProfile.firstName,
+              email: user?.email || nextProfile.email,
+              avatarUrl: user?.avatarUrl || nextProfile.avatarUrl
+            }));
+          }
+          setAccountProfile((current) => ({
+            ...current,
+            firstName: user?.displayName ? user.displayName.split(/\s+/).filter(Boolean)[0] || nextProfile.firstName : nextProfile.firstName,
+            email: user?.email || nextProfile.email,
+            avatarUrl: user?.avatarUrl || nextProfile.avatarUrl
+          }));
+          setAccountSaveMessage("Changes saved.");
+        })
+        .catch((err) => {
+          console.error(err);
+          setAccountSaveMessage("Could not save profile.");
+        });
+      return;
+    }
 
     if (typeof window !== "undefined") {
       window.localStorage.setItem(ACCOUNT_PROFILE_KEY, JSON.stringify(nextProfile));
@@ -1701,6 +1767,37 @@ export default function Home() {
     setAccountProfile(nextProfile);
     setLibraryLanguage(nextProfile.preferredLanguage);
     setAccountSaveMessage("Changes saved.");
+  };
+
+  const handleAccountAvatarUpload = async (file) => {
+    if (!file || !isCollabMode || isUploadingAvatar) return;
+    setIsUploadingAvatar(true);
+    setAccountSaveMessage("");
+    try {
+      const user = await uploadMyAvatar(file);
+      const firstName = user?.displayName ? user.displayName.split(/\s+/).filter(Boolean)[0] || accountProfile.firstName : accountProfile.firstName;
+      setAccountProfile((current) => ({
+        ...current,
+        firstName,
+        email: user?.email || current.email,
+        avatarUrl: user?.avatarUrl || current.avatarUrl
+      }));
+      if (typeof window !== "undefined") {
+        const next = {
+          ...accountProfile,
+          firstName,
+          email: user?.email || accountProfile.email,
+          avatarUrl: user?.avatarUrl || accountProfile.avatarUrl
+        };
+        window.localStorage.setItem(ACCOUNT_PROFILE_KEY, JSON.stringify(next));
+      }
+      setAccountSaveMessage("Profile picture updated.");
+    } catch (err) {
+      console.error(err);
+      setAccountSaveMessage("Could not upload profile picture.");
+    } finally {
+      setIsUploadingAvatar(false);
+    }
   };
 
   const handleStartNoteEdit = (entry) => {
@@ -3278,6 +3375,7 @@ const formatNotificationTimeAgo = (value) => {
   const filteredNotifications = notificationView === "unread" ? unreadNotifications : visibleNotifications;
   const notificationCount = unreadNotifications.length;
   const profileLabel = (accountProfile?.firstName || accountProfile?.email || "Reader").trim();
+  const profileAvatarUrl = (accountProfile?.avatarUrl || "").trim();
   const profileInitials = (() => {
     const firstName = (accountProfile?.firstName || "").trim();
     if (firstName) {
@@ -3719,7 +3817,15 @@ const formatNotificationTimeAgo = (value) => {
               aria-label="Open profile menu"
               aria-expanded={isProfileMenuOpen}
             >
-              {profileInitials}
+              {profileAvatarUrl ? (
+                <img
+                  src={profileAvatarUrl}
+                  alt={profileLabel}
+                  className="h-full w-full rounded-full object-cover"
+                />
+              ) : (
+                profileInitials
+              )}
             </button>
 
             {isProfileMenuOpen && (
@@ -3995,7 +4101,9 @@ const formatNotificationTimeAgo = (value) => {
             isDarkLibraryTheme={isDarkLibraryTheme}
             accountProfile={accountProfile}
             accountSaveMessage={accountSaveMessage}
+            isUploadingAvatar={isUploadingAvatar}
             onFieldChange={handleAccountFieldChange}
+            onAvatarUpload={handleAccountAvatarUpload}
             onSave={handleSaveAccountProfile}
           />
         )}
