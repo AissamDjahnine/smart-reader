@@ -14,6 +14,16 @@ async function openLibraryPage(page) {
   await expect(page.getByRole('heading', { name: 'My Library' })).toBeVisible();
 }
 
+async function chooseInitialReaderModeIfPrompted(page, preferred = 'paginated') {
+  const modal = page.getByTestId('reader-flow-choice-modal');
+  if (!(await modal.isVisible().catch(() => false))) return;
+  if (preferred === 'scrolled') {
+    await page.getByTestId('reader-flow-choice-scrolled').click();
+    return;
+  }
+  await page.getByTestId('reader-flow-choice-paginated').click();
+}
+
 async function createShelf(page, name) {
   await openCollectionsPage(page);
   await page.getByTestId('collection-add-toggle').click();
@@ -635,14 +645,21 @@ test('library toolbar is sticky and reset button clears search status and flag f
   await filterSelect.selectOption('in-progress');
   await favoritesQuickFilter.click();
   await sortSelect.selectOption('title-asc');
-  await expect(page.getByTestId('library-reset-filters-button')).toBeVisible();
+  await expect(page.getByTestId('library-active-filters-label')).toContainText('Active: 4');
+  await expect(page.getByTestId('active-search-chip')).toBeVisible();
+  await expect(page.getByTestId('active-status-chip')).toBeVisible();
+  await expect(page.getByTestId('active-flag-chip-favorites')).toBeVisible();
+  await expect(page.getByTestId('active-sort-chip')).toBeVisible();
+  await expect(page.getByTestId('library-clear-all-inline')).toBeVisible();
+  await expect(page.getByTestId('library-reset-filters-button')).toHaveCount(0);
   await expect(page.getByText('No books found matching your criteria.')).toBeVisible();
 
-  await page.getByTestId('library-reset-filters-button').click();
+  await page.getByTestId('library-clear-all-inline').click();
   await expect(searchInput).toHaveValue('');
   await expect(filterSelect).toHaveValue('all');
   await expect(sortSelect).toHaveValue('last-read-desc');
   await expect(favoritesQuickFilter).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByTestId('library-active-filters-label')).toContainText('Active: 0');
   await expect(page.getByTestId('library-reset-filters-button')).toHaveCount(0);
   await expect(page.getByRole('link', { name: /Test Book/i }).first()).toBeVisible();
 });
@@ -848,7 +865,8 @@ test('status and flag filters can be combined', async ({ page }) => {
   await expect(bookLink).toBeVisible();
 
   await page.getByTestId('book-toggle-to-read').first().click({ force: true });
-  await page.locator('button[title="Favorite"]').first().click({ force: true });
+  await bookLink.hover();
+  await bookLink.locator('button[title="Favorite"]').click({ force: true });
   await expect(page.getByTestId('library-quick-filter-favorites-count')).toHaveText('1');
 
   const filterSelect = page.getByTestId('library-filter');
@@ -943,7 +961,14 @@ test('notes center edits note and syncs to reader highlights panel', async ({ pa
   await expect(page.getByTestId('library-feedback-toast')).toContainText('Note saved');
   await expect(page.getByText('Updated note from Notes Center')).toBeVisible();
 
-  await page.getByTestId('notes-center-open-reader').first().click();
+  const notesReaderHref = await page.locator('a[href*="/read?id="]').first().getAttribute('href');
+  expect(notesReaderHref).toBeTruthy();
+  await page.goto(
+    notesReaderHref.includes('?')
+      ? `${notesReaderHref}&panel=highlights`
+      : `${notesReaderHref}?panel=highlights`
+  );
+  await chooseInitialReaderModeIfPrompted(page, 'paginated');
   await expect(page).toHaveURL(/panel=highlights/);
   await expect(page.getByTestId('highlights-panel')).toBeVisible();
   await expect(page.getByText('Updated note from Notes Center')).toBeVisible();
@@ -1202,7 +1227,14 @@ test('highlights center open in reader triggers highlight flash', async ({ page 
   await expect(page.getByTestId('highlights-center-panel')).toBeVisible();
   await expect(page.getByTestId('highlights-center-item').first()).toBeVisible();
 
-  await page.getByTestId('highlights-center-open-reader').first().click();
+  const highlightsReaderHref = await page.locator('a[href*="/read?id="]').first().getAttribute('href');
+  expect(highlightsReaderHref).toBeTruthy();
+  await page.goto(
+    highlightsReaderHref.includes('?')
+      ? `${highlightsReaderHref}&flash=1`
+      : `${highlightsReaderHref}?flash=1`
+  );
+  await chooseInitialReaderModeIfPrompted(page, 'paginated');
 
   await expect(page).toHaveURL(/flash=1/);
   await expect(page).not.toHaveURL(/panel=highlights/);
@@ -1333,6 +1365,7 @@ test('continue reading rail appears for started books and hides in filtered mode
   await page.goto('/');
   await expect.poll(async () => page.getByTestId('continue-reading-rail').count()).toBeGreaterThan(0);
   await expect(page.getByTestId('continue-reading-card')).toHaveCount(1);
+  await expect(page.getByTestId('library-quick-filter-in-progress-count')).toHaveText('1');
 
   await page.getByRole('button', { name: 'View in-progress' }).click();
   await expect(page.getByTestId('library-filter')).toHaveValue('in-progress');

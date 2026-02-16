@@ -1,5 +1,5 @@
 import React from "react";
-import { Search, Filter, ArrowUpDown, LayoutGrid, Grid3x3, List, RotateCcw } from "lucide-react";
+import { Search, Filter, ArrowUpDown, LayoutGrid, Grid3x3, List } from "lucide-react";
 
 export default function LibraryToolbarSection({
   isDarkLibraryTheme = false,
@@ -21,9 +21,22 @@ export default function LibraryToolbarSection({
   onViewModeChange,
   densityMode = "comfortable",
   onDensityModeChange,
+  isStatusFilterActive = false,
+  isCollectionFilterActive = false,
+  isSortActive = false,
+  activeFilterCount = 0,
+  onClearSearch,
+  onClearStatusFilter,
+  onClearCollectionFilter,
+  onClearSort,
   canShowResetFilters,
   onResetFilters
 }) {
+  const sortLabel = sortOptions.find((s) => s.value === sortBy)?.label || "Last read (newest)";
+
+  const chipClass =
+    "inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100";
+
   return (
     <>
       <div
@@ -83,13 +96,45 @@ export default function LibraryToolbarSection({
 
       <div className="mb-8 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="text-xs text-gray-500 flex flex-wrap items-center gap-2">
-          <span className="font-semibold text-gray-600">Active:</span>
-          <span className="px-2 py-1 rounded-full bg-gray-100 border border-gray-200">
-            {getFilterLabel()}
+          <span data-testid="library-active-filters-label" className="font-semibold text-gray-600">
+            Active: {activeFilterCount}
           </span>
-          <span className="px-2 py-1 rounded-full bg-gray-100 border border-gray-200">
-            {getCollectionFilterLabel()}
-          </span>
+          {searchQuery.trim() ? (
+            <button
+              type="button"
+              data-testid="active-search-chip"
+              onClick={() => onClearSearch?.()}
+              className={chipClass}
+              title="Clear search filter"
+            >
+              <span className="max-w-[160px] truncate">Search: {searchQuery.trim()}</span>
+              <span aria-hidden="true">x</span>
+            </button>
+          ) : null}
+          {isStatusFilterActive ? (
+            <button
+              type="button"
+              data-testid="active-status-chip"
+              onClick={() => onClearStatusFilter?.()}
+              className={chipClass}
+              title="Clear status filter"
+            >
+              <span>Status: {getFilterLabel()}</span>
+              <span aria-hidden="true">x</span>
+            </button>
+          ) : null}
+          {isCollectionFilterActive ? (
+            <button
+              type="button"
+              data-testid="active-collection-chip"
+              onClick={() => onClearCollectionFilter?.()}
+              className={chipClass}
+              title="Clear collection filter"
+            >
+              <span>Collection: {getCollectionFilterLabel()}</span>
+              <span aria-hidden="true">x</span>
+            </button>
+          ) : null}
           {flagFilters.map((flag) => {
             const label = flagFilterOptions.find((item) => item.value === flag)?.label || flag;
             return (
@@ -98,16 +143,42 @@ export default function LibraryToolbarSection({
                 type="button"
                 data-testid={`active-flag-chip-${flag}`}
                 onClick={() => onToggleFlagFilter(flag)}
-                className="px-2 py-1 rounded-full border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                className={chipClass}
                 title={`Remove ${label.toLowerCase()} filter`}
               >
-                {label} x
+                {label}
+                <span aria-hidden="true">x</span>
               </button>
             );
           })}
-          <span className="px-2 py-1 rounded-full bg-gray-100 border border-gray-200">
-            {sortOptions.find((s) => s.value === sortBy)?.label || "Last read (newest)"}
-          </span>
+          {isSortActive ? (
+            <button
+              type="button"
+              data-testid="active-sort-chip"
+              onClick={() => onClearSort?.()}
+              className={chipClass}
+              title="Reset sort order"
+            >
+              <span>Sort: {sortLabel}</span>
+              <span aria-hidden="true">x</span>
+            </button>
+          ) : null}
+          {activeFilterCount === 0 ? (
+            <span className="px-2 py-1 rounded-full bg-gray-100 border border-gray-200 text-gray-500">
+              No active filters
+            </span>
+          ) : null}
+          {canShowResetFilters ? (
+            <button
+              type="button"
+              data-testid="library-clear-all-inline"
+              onClick={onResetFilters}
+              className="px-2.5 py-1 rounded-full border border-gray-200 bg-white text-gray-600 hover:border-blue-200 hover:text-blue-700 font-semibold"
+              title="Clear all active filters"
+            >
+              Clear all
+            </button>
+          ) : null}
         </div>
 
         <div className="flex flex-wrap items-center justify-start gap-2 lg:justify-end">
@@ -159,19 +230,6 @@ export default function LibraryToolbarSection({
             </button>
           </div>
 
-          {canShowResetFilters && (
-            <button
-              type="button"
-              data-testid="library-reset-filters-button"
-              onClick={onResetFilters}
-              className="inline-flex h-[42px] items-center gap-2 rounded-2xl border border-blue-200 bg-blue-50 px-3 text-xs font-semibold text-blue-700 hover:bg-blue-100"
-              title="Reset filters"
-              aria-label="Reset filters"
-            >
-              <RotateCcw size={14} />
-              <span>Reset</span>
-            </button>
-          )}
         </div>
       </div>
     </>

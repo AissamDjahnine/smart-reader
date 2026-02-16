@@ -2075,7 +2075,7 @@ export default function Home() {
         label: "In progress",
         count: activeBooks.filter((book) => {
           const progress = normalizeNumber(book.progress);
-          return progress > 0 && progress < 100;
+          return isBookStarted(book) && progress < 100;
         }).length
       },
       {
@@ -2244,7 +2244,7 @@ export default function Home() {
       const matchesStatus =
         statusFilter === "all" ? true
         : statusFilter === "to-read" ? isBookToRead(book)
-        : statusFilter === "in-progress" ? progress > 0 && progress < 100
+        : statusFilter === "in-progress" ? isBookStarted(book) && progress < 100
         : statusFilter === "finished" ? progress >= 100
         : true;
 
@@ -2281,6 +2281,7 @@ export default function Home() {
       flagFilters,
       collectionFilter,
       sortBy,
+      isBookStarted,
       contentSearchMatches,
       searchIndexByBook
     ]
@@ -2928,6 +2929,12 @@ const formatNotificationTimeAgo = (value) => {
     collectionFilter !== "all" ||
     flagFilters.length > 0 ||
     sortBy !== "last-read-desc";
+  const activeFilterCount =
+    (searchQuery.trim() ? 1 : 0) +
+    (statusFilter !== "all" ? 1 : 0) +
+    (collectionFilter !== "all" ? 1 : 0) +
+    flagFilters.length +
+    (sortBy !== "last-read-desc" ? 1 : 0);
   const canShowResetFilters = hasActiveLibraryFilters;
   const isDarkLibraryTheme = libraryTheme === "dark";
   const isAccountSection = librarySection === "account";
@@ -4027,6 +4034,14 @@ const formatNotificationTimeAgo = (value) => {
             onViewModeChange={setViewMode}
             densityMode={densityMode}
             onDensityModeChange={setDensityMode}
+            isStatusFilterActive={statusFilter !== "all"}
+            isCollectionFilterActive={collectionFilter !== "all"}
+            isSortActive={sortBy !== "last-read-desc"}
+            activeFilterCount={activeFilterCount}
+            onClearSearch={() => setSearchQuery("")}
+            onClearStatusFilter={() => setStatusFilter("all")}
+            onClearCollectionFilter={() => setCollectionFilter("all")}
+            onClearSort={() => setSortBy("last-read-desc")}
             canShowResetFilters={canShowResetFilters}
             onResetFilters={resetLibraryFilters}
           />
