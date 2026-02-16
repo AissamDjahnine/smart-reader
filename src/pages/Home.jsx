@@ -4343,7 +4343,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="library-bulk-to-read"
                 onClick={handleBulkMarkToRead}
                 disabled={!librarySelectedCount}
-                className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 enabled:hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-amber-800/70 bg-amber-950/35 text-amber-200 enabled:hover:bg-amber-900/45"
+                    : "border-amber-200 bg-amber-50 text-amber-700 enabled:hover:bg-amber-100"
+                }`}
               >
                 Add to To Read
               </button>
@@ -4352,7 +4356,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="library-bulk-favorite"
                 onClick={handleBulkFavorite}
                 disabled={!librarySelectedCount}
-                className="inline-flex items-center rounded-full border border-pink-200 bg-pink-50 px-3 py-1.5 text-xs font-semibold text-pink-700 enabled:hover:bg-pink-100 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-fuchsia-800/70 bg-fuchsia-950/35 text-fuchsia-200 enabled:hover:bg-fuchsia-900/45"
+                    : "border-pink-200 bg-pink-50 text-pink-700 enabled:hover:bg-pink-100"
+                }`}
               >
                 Favorite selected
               </button>
@@ -4361,7 +4369,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="library-bulk-trash"
                 onClick={handleBulkMoveToTrash}
                 disabled={!librarySelectedCount}
-                className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 enabled:hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-rose-800/70 bg-rose-950/35 text-rose-200 enabled:hover:bg-rose-900/45"
+                    : "border-red-200 bg-red-50 text-red-700 enabled:hover:bg-red-100"
+                }`}
               >
                 Move to Trash
               </button>
@@ -4534,7 +4546,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="trash-restore-selected"
                 onClick={handleRestoreSelectedTrash}
                 disabled={!trashSelectedCount}
-                className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 enabled:hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-emerald-800/70 bg-emerald-950/35 text-emerald-200 enabled:hover:bg-emerald-900/45"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-700 enabled:hover:bg-emerald-100"
+                }`}
               >
                 Restore selected
               </button>
@@ -4543,7 +4559,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="trash-delete-selected"
                 onClick={handleDeleteSelectedTrash}
                 disabled={!trashSelectedCount}
-                className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 enabled:hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-rose-800/70 bg-rose-950/35 text-rose-200 enabled:hover:bg-rose-900/45"
+                    : "border-red-200 bg-red-50 text-red-700 enabled:hover:bg-red-100"
+                }`}
               >
                 Delete selected
               </button>
@@ -4552,7 +4572,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="trash-restore-all"
                 onClick={handleRestoreAllTrash}
                 disabled={!trashedBooks.length}
-                className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 enabled:hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-emerald-800/70 bg-emerald-950/35 text-emerald-200 enabled:hover:bg-emerald-900/45"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-700 enabled:hover:bg-emerald-100"
+                }`}
               >
                 Restore all
               </button>
@@ -4561,7 +4585,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="trash-delete-all"
                 onClick={handleDeleteAllTrash}
                 disabled={!trashedBooks.length}
-                className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 enabled:hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-rose-800/70 bg-rose-950/35 text-rose-200 enabled:hover:bg-rose-900/45"
+                    : "border-red-200 bg-red-50 text-red-700 enabled:hover:bg-red-100"
+                }`}
               >
                 Delete all
               </button>
@@ -4610,6 +4638,7 @@ const formatNotificationTimeAgo = (value) => {
         )}
         {isInboxSection && !isTrashSection && (
           <LibraryShareInboxPanel
+            isDarkLibraryTheme={isDarkLibraryTheme}
             onAccepted={async () => {
               await loadLibrary();
               await refreshShareInboxCount();
