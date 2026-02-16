@@ -4167,18 +4167,18 @@ const formatNotificationTimeAgo = (value) => {
         {shouldShowContinueReading && (
           <section
             className={`mb-8 rounded-3xl border p-4 sm:p-5 ${
-              isDarkLibraryTheme ? "border-slate-700 bg-transparent" : "library-zone-continue-light"
+              isDarkLibraryTheme ? "border-slate-700 bg-slate-900/25" : "library-zone-continue-light"
             }`}
             data-testid="continue-reading-rail"
           >
             <div className="flex items-center justify-between gap-3 mb-4">
               <div>
-                <h2 className="text-lg font-bold text-gray-900">Continue Reading</h2>
+                <h2 className={`text-lg font-bold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Continue Reading</h2>
               </div>
               <button
                 type="button"
                 onClick={() => setStatusFilter("in-progress")}
-                className="text-xs font-bold text-blue-600 hover:text-blue-700"
+                className={`text-xs font-bold ${isDarkLibraryTheme ? "text-blue-300 hover:text-blue-200" : "text-blue-600 hover:text-blue-700"}`}
               >
                 View in-progress
               </button>
@@ -4415,35 +4415,51 @@ const formatNotificationTimeAgo = (value) => {
           <>
             <div
               data-testid="trash-retention-note"
-              className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800"
+              className={`mb-3 rounded-xl border px-3 py-2 text-xs font-semibold ${
+                isDarkLibraryTheme
+                  ? "border-amber-800/70 bg-amber-950/35 text-amber-200"
+                  : "border-amber-200 bg-amber-50 text-amber-800"
+              }`}
             >
               Books in Trash are permanently deleted after {TRASH_RETENTION_DAYS} days.
             </div>
 
             <div
               data-testid="trash-toolbar"
-              className="sticky top-3 z-20 mb-3 rounded-2xl bg-gray-50/95 pb-2 backdrop-blur supports-[backdrop-filter]:bg-gray-50/80"
+              className={`sticky top-3 z-20 mb-3 rounded-2xl pb-2 backdrop-blur ${
+                isDarkLibraryTheme
+                  ? "bg-slate-900/75"
+                  : "bg-gray-50/95 supports-[backdrop-filter]:bg-gray-50/80"
+              }`}
             >
               <div className="grid grid-cols-1 items-stretch gap-3 md:grid-cols-[minmax(0,1fr)_320px_auto]">
                 <div className="relative flex-1">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                  <Search className={`absolute left-4 top-1/2 -translate-y-1/2 ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}`} size={20} />
                   <input
                     type="text"
                     placeholder="Search deleted books..."
                     data-testid="trash-search"
-                    className="h-[52px] w-full rounded-2xl border border-gray-200 bg-white pl-12 pr-4 text-base focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+                    className={`h-[52px] w-full rounded-2xl border pl-12 pr-4 text-base focus:ring-2 focus:ring-blue-500 outline-none transition-all ${
+                      isDarkLibraryTheme
+                        ? "border-slate-700 bg-slate-800 text-slate-100 shadow-[0_10px_24px_rgba(2,8,23,0.32)] placeholder:text-slate-500"
+                        : "border-gray-200 bg-white shadow-sm"
+                    }`}
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                   />
                 </div>
 
                 <div className="relative">
-                  <ArrowUpDown className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                  <ArrowUpDown className={`absolute left-4 top-1/2 -translate-y-1/2 ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}`} size={18} />
                   <select
                     data-testid="trash-sort"
                     value={trashSortBy}
                     onChange={(e) => setTrashSortBy(e.target.value)}
-                    className="h-[52px] w-full rounded-2xl border border-gray-200 bg-white pl-11 pr-4 text-sm font-semibold text-gray-700 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+                    className={`h-[52px] w-full rounded-2xl border pl-11 pr-4 text-sm font-semibold focus:ring-2 focus:ring-blue-500 outline-none transition-all ${
+                      isDarkLibraryTheme
+                        ? "border-slate-700 bg-slate-800 text-slate-100 shadow-[0_10px_24px_rgba(2,8,23,0.32)]"
+                        : "border-gray-200 bg-white text-gray-700 shadow-sm"
+                    }`}
                   >
                     {trashSortOptions.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -4454,7 +4470,11 @@ const formatNotificationTimeAgo = (value) => {
                 </div>
 
                 <div
-                  className="flex h-[52px] w-[108px] items-center rounded-2xl border border-gray-200 bg-white p-1 shadow-sm"
+                  className={`flex h-[52px] w-[108px] items-center rounded-2xl border p-1 ${
+                    isDarkLibraryTheme
+                      ? "border-slate-700 bg-slate-800 shadow-[0_8px_20px_rgba(2,8,23,0.28)]"
+                      : "border-gray-200 bg-white shadow-sm"
+                  }`}
                   data-testid="library-view-toggle"
                 >
                   <button
@@ -4463,7 +4483,11 @@ const formatNotificationTimeAgo = (value) => {
                     aria-pressed={viewMode === "grid"}
                     onClick={() => setViewMode("grid")}
                     className={`flex h-full flex-1 items-center justify-center rounded-xl transition-colors ${
-                      viewMode === "grid" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
+                      viewMode === "grid"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : isDarkLibraryTheme
+                          ? "text-slate-400 hover:text-slate-100"
+                          : "text-gray-500 hover:text-gray-900"
                     }`}
                     title="Grid view"
                   >
@@ -4475,7 +4499,11 @@ const formatNotificationTimeAgo = (value) => {
                     aria-pressed={viewMode === "list"}
                     onClick={() => setViewMode("list")}
                     className={`flex h-full flex-1 items-center justify-center rounded-xl transition-colors ${
-                      viewMode === "list" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
+                      viewMode === "list"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : isDarkLibraryTheme
+                          ? "text-slate-400 hover:text-slate-100"
+                          : "text-gray-500 hover:text-gray-900"
                     }`}
                     title="List view"
                   >
@@ -4490,11 +4518,15 @@ const formatNotificationTimeAgo = (value) => {
                 type="button"
                 data-testid="trash-select-all"
                 onClick={handleToggleSelectAllTrash}
-                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  isDarkLibraryTheme
+                    ? "border-slate-700 bg-slate-800 text-slate-200 hover:border-blue-500 hover:text-blue-300"
+                    : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                }`}
               >
                 {allVisibleTrashSelected ? "Unselect all" : "Select all"}
               </button>
-              <span className="text-xs font-semibold text-gray-500">
+              <span className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
                 {trashSelectedCount} selected
               </span>
               <button
@@ -4586,6 +4618,7 @@ const formatNotificationTimeAgo = (value) => {
         )}
         {isCollectionsPage && !isTrashSection && (
           <LibraryCollectionsBoard
+            isDarkLibraryTheme={isDarkLibraryTheme}
             collections={collections}
             books={books}
             collectionError={collectionError}
@@ -4628,9 +4661,11 @@ const formatNotificationTimeAgo = (value) => {
           />
         )}
         {(shouldShowLibraryHomeContent || isTrashSection) && (!showGlobalSearchBooksColumn || isTrashSection) && ((isTrashSection ? sortedTrashBooks.length : sortedBooks.length) === 0 ? (
-          <div className="bg-white border-2 border-dashed border-gray-200 rounded-3xl p-20 text-center shadow-sm">
-            <BookIcon size={48} className="mx-auto text-gray-300 mb-4" />
-            <p className="text-gray-500 text-lg">
+          <div className={`border-2 border-dashed rounded-3xl p-20 text-center shadow-sm ${
+            isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "bg-white border-gray-200"
+          }`}>
+            <BookIcon size={48} className={`mx-auto mb-4 ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-300"}`} />
+            <p className={`text-lg ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-500"}`}>
               {isTrashSection ? "Trash is empty." : "No books found matching your criteria."}
             </p>
             {!isTrashSection && canShowResetFilters && (
