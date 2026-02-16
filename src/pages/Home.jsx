@@ -3135,6 +3135,8 @@ const formatNotificationTimeAgo = (value) => {
     (sortBy !== "last-read-desc" ? 1 : 0);
   const canShowResetFilters = hasActiveLibraryFilters;
   const isDarkLibraryTheme = libraryTheme === "dark";
+  const brandLogoSrc = isDarkLibraryTheme ? "/brand/logo-dark.png" : "/brand/logo-light.png";
+  const brandLogoFallbackSrc = isDarkLibraryTheme ? "/brand/logo-light.png" : "/brand/logo-dark.png";
   const isAccountSection = librarySection === "account";
   const isStatisticsSection = librarySection === "statistics";
   const isCollectionsPage = librarySection === "collections";
@@ -3612,13 +3614,16 @@ const formatNotificationTimeAgo = (value) => {
               aria-label="Go to My Library"
             >
               <img
-                src="/brand/logo.png"
+                src={brandLogoSrc}
                 alt="Ariadne logo"
-                className={`h-14 w-auto max-w-[200px] origin-left scale-110 object-contain ${
-                  isDarkLibraryTheme ? "brightness-125 contrast-125" : ""
-                }`}
+                className="h-14 w-auto max-w-[200px] origin-left scale-110 object-contain"
                 onError={(event) => {
-                  event.currentTarget.style.display = "none";
+                  const { currentTarget } = event;
+                  if (currentTarget.src.includes(brandLogoFallbackSrc)) {
+                    currentTarget.style.display = "none";
+                    return;
+                  }
+                  currentTarget.src = brandLogoFallbackSrc;
                 }}
               />
             </button>
