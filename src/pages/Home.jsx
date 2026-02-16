@@ -4288,11 +4288,18 @@ const formatNotificationTimeAgo = (value) => {
                 type="button"
                 data-testid="library-select-all"
                 onClick={handleToggleSelectAllLibrary}
-                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  isDarkLibraryTheme
+                    ? "border-slate-700 bg-slate-800 text-slate-200 hover:border-blue-500 hover:text-blue-300"
+                    : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                }`}
               >
                 {allVisibleLibrarySelected ? "Unselect all" : "Select all"}
               </button>
-              <span data-testid="library-selected-count" className="text-xs font-semibold text-gray-500">
+              <span
+                data-testid="library-selected-count"
+                className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}
+              >
                 {librarySelectedCount} selected
               </span>
               <button
@@ -4327,7 +4334,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="library-clear-selection"
                 onClick={handleClearLibrarySelection}
                 disabled={!librarySelectedCount}
-                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 enabled:hover:border-blue-200 enabled:hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors enabled:hover:border-blue-200 enabled:hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-slate-700 bg-slate-800 text-slate-200 enabled:hover:border-blue-500 enabled:hover:text-blue-300"
+                    : "border-gray-200 bg-white text-gray-700"
+                }`}
               >
                 Clear selection
               </button>
@@ -4335,7 +4346,11 @@ const formatNotificationTimeAgo = (value) => {
                 type="button"
                 data-testid="library-exit-select-mode"
                 onClick={handleExitLibrarySelectionMode}
-                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  isDarkLibraryTheme
+                    ? "border-slate-700 bg-slate-800 text-slate-200 hover:border-blue-500 hover:text-blue-300"
+                    : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                }`}
               >
                 Done
               </button>
@@ -4349,7 +4364,11 @@ const formatNotificationTimeAgo = (value) => {
                 type="button"
                 data-testid="library-enter-select-mode"
                 onClick={handleEnterLibrarySelectionMode}
-                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  isDarkLibraryTheme
+                    ? "border-slate-700 bg-slate-800 text-slate-200 hover:border-blue-500 hover:text-blue-300"
+                    : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                }`}
               >
                 Select
               </button>
@@ -4598,7 +4617,7 @@ const formatNotificationTimeAgo = (value) => {
                 ? "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"
                 : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8"
             } ${
-              isDarkLibraryTheme ? "border-slate-700 bg-transparent" : "library-zone-catalog-light"
+              isDarkLibraryTheme ? "border-slate-700 bg-slate-900/25" : "library-zone-catalog-light"
             }`}
             data-testid="library-books-grid"
             data-density={densityMode}
@@ -4787,7 +4806,13 @@ const formatNotificationTimeAgo = (value) => {
                     )}
                     
                     {densityMode !== "compact" ? (
-                      <div className="absolute bottom-3 right-3 bg-black/60 backdrop-blur-md text-white text-xs font-bold px-2 py-1 rounded-lg">
+                      <div
+                        className={`absolute bottom-3 right-3 text-xs font-bold px-2 py-1 rounded-lg backdrop-blur-md ${
+                          isDarkLibraryTheme
+                            ? "bg-slate-900/65 text-slate-100 border border-slate-600/60"
+                            : "bg-black/60 text-white"
+                        }`}
+                      >
                         {book.progress}%
                       </div>
                     ) : null}
@@ -4890,7 +4915,7 @@ const formatNotificationTimeAgo = (value) => {
         ) : (
           <div
             className={`space-y-4 animate-in fade-in duration-500 rounded-3xl border p-4 ${
-              isDarkLibraryTheme ? "border-slate-700 bg-transparent" : "library-zone-catalog-light"
+              isDarkLibraryTheme ? "border-slate-700 bg-slate-900/25" : "library-zone-catalog-light"
             }`}
             data-testid="library-books-list"
             data-density="comfortable"
@@ -4925,7 +4950,13 @@ const formatNotificationTimeAgo = (value) => {
                         <span className="text-[10px] font-medium uppercase tracking-widest line-clamp-2">{book.title}</span>
                       </div>
                     )}
-                    <div className="absolute bottom-2 right-2 bg-black/60 text-white text-[10px] font-bold px-2 py-1 rounded-lg">
+                    <div
+                      className={`absolute bottom-2 right-2 text-[10px] font-bold px-2 py-1 rounded-lg ${
+                        isDarkLibraryTheme
+                          ? "bg-slate-900/65 text-slate-100 border border-slate-600/60"
+                          : "bg-black/60 text-white"
+                      }`}
+                    >
                       {book.progress}%
                     </div>
                   </div>
