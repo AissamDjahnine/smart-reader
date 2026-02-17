@@ -124,10 +124,52 @@ const addLoanAuditEvent = async (tx, payload) => {
 const toUserResponse = (user) => ({
   id: user.id,
   email: user.email,
+  username: user.username || null,
   displayName: user.displayName || null,
   avatarUrl: user.avatarUrl || null,
   loanReminderDays: Number.isInteger(user.loanReminderDays) ? user.loanReminderDays : 3
 });
+
+const normalizeUsername = (value = '') => {
+  const normalized = String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, '-')
+    .replace(/^[._-]+|[._-]+$/g, '');
+  return normalized.slice(0, 32);
+};
+
+const buildUsernameBaseFromUser = ({ displayName = '', email = '' }) => {
+  const fromDisplayName = normalizeUsername(displayName);
+  if (fromDisplayName.length >= 3) return fromDisplayName;
+  const emailLocal = String(email || '').split('@')[0] || 'reader';
+  const fromEmail = normalizeUsername(emailLocal);
+  if (fromEmail.length >= 3) return fromEmail;
+  return `reader-${Math.random().toString(36).slice(2, 8)}`;
+};
+
+const ensureUniqueUsername = async (db, preferredUsername, excludeUserId = null) => {
+  const baseRaw = normalizeUsername(preferredUsername);
+  const base = baseRaw.length >= 3 ? baseRaw : `reader-${Math.random().toString(36).slice(2, 8)}`;
+  let candidate = base;
+  let suffix = 1;
+
+  while (suffix <= 999) {
+    // eslint-disable-next-line no-await-in-loop
+    const existing = await db.user.findUnique({
+      where: { username: candidate },
+      select: { id: true }
+    });
+    if (!existing || (excludeUserId && existing.id === excludeUserId)) return candidate;
+    suffix += 1;
+    candidate = `${base}-${suffix}`;
+    if (candidate.length > 32) {
+      candidate = `${base.slice(0, Math.max(3, 32 - String(suffix).length - 1))}-${suffix}`;
+    }
+  }
+
+  return `${base.slice(0, 24)}-${Date.now().toString(36).slice(-6)}`;
+};
 
 const toFriendRequestResponse = (request) => ({
   id: request.id,
@@ -287,10 +329,15 @@ app.post('/auth/register', async (req, res) => {
   if (existing) return res.status(409).json({ error: 'Email already registered' });
 
   const passwordHash = await hashPassword(parsed.data.password);
+  const username = await ensureUniqueUsername(prisma, buildUsernameBaseFromUser({
+    displayName: parsed.data.displayName,
+    email
+  }));
   const user = await prisma.user.create({
     data: {
       email,
       passwordHash,
+      username,
       displayName: (parsed.data.displayName || '').trim()
     }
   });
@@ -326,7 +373,7 @@ app.post('/auth/login', async (req, res) => {
 app.get('/auth/me', requireAuth, async (req, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.auth.userId },
-    select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true, createdAt: true }
+    select: { id: true, email: true, username: true, displayName: true, avatarUrl: true, loanReminderDays: true, createdAt: true }
   });
   if (!user) return res.status(404).json({ error: 'User not found' });
   return res.json({ user: toUserResponse(user) });
@@ -335,7 +382,7 @@ app.get('/auth/me', requireAuth, async (req, res) => {
 app.get('/users/me', requireAuth, async (req, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.auth.userId },
-    select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true }
+    select: { id: true, email: true, username: true, displayName: true, avatarUrl: true, loanReminderDays: true }
   });
   if (!user) return res.status(404).json({ error: 'User not found' });
   return res.json({ user: toUserResponse(user) });
@@ -355,9 +402,89 @@ app.patch('/users/me', requireAuth, async (req, res) => {
       displayName: parsed.data.displayName.trim(),
       loanReminderDays: parsed.data.loanReminderDays === undefined ? undefined : parsed.data.loanReminderDays
     },
-    select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true }
+    select: { id: true, email: true, username: true, displayName: true, avatarUrl: true, loanReminderDays: true }
   });
   return res.json({ user: toUserResponse(user) });
+});
+
+app.patch('/users/me/username', requireAuth, async (req, res) => {
+  const schema = z.object({
+    username: z.string().min(3).max(32).regex(/^[a-zA-Z0-9._-]+$/)
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'Invalid payload. Username must be 3-32 chars using letters, numbers, dot, underscore, or dash.'
+    });
+  }
+
+  const requestedUsername = normalizeUsername(parsed.data.username);
+  if (requestedUsername.length < 3) {
+    return res.status(400).json({ error: 'Username must be at least 3 characters after normalization' });
+  }
+
+  const existing = await prisma.user.findUnique({
+    where: { username: requestedUsername },
+    select: { id: true }
+  });
+  if (existing && existing.id !== req.auth.userId) {
+    return res.status(409).json({ error: 'Username is already taken' });
+  }
+
+  const user = await prisma.user.update({
+    where: { id: req.auth.userId },
+    data: { username: requestedUsername },
+    select: { id: true, email: true, username: true, displayName: true, avatarUrl: true, loanReminderDays: true }
+  });
+
+  return res.json({ user: toUserResponse(user) });
+});
+
+app.get('/users/search', requireAuth, async (req, res) => {
+  const query = String(req.query?.q || '').trim();
+  if (!query) return res.json({ users: [] });
+
+  const blockedRows = await prisma.friendBlock.findMany({
+    where: {
+      OR: [
+        { blockerUserId: req.auth.userId },
+        { blockedUserId: req.auth.userId }
+      ]
+    },
+    select: {
+      blockerUserId: true,
+      blockedUserId: true
+    }
+  });
+  const blockedUserIds = new Set();
+  blockedRows.forEach((row) => {
+    if (row.blockerUserId !== req.auth.userId) blockedUserIds.add(row.blockerUserId);
+    if (row.blockedUserId !== req.auth.userId) blockedUserIds.add(row.blockedUserId);
+  });
+
+  const users = await prisma.user.findMany({
+    where: {
+      id: { not: req.auth.userId, notIn: [...blockedUserIds] },
+      OR: [
+        { id: { contains: query } },
+        { email: { contains: query, mode: 'insensitive' } },
+        { displayName: { contains: query, mode: 'insensitive' } },
+        { username: { contains: query, mode: 'insensitive' } }
+      ]
+    },
+    select: {
+      id: true,
+      email: true,
+      username: true,
+      displayName: true,
+      avatarUrl: true,
+      loanReminderDays: true
+    },
+    orderBy: [{ displayName: 'asc' }, { email: 'asc' }],
+    take: 20
+  });
+
+  return res.json({ users: users.map(toUserResponse) });
 });
 
 app.post('/users/me/avatar', requireAuth, avatarUpload.single('avatar'), async (req, res) => {
@@ -369,7 +496,7 @@ app.post('/users/me/avatar', requireAuth, avatarUpload.single('avatar'), async (
   const user = await prisma.user.update({
     where: { id: req.auth.userId },
     data: { avatarUrl },
-    select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true }
+    select: { id: true, email: true, username: true, displayName: true, avatarUrl: true, loanReminderDays: true }
   });
   return res.json({ user: toUserResponse(user) });
 });
