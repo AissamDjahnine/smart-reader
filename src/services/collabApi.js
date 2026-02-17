@@ -354,6 +354,26 @@ export const borrowFromFriendLibrary = async (friendUserId, bookId) => {
   return data.loan;
 };
 
+export const fetchFriendsLeaderboard = async (metric = 'pagesRead') => {
+  const { data } = await client.get('/friends/leaderboard', { params: { metric } });
+  return data;
+};
+
+export const fetchLoanReviews = async (loanId) => {
+  const { data } = await client.get(`/loans/${loanId}/reviews`);
+  return data.messages || [];
+};
+
+export const createLoanReview = async (loanId, payload) => {
+  const { data } = await client.post(`/loans/${loanId}/reviews`, payload);
+  return data.message;
+};
+
+export const recordBookActivity = async (bookId, payload) => {
+  const { data } = await client.post(`/books/${bookId}/activity`, payload);
+  return data.ok;
+};
+
 export const getFileUrl = (bookId) => {
   const token = getToken();
   if (!API_BASE_URL || !token) return '';
