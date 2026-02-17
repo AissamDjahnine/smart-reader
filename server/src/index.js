@@ -18,6 +18,7 @@ import {
   requireBorrowCapability,
   expireLoanIfNeeded
 } from './loanPolicy.js';
+import { formatNotification, toJson, upsertUserNotification } from './notifications.js';
 
 dotenv.config();
 
@@ -122,7 +123,8 @@ const toUserResponse = (user) => ({
   id: user.id,
   email: user.email,
   displayName: user.displayName || null,
-  avatarUrl: user.avatarUrl || null
+  avatarUrl: user.avatarUrl || null,
+  loanReminderDays: Number.isInteger(user.loanReminderDays) ? user.loanReminderDays : 3
 });
 
 const parseExpectedRevision = (req) => {
@@ -133,6 +135,74 @@ const parseExpectedRevision = (req) => {
   if (!Number.isInteger(value) || value < 1) return null;
   return value;
 };
+
+const ensureLoanTemplate = async (db, userId) => {
+  const existing = await db.userLoanTemplate.findUnique({ where: { userId } });
+  if (existing) return existing;
+  return db.userLoanTemplate.create({
+    data: {
+      userId
+    }
+  });
+};
+
+const toTemplateResponse = (row) => ({
+  id: row.id,
+  name: row.name,
+  durationDays: row.durationDays,
+  graceDays: row.graceDays,
+  remindBeforeDays: row.remindBeforeDays,
+  permissions: {
+    canAddHighlights: row.canAddHighlights,
+    canEditHighlights: row.canEditHighlights,
+    canAddNotes: row.canAddNotes,
+    canEditNotes: row.canEditNotes,
+    annotationVisibility: row.annotationVisibility,
+    shareLenderAnnotations: Boolean(row.shareLenderAnnotations)
+  }
+});
+
+const emitLoanNotification = async (db, payload) => {
+  const {
+    userId,
+    eventKey,
+    kind,
+    title,
+    message,
+    loanId = null,
+    actionType = null,
+    actionTargetId = null,
+    meta = null
+  } = payload;
+  await upsertUserNotification(db, {
+    userId,
+    eventKey,
+    loanId,
+    kind,
+    title,
+    message,
+    payloadJson: toJson(meta),
+    actionType,
+    actionTargetId
+  });
+};
+
+const toRenewalResponse = (row) => ({
+  id: row.id,
+  loanId: row.loanId,
+  status: row.status,
+  requestedExtraDays: row.requestedExtraDays,
+  previousDueAt: row.previousDueAt,
+  proposedDueAt: row.proposedDueAt,
+  decisionMessage: row.decisionMessage || null,
+  requestedAt: row.requestedAt,
+  reviewedAt: row.reviewedAt || null,
+  requester: row.requester ? toUserResponse(row.requester) : null,
+  reviewer: row.reviewer ? toUserResponse(row.reviewer) : null,
+  lender: row.lender ? toUserResponse(row.lender) : null,
+  borrower: row.borrower ? toUserResponse(row.borrower) : null,
+  loan: row.loan ? toLoanResponse(row.loan) : null
+});
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
@@ -192,7 +262,7 @@ app.post('/auth/login', async (req, res) => {
 app.get('/auth/me', requireAuth, async (req, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.auth.userId },
-    select: { id: true, email: true, displayName: true, avatarUrl: true, createdAt: true }
+    select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true, createdAt: true }
   });
   if (!user) return res.status(404).json({ error: 'User not found' });
   return res.json({ user: toUserResponse(user) });
@@ -201,7 +271,7 @@ app.get('/auth/me', requireAuth, async (req, res) => {
 app.get('/users/me', requireAuth, async (req, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.auth.userId },
-    select: { id: true, email: true, displayName: true, avatarUrl: true }
+    select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true }
   });
   if (!user) return res.status(404).json({ error: 'User not found' });
   return res.json({ user: toUserResponse(user) });
@@ -209,15 +279,19 @@ app.get('/users/me', requireAuth, async (req, res) => {
 
 app.patch('/users/me', requireAuth, async (req, res) => {
   const schema = z.object({
-    displayName: z.string().min(1).max(120)
+    displayName: z.string().min(1).max(120),
+    loanReminderDays: z.number().int().min(0).max(30).optional()
   });
   const parsed = schema.safeParse(req.body || {});
   if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
 
   const user = await prisma.user.update({
     where: { id: req.auth.userId },
-    data: { displayName: parsed.data.displayName.trim() },
-    select: { id: true, email: true, displayName: true, avatarUrl: true }
+    data: {
+      displayName: parsed.data.displayName.trim(),
+      loanReminderDays: parsed.data.loanReminderDays === undefined ? undefined : parsed.data.loanReminderDays
+    },
+    select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true }
   });
   return res.json({ user: toUserResponse(user) });
 });
@@ -231,7 +305,7 @@ app.post('/users/me/avatar', requireAuth, avatarUpload.single('avatar'), async (
   const user = await prisma.user.update({
     where: { id: req.auth.userId },
     data: { avatarUrl },
-    select: { id: true, email: true, displayName: true, avatarUrl: true }
+    select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true }
   });
   return res.json({ user: toUserResponse(user) });
 });
@@ -864,6 +938,17 @@ app.post('/shares/:shareId/borrow', requireAuth, async (req, res) => {
     return { loan, share: nextShare };
   });
 
+  await emitLoanNotification(prisma, {
+    userId: share.fromUserId,
+    eventKey: `loan-accepted-from-share-${result.loan.id}`,
+    kind: 'loan-accepted',
+    title: 'Recommendation borrowed',
+    message: `${result.loan.borrower.displayName || result.loan.borrower.email} borrowed "${result.loan.book.title}".`,
+    loanId: result.loan.id,
+    actionType: 'open-lent',
+    actionTargetId: result.loan.id
+  });
+
   return res.json({
     share: result.share,
     loan: toLoanResponse(result.loan)
@@ -884,29 +969,65 @@ app.post('/shares/:shareId/reject', requireAuth, async (req, res) => {
   return res.json({ share: updated });
 });
 
+app.get('/loans/templates/default', requireAuth, async (req, res) => {
+  const template = await ensureLoanTemplate(prisma, req.auth.userId);
+  return res.json({ template: toTemplateResponse(template) });
+});
+
+app.put('/loans/templates/default', requireAuth, async (req, res) => {
+  const schema = z.object({
+    name: z.string().min(1).max(120).optional(),
+    durationDays: z.number().int().min(1).max(365),
+    graceDays: z.number().int().min(0).max(30),
+    remindBeforeDays: z.number().int().min(0).max(30).default(3),
+    permissions: z.object({
+      canAddHighlights: z.boolean(),
+      canEditHighlights: z.boolean(),
+      canAddNotes: z.boolean(),
+      canEditNotes: z.boolean(),
+      annotationVisibility: z.enum(['PRIVATE', 'SHARED_WITH_LENDER']),
+      shareLenderAnnotations: z.boolean()
+    })
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  const template = await ensureLoanTemplate(prisma, req.auth.userId);
+  const updated = await prisma.userLoanTemplate.update({
+    where: { id: template.id },
+    data: {
+      name: (parsed.data.name || template.name).trim(),
+      durationDays: parsed.data.durationDays,
+      graceDays: parsed.data.graceDays,
+      remindBeforeDays: parsed.data.remindBeforeDays,
+      canAddHighlights: parsed.data.permissions.canAddHighlights,
+      canEditHighlights: parsed.data.permissions.canEditHighlights,
+      canAddNotes: parsed.data.permissions.canAddNotes,
+      canEditNotes: parsed.data.permissions.canEditNotes,
+      annotationVisibility: parsed.data.permissions.annotationVisibility,
+      shareLenderAnnotations: parsed.data.permissions.shareLenderAnnotations
+    }
+  });
+
+  return res.json({ template: toTemplateResponse(updated) });
+});
+
 app.post('/loans/books', requireAuth, async (req, res) => {
   const schema = z.object({
     bookId: z.string().optional(),
     epubHash: z.string().optional(),
     toEmail: z.string().email(),
     message: z.string().max(2000).optional(),
-    durationDays: z.number().int().min(1).max(365).default(14),
-    graceDays: z.number().int().min(0).max(30).default(0),
+    durationDays: z.number().int().min(1).max(365).optional(),
+    graceDays: z.number().int().min(0).max(30).optional(),
     permissions: z.object({
-      canAddHighlights: z.boolean().default(true),
-      canEditHighlights: z.boolean().default(true),
-      canAddNotes: z.boolean().default(true),
-      canEditNotes: z.boolean().default(true),
-      annotationVisibility: z.enum(['PRIVATE', 'SHARED_WITH_LENDER']).default('PRIVATE'),
-      shareLenderAnnotations: z.boolean().default(false)
-    }).default({
-      canAddHighlights: true,
-      canEditHighlights: true,
-      canAddNotes: true,
-      canEditNotes: true,
-      annotationVisibility: 'PRIVATE',
-      shareLenderAnnotations: false
-    })
+      canAddHighlights: z.boolean().optional(),
+      canEditHighlights: z.boolean().optional(),
+      canAddNotes: z.boolean().optional(),
+      canEditNotes: z.boolean().optional(),
+      annotationVisibility: z.enum(['PRIVATE', 'SHARED_WITH_LENDER']).optional(),
+      shareLenderAnnotations: z.boolean().optional()
+    }).optional()
   }).refine((v) => !!v.bookId || !!v.epubHash, {
     message: 'bookId or epubHash is required'
   });
@@ -928,6 +1049,18 @@ app.post('/loans/books', requireAuth, async (req, res) => {
   if (!borrower) return res.status(404).json({ error: 'Recipient not found' });
   if (borrower.id === req.auth.userId) return res.status(400).json({ error: 'Cannot lend to yourself' });
 
+  const template = await ensureLoanTemplate(prisma, req.auth.userId);
+  const effectivePermissions = {
+    canAddHighlights: parsed.data.permissions?.canAddHighlights ?? template.canAddHighlights,
+    canEditHighlights: parsed.data.permissions?.canEditHighlights ?? template.canEditHighlights,
+    canAddNotes: parsed.data.permissions?.canAddNotes ?? template.canAddNotes,
+    canEditNotes: parsed.data.permissions?.canEditNotes ?? template.canEditNotes,
+    annotationVisibility: parsed.data.permissions?.annotationVisibility ?? template.annotationVisibility,
+    shareLenderAnnotations: parsed.data.permissions?.shareLenderAnnotations ?? template.shareLenderAnnotations
+  };
+  const effectiveDurationDays = parsed.data.durationDays ?? template.durationDays;
+  const effectiveGraceDays = parsed.data.graceDays ?? template.graceDays;
+
   const existingPending = await prisma.bookLoan.findFirst({
     where: {
       bookId: book.id,
@@ -942,14 +1075,14 @@ app.post('/loans/books', requireAuth, async (req, res) => {
         where: { id: existingPending.id },
         data: {
           message: parsed.data.message || null,
-          durationDays: parsed.data.durationDays,
-          graceDays: parsed.data.graceDays,
-          canAddHighlights: parsed.data.permissions.canAddHighlights,
-          canEditHighlights: parsed.data.permissions.canEditHighlights,
-          canAddNotes: parsed.data.permissions.canAddNotes,
-          canEditNotes: parsed.data.permissions.canEditNotes,
-          annotationVisibility: parsed.data.permissions.annotationVisibility,
-          shareLenderAnnotations: parsed.data.permissions.shareLenderAnnotations
+          durationDays: effectiveDurationDays,
+          graceDays: effectiveGraceDays,
+          canAddHighlights: effectivePermissions.canAddHighlights,
+          canEditHighlights: effectivePermissions.canEditHighlights,
+          canAddNotes: effectivePermissions.canAddNotes,
+          canEditNotes: effectivePermissions.canEditNotes,
+          annotationVisibility: effectivePermissions.annotationVisibility,
+          shareLenderAnnotations: effectivePermissions.shareLenderAnnotations
         },
         include: includeLoanGraph
       })
@@ -959,14 +1092,14 @@ app.post('/loans/books', requireAuth, async (req, res) => {
           lenderId: req.auth.userId,
           borrowerId: borrower.id,
           message: parsed.data.message || null,
-          durationDays: parsed.data.durationDays,
-          graceDays: parsed.data.graceDays,
-          canAddHighlights: parsed.data.permissions.canAddHighlights,
-          canEditHighlights: parsed.data.permissions.canEditHighlights,
-          canAddNotes: parsed.data.permissions.canAddNotes,
-          canEditNotes: parsed.data.permissions.canEditNotes,
-          annotationVisibility: parsed.data.permissions.annotationVisibility,
-          shareLenderAnnotations: parsed.data.permissions.shareLenderAnnotations
+          durationDays: effectiveDurationDays,
+          graceDays: effectiveGraceDays,
+          canAddHighlights: effectivePermissions.canAddHighlights,
+          canEditHighlights: effectivePermissions.canEditHighlights,
+          canAddNotes: effectivePermissions.canAddNotes,
+          canEditNotes: effectivePermissions.canEditNotes,
+          annotationVisibility: effectivePermissions.annotationVisibility,
+          shareLenderAnnotations: effectivePermissions.shareLenderAnnotations
         },
         include: includeLoanGraph
       });
@@ -979,6 +1112,20 @@ app.post('/loans/books', requireAuth, async (req, res) => {
     details: {
       durationDays: loan.durationDays,
       graceDays: loan.graceDays
+    }
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: borrower.id,
+    eventKey: `loan-request-${loan.id}`,
+    kind: 'loan-request',
+    title: 'New loan request',
+    message: `${loan.lender.displayName || loan.lender.email} offered you "${loan.book.title}".`,
+    loanId: loan.id,
+    actionType: 'open-inbox',
+    actionTargetId: loan.id,
+    meta: {
+      bookId: loan.book.id
     }
   });
 
@@ -1072,6 +1219,20 @@ app.post('/loans/:loanId/accept', requireAuth, async (req, res) => {
     return updated;
   });
 
+  await emitLoanNotification(prisma, {
+    userId: loan.lenderId,
+    eventKey: `loan-accepted-${loan.id}`,
+    kind: 'loan-accepted',
+    title: 'Loan accepted',
+    message: `${accepted.borrower.displayName || accepted.borrower.email} accepted "${accepted.book.title}".`,
+    loanId: loan.id,
+    actionType: 'open-lent',
+    actionTargetId: loan.id,
+    meta: {
+      dueAt: accepted.dueAt
+    }
+  });
+
   return res.json({ loan: toLoanResponse(accepted) });
 });
 
@@ -1097,6 +1258,17 @@ app.post('/loans/:loanId/reject', requireAuth, async (req, res) => {
       action: 'LOAN_REJECTED'
     });
     return next;
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: loan.lenderId,
+    eventKey: `loan-rejected-${loan.id}`,
+    kind: 'loan-rejected',
+    title: 'Loan rejected',
+    message: `${updated.borrower.displayName || updated.borrower.email} rejected "${updated.book.title}".`,
+    loanId: loan.id,
+    actionType: 'open-lent',
+    actionTargetId: loan.id
   });
 
   return res.json({ loan: toLoanResponse(updated) });
@@ -1127,6 +1299,256 @@ app.get('/loans/lent', requireAuth, async (req, res) => {
     orderBy: { requestedAt: 'desc' }
   });
   return res.json({ loans: loans.map(toLoanResponse) });
+});
+
+const includeRenewalGraph = {
+  loan: { include: includeLoanGraph },
+  requester: { select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true } },
+  reviewer: { select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true } },
+  lender: { select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true } },
+  borrower: { select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true } }
+};
+
+app.get('/loans/renewals', requireAuth, async (req, res) => {
+  const renewals = await prisma.loanRenewalRequest.findMany({
+    where: {
+      OR: [
+        { lenderId: req.auth.userId },
+        { borrowerId: req.auth.userId }
+      ]
+    },
+    include: includeRenewalGraph,
+    orderBy: { requestedAt: 'desc' },
+    take: 200
+  });
+  return res.json({ renewals: renewals.map(toRenewalResponse) });
+});
+
+app.post('/loans/:loanId/renewals', requireAuth, async (req, res) => {
+  const schema = z.object({
+    extraDays: z.number().int().min(1).max(60),
+    message: z.string().max(500).optional()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  const loan = await prisma.bookLoan.findUnique({
+    where: { id: req.params.loanId },
+    include: includeLoanGraph
+  });
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (loan.borrowerId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (loan.status !== 'ACTIVE') return res.status(400).json({ error: 'Loan must be active' });
+  if (!loan.dueAt) return res.status(400).json({ error: 'Loan due date is missing' });
+
+  const existingPending = await prisma.loanRenewalRequest.findFirst({
+    where: {
+      loanId: loan.id,
+      status: 'PENDING'
+    }
+  });
+  if (existingPending) return res.status(409).json({ error: 'A renewal request is already pending' });
+
+  const previousDueAt = new Date(loan.dueAt);
+  const proposedDueAt = new Date(previousDueAt.getTime() + parsed.data.extraDays * 24 * 60 * 60 * 1000);
+  const renewal = await prisma.loanRenewalRequest.create({
+    data: {
+      loanId: loan.id,
+      requesterUserId: req.auth.userId,
+      lenderId: loan.lenderId,
+      borrowerId: loan.borrowerId,
+      requestedExtraDays: parsed.data.extraDays,
+      previousDueAt,
+      proposedDueAt,
+      decisionMessage: parsed.data.message || null
+    },
+    include: includeRenewalGraph
+  });
+
+  await addLoanAuditEvent(prisma, {
+    loanId: loan.id,
+    actorUserId: req.auth.userId,
+    targetUserId: loan.lenderId,
+    action: 'LOAN_RENEWAL_REQUESTED',
+    details: {
+      renewalRequestId: renewal.id,
+      requestedExtraDays: parsed.data.extraDays,
+      previousDueAt,
+      proposedDueAt
+    }
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: loan.lenderId,
+    eventKey: `loan-renewal-request-${renewal.id}`,
+    kind: 'loan-renewal-request',
+    title: 'Renewal requested',
+    message: `${loan.borrower.displayName || loan.borrower.email} requested +${parsed.data.extraDays} days for "${loan.book.title}".`,
+    loanId: loan.id,
+    actionType: 'open-lent',
+    actionTargetId: loan.id,
+    meta: {
+      renewalRequestId: renewal.id,
+      proposedDueAt
+    }
+  });
+
+  return res.status(201).json({ renewal: toRenewalResponse(renewal) });
+});
+
+app.post('/loans/renewals/:renewalId/approve', requireAuth, async (req, res) => {
+  const schema = z.object({
+    message: z.string().max(500).optional()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  const renewal = await prisma.loanRenewalRequest.findUnique({
+    where: { id: req.params.renewalId },
+    include: includeRenewalGraph
+  });
+  if (!renewal) return res.status(404).json({ error: 'Renewal request not found' });
+  if (renewal.lenderId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (renewal.status !== 'PENDING') return res.status(400).json({ error: 'Renewal is not pending' });
+  if (!renewal.loan || renewal.loan.status !== 'ACTIVE') return res.status(400).json({ error: 'Loan must be active' });
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const reviewedAt = new Date();
+    const nextRenewal = await tx.loanRenewalRequest.update({
+      where: { id: renewal.id },
+      data: {
+        status: 'APPROVED',
+        reviewedAt,
+        reviewerUserId: req.auth.userId,
+        decisionMessage: parsed.data.message || renewal.decisionMessage || null
+      },
+      include: includeRenewalGraph
+    });
+
+    await tx.bookLoan.update({
+      where: { id: renewal.loanId },
+      data: {
+        dueAt: renewal.proposedDueAt,
+        durationDays: renewal.loan.durationDays + renewal.requestedExtraDays,
+        dueSoonNotifiedAt: null,
+        overdueNotifiedAt: null
+      }
+    });
+
+    await addLoanAuditEvent(tx, {
+      loanId: renewal.loanId,
+      actorUserId: req.auth.userId,
+      targetUserId: renewal.borrowerId,
+      action: 'LOAN_RENEWAL_APPROVED',
+      details: {
+        renewalRequestId: renewal.id,
+        requestedExtraDays: renewal.requestedExtraDays,
+        previousDueAt: renewal.previousDueAt,
+        proposedDueAt: renewal.proposedDueAt
+      }
+    });
+
+    return nextRenewal;
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: renewal.borrowerId,
+    eventKey: `loan-renewal-approved-${renewal.id}`,
+    kind: 'loan-renewal-approved',
+    title: 'Renewal approved',
+    message: `${renewal.lender.displayName || renewal.lender.email} approved your renewal for "${renewal.loan.book.title}".`,
+    loanId: renewal.loanId,
+    actionType: 'open-borrowed',
+    actionTargetId: renewal.loanId,
+    meta: {
+      renewalRequestId: renewal.id,
+      dueAt: renewal.proposedDueAt
+    }
+  });
+
+  return res.json({ renewal: toRenewalResponse(updated) });
+});
+
+app.post('/loans/renewals/:renewalId/deny', requireAuth, async (req, res) => {
+  const schema = z.object({
+    message: z.string().max(500).optional()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  const renewal = await prisma.loanRenewalRequest.findUnique({
+    where: { id: req.params.renewalId },
+    include: includeRenewalGraph
+  });
+  if (!renewal) return res.status(404).json({ error: 'Renewal request not found' });
+  if (renewal.lenderId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (renewal.status !== 'PENDING') return res.status(400).json({ error: 'Renewal is not pending' });
+
+  const updated = await prisma.loanRenewalRequest.update({
+    where: { id: renewal.id },
+    data: {
+      status: 'DENIED',
+      reviewedAt: new Date(),
+      reviewerUserId: req.auth.userId,
+      decisionMessage: parsed.data.message || renewal.decisionMessage || null
+    },
+    include: includeRenewalGraph
+  });
+
+  await addLoanAuditEvent(prisma, {
+    loanId: renewal.loanId,
+    actorUserId: req.auth.userId,
+    targetUserId: renewal.borrowerId,
+    action: 'LOAN_RENEWAL_DENIED',
+    details: {
+      renewalRequestId: renewal.id,
+      requestedExtraDays: renewal.requestedExtraDays
+    }
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: renewal.borrowerId,
+    eventKey: `loan-renewal-denied-${renewal.id}`,
+    kind: 'loan-renewal-denied',
+    title: 'Renewal denied',
+    message: `${renewal.lender.displayName || renewal.lender.email} denied your renewal for "${renewal.loan.book.title}".`,
+    loanId: renewal.loanId,
+    actionType: 'open-borrowed',
+    actionTargetId: renewal.loanId,
+    meta: {
+      renewalRequestId: renewal.id
+    }
+  });
+
+  return res.json({ renewal: toRenewalResponse(updated) });
+});
+
+app.post('/loans/renewals/:renewalId/cancel', requireAuth, async (req, res) => {
+  const renewal = await prisma.loanRenewalRequest.findUnique({
+    where: { id: req.params.renewalId },
+    include: includeRenewalGraph
+  });
+  if (!renewal) return res.status(404).json({ error: 'Renewal request not found' });
+  if (renewal.requesterUserId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (renewal.status !== 'PENDING') return res.status(400).json({ error: 'Renewal is not pending' });
+
+  const updated = await prisma.loanRenewalRequest.update({
+    where: { id: renewal.id },
+    data: { status: 'CANCELLED', reviewedAt: new Date() },
+    include: includeRenewalGraph
+  });
+
+  await addLoanAuditEvent(prisma, {
+    loanId: renewal.loanId,
+    actorUserId: req.auth.userId,
+    targetUserId: renewal.lenderId,
+    action: 'LOAN_RENEWAL_CANCELLED',
+    details: {
+      renewalRequestId: renewal.id
+    }
+  });
+
+  return res.json({ renewal: toRenewalResponse(updated) });
 });
 
 const buildLoanExportPayload = async (loan, borrowerId) => {
@@ -1224,6 +1646,17 @@ app.post('/loans/:loanId/return', requireAuth, async (req, res) => {
     return next;
   });
 
+  await emitLoanNotification(prisma, {
+    userId: loan.lenderId,
+    eventKey: `loan-returned-${loan.id}-${returned.returnedAt?.toISOString?.() || Date.now()}`,
+    kind: 'loan-returned',
+    title: 'Book returned',
+    message: `${returned.borrower.displayName || returned.borrower.email} returned "${returned.book.title}".`,
+    loanId: loan.id,
+    actionType: 'open-lent',
+    actionTargetId: loan.id
+  });
+
   return res.json({
     loan: toLoanResponse(returned),
     export: exportPayload
@@ -1269,6 +1702,17 @@ app.post('/loans/:loanId/revoke', requireAuth, async (req, res) => {
     });
 
     return next;
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: loan.borrowerId,
+    eventKey: `loan-revoked-${loan.id}-${revoked.revokedAt?.toISOString?.() || Date.now()}`,
+    kind: 'loan-revoked',
+    title: 'Loan revoked',
+    message: `${revoked.lender.displayName || revoked.lender.email} revoked your access to "${revoked.book.title}". Export remains available for 14 days.`,
+    loanId: loan.id,
+    actionType: 'open-borrowed',
+    actionTargetId: loan.id
   });
 
   return res.json({ loan: toLoanResponse(revoked) });
@@ -1360,6 +1804,192 @@ app.get('/loans/audit', requireAuth, async (req, res) => {
   });
 });
 
+app.get('/notifications', requireAuth, async (req, res) => {
+  const notifications = await prisma.userNotification.findMany({
+    where: {
+      userId: req.auth.userId,
+      deletedAt: null
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 500
+  });
+  return res.json({ notifications: notifications.map(formatNotification) });
+});
+
+app.post('/notifications/read-all', requireAuth, async (req, res) => {
+  const now = new Date();
+  await prisma.userNotification.updateMany({
+    where: {
+      userId: req.auth.userId,
+      deletedAt: null,
+      readAt: null
+    },
+    data: {
+      readAt: now
+    }
+  });
+  return res.json({ ok: true });
+});
+
+app.patch('/notifications/:notificationId', requireAuth, async (req, res) => {
+  const schema = z.object({
+    read: z.boolean().optional(),
+    archived: z.boolean().optional(),
+    deleted: z.boolean().optional()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  const existing = await prisma.userNotification.findUnique({
+    where: { id: req.params.notificationId }
+  });
+  if (!existing || existing.userId !== req.auth.userId) {
+    return res.status(404).json({ error: 'Notification not found' });
+  }
+
+  const now = new Date();
+  const updated = await prisma.userNotification.update({
+    where: { id: existing.id },
+    data: {
+      readAt: parsed.data.read === undefined ? existing.readAt : (parsed.data.read ? now : null),
+      archivedAt: parsed.data.archived === undefined ? existing.archivedAt : (parsed.data.archived ? now : null),
+      deletedAt: parsed.data.deleted === undefined ? existing.deletedAt : (parsed.data.deleted ? now : null)
+    }
+  });
+
+  return res.json({ notification: formatNotification(updated) });
+});
+
+const runLoanMaintenanceJobs = async () => {
+  const activeLoans = await prisma.bookLoan.findMany({
+    where: { status: 'ACTIVE' },
+    include: {
+      ...includeLoanGraph,
+      borrower: { select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true } },
+      lender: { select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true } }
+    }
+  });
+
+  for (const loan of activeLoans) {
+    const maybeExpired = await expireLoanIfNeeded(prisma, loan, {
+      include: includeLoanGraph,
+      cleanupBorrowerAccess: true,
+      addAuditEvent: true
+    });
+
+    if (maybeExpired.status === 'EXPIRED') {
+      await prisma.loanRenewalRequest.updateMany({
+        where: {
+          loanId: maybeExpired.id,
+          status: 'PENDING'
+        },
+        data: {
+          status: 'EXPIRED',
+          reviewedAt: new Date()
+        }
+      });
+      await emitLoanNotification(prisma, {
+        userId: maybeExpired.borrowerId,
+        eventKey: `loan-expired-${maybeExpired.id}-${new Date(maybeExpired.expiredAt || maybeExpired.updatedAt).toISOString()}`,
+        kind: 'loan-expired',
+        title: 'Loan expired',
+        message: `Your access to "${maybeExpired.book.title}" expired. Export remains available for 14 days.`,
+        loanId: maybeExpired.id,
+        actionType: 'open-borrowed',
+        actionTargetId: maybeExpired.id
+      });
+      await emitLoanNotification(prisma, {
+        userId: maybeExpired.lenderId,
+        eventKey: `loan-expired-lender-${maybeExpired.id}-${new Date(maybeExpired.expiredAt || maybeExpired.updatedAt).toISOString()}`,
+        kind: 'loan-expired',
+        title: 'Borrow expired',
+        message: `${maybeExpired.borrower.displayName || maybeExpired.borrower.email} no longer has access to "${maybeExpired.book.title}" (expired).`,
+        loanId: maybeExpired.id,
+        actionType: 'open-lent',
+        actionTargetId: maybeExpired.id
+      });
+      continue;
+    }
+
+    if (!loan.dueAt) continue;
+    const dueMs = new Date(loan.dueAt).getTime();
+    if (!Number.isFinite(dueMs)) continue;
+    const diffDays = Math.ceil((dueMs - Date.now()) / (24 * 60 * 60 * 1000));
+    const reminderDays = Math.max(0, Number(loan.borrower?.loanReminderDays) || 0);
+
+    if (diffDays >= 0 && reminderDays > 0 && diffDays <= reminderDays && !loan.dueSoonNotifiedAt) {
+      await emitLoanNotification(prisma, {
+        userId: loan.borrowerId,
+        eventKey: `loan-due-soon-${loan.id}-${new Date(loan.dueAt).toISOString()}`,
+        kind: 'loan-due-soon',
+        title: 'Borrow due soon',
+        message: `"${loan.book.title}" is due in ${diffDays} day${diffDays === 1 ? '' : 's'}.`,
+        loanId: loan.id,
+        actionType: 'open-borrowed',
+        actionTargetId: loan.id
+      });
+      await prisma.bookLoan.update({
+        where: { id: loan.id },
+        data: { dueSoonNotifiedAt: new Date() }
+      });
+    }
+
+    if (diffDays < 0 && !loan.overdueNotifiedAt) {
+      await emitLoanNotification(prisma, {
+        userId: loan.borrowerId,
+        eventKey: `loan-overdue-${loan.id}-${new Date(loan.dueAt).toISOString()}`,
+        kind: 'loan-overdue',
+        title: 'Borrow overdue',
+        message: `"${loan.book.title}" is overdue. Return it or request renewal.`,
+        loanId: loan.id,
+        actionType: 'open-borrowed',
+        actionTargetId: loan.id
+      });
+      await emitLoanNotification(prisma, {
+        userId: loan.lenderId,
+        eventKey: `loan-overdue-lender-${loan.id}-${new Date(loan.dueAt).toISOString()}`,
+        kind: 'loan-overdue',
+        title: 'Borrower overdue',
+        message: `${loan.borrower.displayName || loan.borrower.email} is overdue on "${loan.book.title}".`,
+        loanId: loan.id,
+        actionType: 'open-lent',
+        actionTargetId: loan.id
+      });
+      await prisma.bookLoan.update({
+        where: { id: loan.id },
+        data: { overdueNotifiedAt: new Date() }
+      });
+    }
+  }
+
+  const endedLoans = await prisma.bookLoan.findMany({
+    where: {
+      status: { in: ['REVOKED', 'RETURNED', 'EXPIRED'] },
+      exportAvailableUntil: { not: null },
+      endedReminderNotifiedAt: null
+    },
+    include: includeLoanGraph
+  });
+  for (const loan of endedLoans) {
+    const deadlineMs = new Date(loan.exportAvailableUntil).getTime();
+    if (!Number.isFinite(deadlineMs) || Date.now() > deadlineMs) continue;
+    await emitLoanNotification(prisma, {
+      userId: loan.borrowerId,
+      eventKey: `loan-export-window-${loan.id}-${new Date(loan.exportAvailableUntil).toISOString()}`,
+      kind: 'loan-export-window',
+      title: 'Export available',
+      message: `Export your annotations for "${loan.book.title}" before ${new Date(loan.exportAvailableUntil).toLocaleString()}.`,
+      loanId: loan.id,
+      actionType: 'open-borrowed',
+      actionTargetId: loan.id
+    });
+    await prisma.bookLoan.update({
+      where: { id: loan.id },
+      data: { endedReminderNotifiedAt: new Date() }
+    });
+  }
+};
+
 app.use((err, _req, res) => {
   console.error(err);
   return res.status(500).json({ error: 'Internal server error' });
@@ -1367,6 +1997,16 @@ app.use((err, _req, res) => {
 
 const start = async () => {
   await prisma.$connect();
+  if (config.loanSchedulerEnabled) {
+    setInterval(() => {
+      runLoanMaintenanceJobs().catch((err) => {
+        console.error('Loan maintenance job failed', err);
+      });
+    }, config.loanSchedulerIntervalMs);
+    runLoanMaintenanceJobs().catch((err) => {
+      console.error('Initial loan maintenance job failed', err);
+    });
+  }
   app.listen(config.port, '0.0.0.0', () => {
     console.log(`Ariadne server listening on 0.0.0.0:${config.port}`);
   });

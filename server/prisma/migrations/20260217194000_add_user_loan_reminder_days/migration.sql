@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "User"
+ADD COLUMN "loanReminderDays" INTEGER NOT NULL DEFAULT 3;

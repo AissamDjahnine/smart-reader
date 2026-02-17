@@ -59,6 +59,7 @@ model User {
   passwordHash String
   displayName  String?
   avatarUrl    String?
+  loanReminderDays Int     @default(3)
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
