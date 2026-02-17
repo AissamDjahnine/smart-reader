@@ -128,6 +128,72 @@ export const rejectShare = async (shareId) => {
   return data.share;
 };
 
+export const requestBookLoan = async ({
+  bookId,
+  epubHash,
+  toEmail,
+  message,
+  durationDays,
+  graceDays,
+  permissions
+}) => {
+  const { data } = await client.post('/loans/books', {
+    bookId,
+    epubHash,
+    toEmail,
+    message,
+    durationDays,
+    graceDays,
+    permissions
+  });
+  return data.loan;
+};
+
+export const fetchLoanInbox = async () => {
+  const { data } = await client.get('/loans/inbox');
+  return data.loans || [];
+};
+
+export const acceptLoan = async (loanId, { borrowAnyway = false } = {}) => {
+  const { data } = await client.post(`/loans/${loanId}/accept`, { borrowAnyway });
+  return data;
+};
+
+export const rejectLoan = async (loanId) => {
+  const { data } = await client.post(`/loans/${loanId}/reject`);
+  return data.loan;
+};
+
+export const fetchBorrowedLoans = async () => {
+  const { data } = await client.get('/loans/borrowed');
+  return data.loans || [];
+};
+
+export const fetchLentLoans = async () => {
+  const { data } = await client.get('/loans/lent');
+  return data.loans || [];
+};
+
+export const returnLoan = async (loanId, { exportAnnotations = false } = {}) => {
+  const { data } = await client.post(`/loans/${loanId}/return`, { exportAnnotations });
+  return data;
+};
+
+export const revokeLoan = async (loanId) => {
+  const { data } = await client.post(`/loans/${loanId}/revoke`);
+  return data.loan;
+};
+
+export const exportRevokedLoanData = async (loanId) => {
+  const { data } = await client.get(`/loans/${loanId}/export`);
+  return data.export;
+};
+
+export const fetchLoanAudit = async () => {
+  const { data } = await client.get('/loans/audit');
+  return data.events || [];
+};
+
 export const getFileUrl = (bookId) => {
   const token = getToken();
   if (!API_BASE_URL || !token) return '';
