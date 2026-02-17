@@ -70,10 +70,14 @@ import {
   approveLoanRenewal,
   acceptLoan,
   cancelFriendRequest,
+  borrowFromFriendLibrary,
   createBookShare,
   denyLoanRenewal,
   exportLoanData,
   fetchFriends,
+  fetchFriendHistory,
+  fetchFriendLibrary,
+  fetchFriendProfile,
   fetchIncomingFriendRequests,
   fetchBorrowedLoans,
   fetchLoanAudit,
@@ -96,6 +100,7 @@ import {
   revokeLoan,
   searchUsers,
   sendFriendRequest,
+  updateFriendPrivacy,
   updateLoanTemplate,
   updateMe,
   uploadMyAvatar
@@ -704,6 +709,22 @@ export default function Home() {
   const [isFriendsLoading, setIsFriendsLoading] = useState(false);
   const [isFriendSearchLoading, setIsFriendSearchLoading] = useState(false);
   const [friendActionBusyId, setFriendActionBusyId] = useState("");
+  const [selectedFriendId, setSelectedFriendId] = useState("");
+  const [selectedFriendProfile, setSelectedFriendProfile] = useState(null);
+  const [selectedFriendLibrary, setSelectedFriendLibrary] = useState([]);
+  const [selectedFriendHistory, setSelectedFriendHistory] = useState({ recentReads: [], loanEvents: [] });
+  const [selectedFriendPermissions, setSelectedFriendPermissions] = useState({
+    canViewLibrary: true,
+    canBorrow: true,
+    canViewActivity: true
+  });
+  const [myPolicyForSelectedFriend, setMyPolicyForSelectedFriend] = useState({
+    canViewLibrary: true,
+    canBorrow: true,
+    canViewActivity: true
+  });
+  const [isSelectedFriendLoading, setIsSelectedFriendLoading] = useState(false);
+  const [lendSelectedBookId, setLendSelectedBookId] = useState("");
   const [loanInbox, setLoanInbox] = useState([]);
   const [borrowedLoans, setBorrowedLoans] = useState([]);
   const [lentLoans, setLentLoans] = useState([]);
@@ -1306,6 +1327,55 @@ export default function Home() {
     }
   };
 
+  const loadSelectedFriendData = async (friendUserId) => {
+    if (!isCollabMode || !friendUserId) return;
+    setIsSelectedFriendLoading(true);
+    try {
+      const [profile, libraryResponse, historyResponse] = await Promise.all([
+        fetchFriendProfile(friendUserId),
+        fetchFriendLibrary(friendUserId).catch((err) => ({ error: err?.response?.data?.error || "Unavailable" })),
+        fetchFriendHistory(friendUserId).catch((err) => ({ error: err?.response?.data?.error || "Unavailable" }))
+      ]);
+      setSelectedFriendProfile(profile || null);
+
+      if (libraryResponse?.books) {
+        setSelectedFriendLibrary(libraryResponse.books);
+        setSelectedFriendPermissions(libraryResponse.permissions || profile?.permissionsForViewer || {
+          canViewLibrary: true,
+          canBorrow: true,
+          canViewActivity: true
+        });
+      } else {
+        setSelectedFriendLibrary([]);
+        setSelectedFriendPermissions(profile?.permissionsForViewer || {
+          canViewLibrary: false,
+          canBorrow: false,
+          canViewActivity: false
+        });
+      }
+
+      if (historyResponse?.activity) {
+        setSelectedFriendHistory(historyResponse.activity);
+      } else {
+        setSelectedFriendHistory({ recentReads: [], loanEvents: [] });
+      }
+      setMyPolicyForSelectedFriend(profile?.myPolicyForFriend || {
+        canViewLibrary: true,
+        canBorrow: true,
+        canViewActivity: true
+      });
+    } finally {
+      setIsSelectedFriendLoading(false);
+    }
+  };
+
+  const openFriendProfile = async (friendUserId) => {
+    if (!friendUserId) return;
+    setLibrarySection("friends");
+    setSelectedFriendId(friendUserId);
+    await loadSelectedFriendData(friendUserId);
+  };
+
   const refreshShareInboxCount = async () => {
     if (!isCollabMode) {
       setShareInboxCount(0);
@@ -1433,6 +1503,77 @@ export default function Home() {
       });
     } finally {
       setFriendActionBusyId("");
+    }
+  };
+
+  const handleBorrowFromFriend = async (friendUserId, bookId) => {
+    if (!friendUserId || !bookId || friendActionBusyId) return;
+    setFriendActionBusyId(`borrow-${friendUserId}-${bookId}`);
+    try {
+      await borrowFromFriendLibrary(friendUserId, bookId);
+      showFeedbackToast({
+        title: "Borrow started",
+        message: "Book added to your borrowed books."
+      });
+      await Promise.all([loadLoansData(), loadSelectedFriendData(friendUserId)]);
+    } catch (err) {
+      showFeedbackToast({
+        tone: "error",
+        title: "Could not borrow book",
+        message: err?.response?.data?.error || "Please try again."
+      });
+    } finally {
+      setFriendActionBusyId("");
+    }
+  };
+
+  const handleLendToSelectedFriend = async () => {
+    const friendEmail = selectedFriendProfile?.user?.email || "";
+    if (!friendEmail || !lendSelectedBookId || friendActionBusyId) return;
+    setFriendActionBusyId(`lend-${lendSelectedBookId}`);
+    try {
+      await requestBookLoan({
+        bookId: lendSelectedBookId,
+        toEmail: friendEmail,
+        message: "Lent from friend profile",
+        durationDays: Number(loanTemplate?.durationDays) || 14,
+        graceDays: Number(loanTemplate?.graceDays) || 0,
+        permissions: loanTemplate?.permissions || undefined
+      });
+      showFeedbackToast({
+        title: "Loan sent",
+        message: "Loan request sent to your friend."
+      });
+      await loadLoansData();
+    } catch (err) {
+      showFeedbackToast({
+        tone: "error",
+        title: "Could not send loan",
+        message: err?.response?.data?.error || "Please try again."
+      });
+    } finally {
+      setFriendActionBusyId("");
+    }
+  };
+
+  const handleSelectedFriendPolicyChange = async (field, value) => {
+    if (!selectedFriendId) return;
+    setMyPolicyForSelectedFriend((current) => ({ ...current, [field]: value }));
+    try {
+      const updated = await updateFriendPrivacy(selectedFriendId, { [field]: value });
+      setMyPolicyForSelectedFriend(updated || {
+        canViewLibrary: true,
+        canBorrow: true,
+        canViewActivity: true
+      });
+      await loadSelectedFriendData(selectedFriendId);
+    } catch (err) {
+      showFeedbackToast({
+        tone: "error",
+        title: "Could not update friend privacy",
+        message: err?.response?.data?.error || "Please try again."
+      });
+      setMyPolicyForSelectedFriend((current) => ({ ...current, [field]: !value }));
     }
   };
 
@@ -5881,168 +6022,242 @@ const formatNotificationTimeAgo = (value) => {
         {isFriendsSection && !isTrashSection && (
           <section className={`space-y-4 rounded-2xl border p-5 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "border-gray-200 bg-white"}`}>
             <div className="flex items-center justify-between gap-3">
-              <h2 className={`text-lg font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Find readers</h2>
+              <h2 className={`text-lg font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Friends Hub</h2>
               <button
                 type="button"
-                onClick={loadFriendsData}
+                onClick={() => {
+                  loadFriendsData();
+                  if (selectedFriendId) loadSelectedFriendData(selectedFriendId);
+                }}
                 className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-blue-300 hover:text-blue-200" : "text-blue-700"}`}
               >
                 Refresh
               </button>
             </div>
-            <div className="grid gap-4 lg:grid-cols-2">
-              <article className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/70"}`}>
-                <label className={`text-xs font-semibold uppercase tracking-[0.12em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                  Search by name, username, or user id
-                </label>
-                <input
-                  type="text"
-                  value={friendSearchQuery}
-                  onChange={(event) => setFriendSearchQuery(event.target.value)}
-                  placeholder="Type at least one character..."
-                  className={`mt-2 h-11 w-full rounded-xl border px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 ${
-                    isDarkLibraryTheme ? "border-slate-700 bg-slate-800 text-slate-100" : "border-gray-200 bg-white text-gray-900"
-                  }`}
-                />
-                {isFriendSearchLoading ? (
-                  <p className={`mt-2 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Searching...</p>
-                ) : (
+
+            <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
+              <div className="space-y-4">
+                <article className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/70"}`}>
+                  <label className={`text-xs font-semibold uppercase tracking-[0.12em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                    Search by name, email, username, or user id
+                  </label>
+                  <input
+                    type="text"
+                    value={friendSearchQuery}
+                    onChange={(event) => setFriendSearchQuery(event.target.value)}
+                    placeholder="Search readers..."
+                    className={`mt-2 h-11 w-full rounded-xl border px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 ${
+                      isDarkLibraryTheme ? "border-slate-700 bg-slate-800 text-slate-100" : "border-gray-200 bg-white text-gray-900"
+                    }`}
+                  />
                   <div className="mt-3 space-y-2">
                     {friendSearchResults.slice(0, 6).map((user) => (
-                      <div key={`search-user-${user.id}`} className={`flex items-center justify-between rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/60" : "border-gray-200 bg-white"}`}>
-                        <div className="min-w-0">
+                      <div key={`search-user-${user.id}`} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/60" : "border-gray-200 bg-white"}`}>
+                        <button
+                          type="button"
+                          onClick={() => openFriendProfile(user.id)}
+                          className="w-full text-left"
+                        >
                           <p className={`truncate text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                            {user.displayName || user.email}
+                            {user.displayName || user.username || user.email}
                           </p>
-                          <p className={`truncate text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                          <p className={`truncate text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>
+                            {user.email}
+                          </p>
+                          <p className={`truncate text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
                             @{user.username || "no-username"} · {user.id}
                           </p>
-                        </div>
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleSendFriendRequest(user.id)}
                           disabled={friendActionBusyId === `send-${user.id}`}
-                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
+                          className={`mt-2 rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
                             isDarkLibraryTheme ? "bg-blue-700 text-white hover:bg-blue-600" : "bg-blue-600 text-white hover:bg-blue-700"
                           }`}
                         >
-                          {friendActionBusyId === `send-${user.id}` ? "Sending..." : "Add"}
+                          {friendActionBusyId === `send-${user.id}` ? "Sending..." : "Add friend"}
                         </button>
                       </div>
                     ))}
-                    {!friendSearchResults.length && friendSearchQuery.trim() && (
-                      <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>No users found.</p>
-                    )}
+                    {isFriendSearchLoading && <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Searching...</p>}
                   </div>
-                )}
-              </article>
+                </article>
 
-              <article className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/70"}`}>
-                <h3 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Incoming requests</h3>
-                <div className="mt-2 space-y-2">
-                  {incomingFriendRequests.map((request) => (
-                    <div key={request.id} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/60" : "border-gray-200 bg-white"}`}>
-                      <p className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                        {request.fromUser?.displayName || request.fromUser?.email}
-                      </p>
-                      <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                        @{request.fromUser?.username || "no-username"}
-                      </p>
-                      <div className="mt-2 flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleAcceptFriendRequest(request.id)}
-                          disabled={friendActionBusyId === `accept-${request.id}`}
-                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
-                            isDarkLibraryTheme ? "bg-emerald-700 text-white hover:bg-emerald-600" : "bg-emerald-600 text-white hover:bg-emerald-700"
-                          }`}
-                        >
-                          {friendActionBusyId === `accept-${request.id}` ? "Accepting..." : "Accept"}
+                <article className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/70"}`}>
+                  <h3 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Incoming requests</h3>
+                  <div className="mt-2 space-y-2">
+                    {incomingFriendRequests.map((request) => (
+                      <div key={request.id} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/60" : "border-gray-200 bg-white"}`}>
+                        <button type="button" onClick={() => openFriendProfile(request.fromUser?.id)} className="w-full text-left">
+                          <p className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{request.fromUser?.displayName || request.fromUser?.email}</p>
+                          <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>{request.fromUser?.email}</p>
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => handleRejectFriendRequest(request.id)}
-                          disabled={friendActionBusyId === `reject-${request.id}`}
-                          className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
-                            isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"
-                          }`}
-                        >
-                          {friendActionBusyId === `reject-${request.id}` ? "Rejecting..." : "Reject"}
-                        </button>
+                        <div className="mt-2 flex items-center gap-2">
+                          <button type="button" onClick={() => handleAcceptFriendRequest(request.id)} disabled={friendActionBusyId === `accept-${request.id}`} className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${isDarkLibraryTheme ? "bg-emerald-700 text-white hover:bg-emerald-600" : "bg-emerald-600 text-white hover:bg-emerald-700"}`}>
+                            {friendActionBusyId === `accept-${request.id}` ? "Accepting..." : "Accept"}
+                          </button>
+                          <button type="button" onClick={() => handleRejectFriendRequest(request.id)} disabled={friendActionBusyId === `reject-${request.id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>
+                            Reject
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                  {!incomingFriendRequests.length && (
-                    <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>No incoming requests.</p>
-                  )}
-                </div>
-              </article>
-            </div>
+                    ))}
+                    {!incomingFriendRequests.length && <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>No incoming requests.</p>}
+                  </div>
+                </article>
 
-            <div className="grid gap-4 lg:grid-cols-2">
-              <article className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/70"}`}>
-                <h3 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Outgoing requests</h3>
-                <div className="mt-2 space-y-2">
-                  {outgoingFriendRequests.map((request) => (
-                    <div key={request.id} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/60" : "border-gray-200 bg-white"}`}>
-                      <p className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                        {request.toUser?.displayName || request.toUser?.email}
-                      </p>
-                      <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                        @{request.toUser?.username || "no-username"}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => handleCancelFriendRequest(request.id)}
-                        disabled={friendActionBusyId === `cancel-${request.id}`}
-                        className={`mt-2 rounded-lg border px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
-                          isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"
-                        }`}
-                      >
-                        {friendActionBusyId === `cancel-${request.id}` ? "Canceling..." : "Cancel request"}
-                      </button>
-                    </div>
-                  ))}
-                  {!outgoingFriendRequests.length && (
-                    <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>No outgoing requests.</p>
-                  )}
-                </div>
-              </article>
-
-              <article className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/70"}`}>
-                <h3 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>My friends</h3>
-                {isFriendsLoading ? (
-                  <p className={`mt-2 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Loading friends...</p>
-                ) : (
+                <article className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/70"}`}>
+                  <h3 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>My friends</h3>
                   <div className="mt-2 space-y-2">
                     {friends.map((item) => {
                       const friend = item.friend || {};
                       return (
-                        <div key={item.id} className={`flex items-center justify-between rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/60" : "border-gray-200 bg-white"}`}>
-                          <div className="min-w-0">
-                            <p className={`truncate text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                              {friend.displayName || friend.email}
-                            </p>
-                            <p className={`truncate text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                              @{friend.username || "no-username"} · {friend.id}
-                            </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveFriend(friend.id)}
-                            disabled={friendActionBusyId === `remove-${friend.id}`}
-                            className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
-                              isDarkLibraryTheme ? "border-rose-700/70 text-rose-200 hover:bg-rose-900/25" : "border-rose-200 text-rose-700 hover:bg-rose-50"
-                            }`}
-                          >
-                            {friendActionBusyId === `remove-${friend.id}` ? "Removing..." : "Remove"}
+                        <div key={item.id} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/60" : "border-gray-200 bg-white"}`}>
+                          <button type="button" onClick={() => openFriendProfile(friend.id)} className="w-full text-left">
+                            <p className={`truncate text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{friend.displayName || friend.email}</p>
+                            <p className={`truncate text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>{friend.email}</p>
                           </button>
+                          <div className="mt-2 flex items-center justify-between gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveFriend(friend.id)}
+                              disabled={friendActionBusyId === `remove-${friend.id}`}
+                              className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${isDarkLibraryTheme ? "border-rose-700/70 text-rose-200 hover:bg-rose-900/25" : "border-rose-200 text-rose-700 hover:bg-rose-50"}`}
+                            >
+                              {friendActionBusyId === `remove-${friend.id}` ? "Removing..." : "Remove"}
+                            </button>
+                            {item.permissions?.canViewLibrary === false && (
+                              <span className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Library hidden</span>
+                            )}
+                          </div>
                         </div>
                       );
                     })}
-                    {!friends.length && (
-                      <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>No friends yet.</p>
-                    )}
+                    {!friends.length && <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>No friends yet.</p>}
+                  </div>
+                </article>
+              </div>
+
+              <article className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/70"}`}>
+                {!selectedFriendId ? (
+                  <div className={`rounded-lg border border-dashed px-4 py-8 text-center text-sm ${isDarkLibraryTheme ? "border-slate-700 text-slate-400" : "border-gray-300 text-gray-600"}`}>
+                    Select a friend to view profile, shared library, and activity.
+                  </div>
+                ) : isSelectedFriendLoading ? (
+                  <p className={`text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Loading friend profile...</p>
+                ) : (
+                  <div className="space-y-4">
+                    <div className={`rounded-xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/55" : "border-gray-200 bg-white"}`}>
+                      <p className={`text-base font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
+                        {selectedFriendProfile?.user?.displayName || selectedFriendProfile?.user?.email}
+                      </p>
+                      <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>{selectedFriendProfile?.user?.email}</p>
+                      <p className={`mt-1 text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                        @{selectedFriendProfile?.user?.username || "no-username"} · {selectedFriendProfile?.stats?.mutualFriends || 0} mutual friends
+                      </p>
+                      <div className={`mt-2 grid grid-cols-2 gap-2 text-[11px] ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>
+                        <span>Books: {selectedFriendProfile?.stats?.totalBooks || 0}</span>
+                        <span>Finished: {selectedFriendProfile?.stats?.finishedBooks || 0}</span>
+                      </div>
+                    </div>
+
+                    <div className={`rounded-xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/55" : "border-gray-200 bg-white"}`}>
+                      <h4 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>My privacy for this friend</h4>
+                      <div className="mt-2 space-y-2 text-xs">
+                        {[
+                          { key: "canViewLibrary", label: "Allow view my library" },
+                          { key: "canBorrow", label: "Allow borrow from me" },
+                          { key: "canViewActivity", label: "Allow view my activity" }
+                        ].map((item) => (
+                          <label key={item.key} className="flex items-center justify-between gap-3">
+                            <span className={isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}>{item.label}</span>
+                            <input
+                              type="checkbox"
+                              checked={Boolean(myPolicyForSelectedFriend?.[item.key])}
+                              onChange={(event) => handleSelectedFriendPolicyChange(item.key, event.target.checked)}
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className={`rounded-xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/55" : "border-gray-200 bg-white"}`}>
+                      <h4 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Lend a book to this friend</h4>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <select
+                          value={lendSelectedBookId}
+                          onChange={(event) => setLendSelectedBookId(event.target.value)}
+                          className={`h-9 min-w-[240px] rounded-lg border px-2 text-xs ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800 text-slate-100" : "border-gray-200 bg-white text-gray-900"}`}
+                        >
+                          <option value="">Select one of my books...</option>
+                          {activeBooks.filter((book) => !book?.isDeleted).map((book) => (
+                            <option key={`lend-book-${book.id}`} value={book.id}>{book.title}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={handleLendToSelectedFriend}
+                          disabled={!lendSelectedBookId || friendActionBusyId === `lend-${lendSelectedBookId}`}
+                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${isDarkLibraryTheme ? "bg-blue-700 text-white hover:bg-blue-600" : "bg-blue-600 text-white hover:bg-blue-700"}`}
+                        >
+                          {friendActionBusyId === `lend-${lendSelectedBookId}` ? "Sending..." : "Lend"}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className={`rounded-xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/55" : "border-gray-200 bg-white"}`}>
+                      <h4 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Friend library</h4>
+                      {!selectedFriendPermissions?.canViewLibrary ? (
+                        <p className={`mt-2 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>This friend hides their library.</p>
+                      ) : (
+                        <div className="mt-2 grid gap-2 md:grid-cols-2">
+                          {selectedFriendLibrary.map((book) => (
+                            <div key={`friend-book-${book.id}`} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/60" : "border-gray-200 bg-gray-50"}`}>
+                              <p className={`truncate text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{book.title}</p>
+                              <p className={`truncate text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>{book.author || "Unknown author"}</p>
+                              <div className="mt-2 flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleBorrowFromFriend(selectedFriendId, book.id)}
+                                  disabled={!selectedFriendPermissions?.canBorrow || friendActionBusyId === `borrow-${selectedFriendId}-${book.id}`}
+                                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${isDarkLibraryTheme ? "bg-emerald-700 text-white hover:bg-emerald-600" : "bg-emerald-600 text-white hover:bg-emerald-700"}`}
+                                >
+                                  {friendActionBusyId === `borrow-${selectedFriendId}-${book.id}` ? "Borrowing..." : "Borrow"}
+                                </button>
+                                <span className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>{book.progress || 0}%</span>
+                              </div>
+                            </div>
+                          ))}
+                          {!selectedFriendLibrary.length && (
+                            <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>No visible books.</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className={`rounded-xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/55" : "border-gray-200 bg-white"}`}>
+                      <h4 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>History</h4>
+                      {!selectedFriendPermissions?.canViewActivity ? (
+                        <p className={`mt-2 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>This friend hides activity.</p>
+                      ) : (
+                        <div className="mt-2 space-y-2">
+                          {(selectedFriendHistory?.loanEvents || []).slice(0, 6).map((event) => (
+                            <div key={`friend-event-${event.id}`} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/60" : "border-gray-200 bg-gray-50"}`}>
+                              <p className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
+                                {event.action.replaceAll("_", " ")}
+                              </p>
+                              <p className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                                {event.loan?.book?.title || "Book"} · {new Date(event.createdAt).toLocaleString()}
+                              </p>
+                            </div>
+                          ))}
+                          {!selectedFriendHistory?.loanEvents?.length && (
+                            <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>No history yet.</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </article>
@@ -6492,14 +6707,28 @@ const formatNotificationTimeAgo = (value) => {
                                       <span className={`inline-flex h-5 w-5 items-center justify-center overflow-hidden rounded-full ${isDarkLibraryTheme ? "bg-slate-700 text-slate-200" : "bg-gray-200 text-gray-700"}`}>
                                         {event.actorUser?.avatarUrl ? <img src={event.actorUser.avatarUrl} alt="" className="h-full w-full object-cover" /> : <span>{(event.actorUser?.displayName || event.actorUser?.email || "S").charAt(0).toUpperCase()}</span>}
                                       </span>
-                                      <span className={isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}>{event.actorUser?.displayName || event.actorUser?.email || "System"}</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => openFriendProfile(event.actorUser?.id)}
+                                        disabled={!event.actorUser?.id || event.actorUser?.id === getCurrentUser()?.id}
+                                        className={`${isDarkLibraryTheme ? "text-slate-300 hover:text-blue-300" : "text-gray-700 hover:text-blue-700"} disabled:opacity-70`}
+                                      >
+                                        {event.actorUser?.displayName || event.actorUser?.email || "System"}
+                                      </button>
                                     </span>
                                     <span className={isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}>{"->"}</span>
                                     <span className="inline-flex items-center gap-1">
                                       <span className={`inline-flex h-5 w-5 items-center justify-center overflow-hidden rounded-full ${isDarkLibraryTheme ? "bg-slate-700 text-slate-200" : "bg-gray-200 text-gray-700"}`}>
                                         {event.targetUser?.avatarUrl ? <img src={event.targetUser.avatarUrl} alt="" className="h-full w-full object-cover" /> : <span>{(event.targetUser?.displayName || event.targetUser?.email || "N").charAt(0).toUpperCase()}</span>}
                                       </span>
-                                      <span className={isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}>{event.targetUser?.displayName || event.targetUser?.email || "N/A"}</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => openFriendProfile(event.targetUser?.id)}
+                                        disabled={!event.targetUser?.id || event.targetUser?.id === getCurrentUser()?.id}
+                                        className={`${isDarkLibraryTheme ? "text-slate-300 hover:text-blue-300" : "text-gray-700 hover:text-blue-700"} disabled:opacity-70`}
+                                      >
+                                        {event.targetUser?.displayName || event.targetUser?.email || "N/A"}
+                                      </button>
                                     </span>
                                   </div>
                                 </div>

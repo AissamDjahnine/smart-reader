@@ -329,6 +329,31 @@ export const removeFriend = async (friendUserId) => {
   return data.ok;
 };
 
+export const fetchFriendProfile = async (friendUserId) => {
+  const { data } = await client.get(`/friends/${friendUserId}/profile`);
+  return data.profile;
+};
+
+export const fetchFriendLibrary = async (friendUserId) => {
+  const { data } = await client.get(`/friends/${friendUserId}/library`);
+  return data;
+};
+
+export const fetchFriendHistory = async (friendUserId) => {
+  const { data } = await client.get(`/friends/${friendUserId}/history`);
+  return data;
+};
+
+export const updateFriendPrivacy = async (friendUserId, payload) => {
+  const { data } = await client.patch(`/friends/${friendUserId}/privacy`, payload);
+  return data.privacy;
+};
+
+export const borrowFromFriendLibrary = async (friendUserId, bookId) => {
+  const { data } = await client.post(`/friends/${friendUserId}/borrow/${bookId}`);
+  return data.loan;
+};
+
 export const getFileUrl = (bookId) => {
   const token = getToken();
   if (!API_BASE_URL || !token) return '';
