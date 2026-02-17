@@ -1,9 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { BookOpen, ChevronLeft, ChevronRight, Clock3, Flame, FileText } from "lucide-react";
+import { BookOpen, Clock3, Flame, FileText, ArrowLeftRight, StickyNote, Highlighter } from "lucide-react";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const READING_STATS_PREFS_KEY = "library-reading-statistics-preferences";
 
 const TIME_RANGE_OPTIONS = [
   { value: "7d", label: "Last 7 days" },
@@ -11,27 +10,6 @@ const TIME_RANGE_OPTIONS = [
   { value: "90d", label: "Last 90 days" },
   { value: "all", label: "All time" }
 ];
-
-const HEATMAP_METRIC_OPTIONS = [
-  { value: "hours", label: "Hours" },
-  { value: "pages", label: "Pages" }
-];
-
-const statusColorClasses = {
-  "To read": "bg-amber-500",
-  "In progress": "bg-blue-500",
-  "Finished": "bg-emerald-500",
-  "Not started": "bg-slate-400"
-};
-
-const statusToneClasses = {
-  "To read": "border-amber-200 bg-amber-50 text-amber-700",
-  "In progress": "border-blue-200 bg-blue-50 text-blue-700",
-  "Finished": "border-emerald-200 bg-emerald-50 text-emerald-700",
-  "Not started": "border-gray-200 bg-gray-100 text-gray-700"
-};
-
-const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 const normalizeNumber = (value) => {
   const parsed = Number(value);
@@ -69,14 +47,6 @@ const getTimeRangeStartMs = (range) => {
   return now - (days * DAY_MS);
 };
 
-const getBookStatus = (book) => {
-  const progress = clampProgress(book?.progress);
-  if (progress >= 100) return "Finished";
-  if (progress > 0) return "In progress";
-  if (book?.isToRead) return "To read";
-  return "Not started";
-};
-
 const formatDuration = (seconds, { short = false } = {}) => {
   const safeSeconds = Math.max(0, normalizeNumber(seconds));
   if (!safeSeconds) return short ? "0m" : "0 min";
@@ -103,55 +73,21 @@ const formatHours = (seconds) => {
   return `${Math.round(hours * 10) / 10}h`;
 };
 
-const readStoredPreferences = () => {
-  const fallback = {
-    timeRange: "30d",
-    heatmapMetric: "hours"
-  };
-  if (typeof window === "undefined") return fallback;
-
-  try {
-    const raw = window.localStorage.getItem(READING_STATS_PREFS_KEY);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw);
-    const timeRange = TIME_RANGE_OPTIONS.some((option) => option.value === parsed?.timeRange) ? parsed.timeRange : fallback.timeRange;
-    const heatmapMetric = HEATMAP_METRIC_OPTIONS.some((option) => option.value === parsed?.heatmapMetric) ? parsed.heatmapMetric : fallback.heatmapMetric;
-    return { timeRange, heatmapMetric };
-  } catch {
-    return fallback;
-  }
-};
-
-const getHeatmapCellStyle = (isDarkLibraryTheme, intensity, hasReading) => {
-  if (!hasReading) {
-    return isDarkLibraryTheme
-      ? { backgroundColor: "rgba(30,41,59,0.55)", color: "rgb(148 163 184)" }
-      : { backgroundColor: "rgb(243 244 246)", color: "rgb(107 114 128)" };
-  }
-  const alpha = 0.18 + (Math.min(1, Math.max(0, intensity)) * 0.72);
-  return {
-    backgroundColor: `rgba(37, 99, 235, ${alpha})`,
-    color: intensity >= 0.58 ? "white" : (isDarkLibraryTheme ? "rgb(219 234 254)" : "rgb(30 58 138)")
-  };
-};
-
 export default function LibraryReadingStatisticsSection({
   isDarkLibraryTheme,
   books,
+  borrowedLoans = [],
+  lentLoans = [],
+  notesCount = 0,
+  highlightsCount = 0,
   buildReaderPath,
   onOpenBook,
   onBrowseLibrary
 }) {
   const safeBooks = useMemo(() => (Array.isArray(books) ? books : []), [books]);
-  const [preferences, setPreferences] = useState(() => readStoredPreferences());
-  const [monthOffset, setMonthOffset] = useState(0);
-  const { timeRange, heatmapMetric } = preferences;
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(READING_STATS_PREFS_KEY, JSON.stringify(preferences));
-    }
-  }, [preferences]);
+  const safeBorrowedLoans = useMemo(() => (Array.isArray(borrowedLoans) ? borrowedLoans : []), [borrowedLoans]);
+  const safeLentLoans = useMemo(() => (Array.isArray(lentLoans) ? lentLoans : []), [lentLoans]);
+  const [timeRange, setTimeRange] = useState("30d");
 
   const sessionRows = useMemo(() => (
     safeBooks.flatMap((book) => {
@@ -260,89 +196,23 @@ export default function LibraryReadingStatisticsSection({
       .slice(0, 5);
   }, [safeBooks, sessionsInRange]);
 
-  const statusBreakdown = useMemo(() => {
-    const statusCounts = new Map([
-      ["To read", 0],
-      ["In progress", 0],
-      ["Finished", 0],
-      ["Not started", 0]
-    ]);
-    safeBooks.forEach((book) => {
-      const status = getBookStatus(book);
-      statusCounts.set(status, (statusCounts.get(status) || 0) + 1);
-    });
-    const total = safeBooks.length || 1;
-    return Array.from(statusCounts.entries()).map(([label, count]) => ({
-      label,
-      count,
-      percent: Math.round((count / total) * 100)
-    }));
-  }, [safeBooks]);
-
-  const activeMonth = useMemo(() => {
-    const now = new Date();
-    return new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
-  }, [monthOffset]);
-
-  const monthLabel = useMemo(
-    () => activeMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" }),
-    [activeMonth]
-  );
-
-  const monthHeatmap = useMemo(() => {
-    const year = activeMonth.getFullYear();
-    const month = activeMonth.getMonth();
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-    const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
-    const days = [];
-    let maxValue = 0;
-    let readingDays = 0;
-
-    for (let dayNumber = 1; dayNumber <= daysInMonth; dayNumber += 1) {
-      const date = new Date(year, month, dayNumber);
-      const key = toLocalDateKey(date);
-      const dayData = dailyAllMap.get(key);
-      const seconds = dayData?.seconds || 0;
-      const pages = dayData?.pages || 0;
-      const value = heatmapMetric === "pages" ? pages : (seconds / 3600);
-      if (value > 0) readingDays += 1;
-      maxValue = Math.max(maxValue, value);
-      days.push({
-        key,
-        dayNumber,
-        seconds,
-        pages,
-        value
-      });
-    }
-
-    const cells = [];
-    for (let i = 0; i < firstWeekday; i += 1) {
-      cells.push({ id: `empty-start-${i}`, empty: true });
-    }
-    days.forEach((day) => {
-      const intensity = maxValue > 0 ? day.value / maxValue : 0;
-      cells.push({ ...day, empty: false, intensity });
-    });
-    while (cells.length % 7 !== 0) {
-      cells.push({ id: `empty-end-${cells.length}`, empty: true });
-    }
-
+  const loanStats = useMemo(() => {
+    const borrowedActive = safeBorrowedLoans.filter((loan) => loan?.status === "ACTIVE");
+    const borrowedEnded = safeBorrowedLoans.filter((loan) => ["RETURNED", "EXPIRED", "REVOKED"].includes(String(loan?.status || ""))).length;
+    const lentActive = safeLentLoans.filter((loan) => loan?.status === "ACTIVE").length;
+    const lentEnded = safeLentLoans.filter((loan) => ["RETURNED", "EXPIRED", "REVOKED"].includes(String(loan?.status || ""))).length;
     return {
-      cells,
-      maxValue,
-      readingDays
+      borrowedTotal: safeBorrowedLoans.length,
+      borrowedActive: borrowedActive.length,
+      borrowedEnded,
+      lentTotal: safeLentLoans.length,
+      lentActive,
+      lentEnded
     };
-  }, [activeMonth, dailyAllMap, heatmapMetric]);
+  }, [safeBorrowedLoans, safeLentLoans]);
 
   const hasAnyBooks = safeBooks.length > 0;
   const hasAnyReadingData = sessionRows.length > 0;
-  const canGoToNextMonth = monthOffset < 0;
-
-  const updatePreference = (key, value) => {
-    setPreferences((current) => ({ ...current, [key]: value }));
-  };
-
   return (
     <section
       data-testid="library-reading-statistics-panel"
@@ -356,7 +226,7 @@ export default function LibraryReadingStatisticsSection({
             Reading statistics
           </h2>
           <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-            Simple overview with a monthly reading heatmap.
+            Simple overview of reading progress, loans, and annotations.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -367,32 +237,12 @@ export default function LibraryReadingStatisticsSection({
             <select
               data-testid="reading-stats-range"
               value={timeRange}
-              onChange={(event) => updatePreference("timeRange", event.target.value)}
+              onChange={(event) => setTimeRange(event.target.value)}
               className={`rounded-lg border px-2 py-1 text-sm font-semibold outline-none focus:ring-2 focus:ring-blue-500 ${
                 isDarkLibraryTheme ? "border-slate-600 bg-slate-800 text-slate-100" : "border-gray-200 bg-white text-slate-700"
               }`}
             >
               {TIME_RANGE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className={`rounded-xl border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900" : "border-gray-200 bg-white"}`}>
-            <span className={`mr-2 text-xs font-semibold uppercase tracking-[0.12em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-              Heatmap
-            </span>
-            <select
-              data-testid="reading-stats-heatmap-metric"
-              value={heatmapMetric}
-              onChange={(event) => updatePreference("heatmapMetric", event.target.value)}
-              className={`rounded-lg border px-2 py-1 text-sm font-semibold outline-none focus:ring-2 focus:ring-blue-500 ${
-                isDarkLibraryTheme ? "border-slate-600 bg-slate-800 text-slate-100" : "border-gray-200 bg-white text-slate-700"
-              }`}
-            >
-              {HEATMAP_METRIC_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -415,7 +265,7 @@ export default function LibraryReadingStatisticsSection({
                 No reading data yet.
               </h3>
               <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-blue-200/90" : "text-blue-700"}`}>
-                Start a session and this page will show trends, streaks, and heatmap activity.
+                Start a reading session and this page will show your key reading and collaboration stats.
               </p>
             </div>
             {hasAnyBooks ? (
@@ -479,114 +329,73 @@ export default function LibraryReadingStatisticsSection({
         <div className={`${isDarkLibraryTheme ? "workspace-card-dark" : "workspace-card"} p-4`}>
           <div className="flex items-center justify-between">
             <span className={`text-xs font-semibold uppercase tracking-[0.12em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-              Reading days
+              Books tracked
             </span>
             <BookOpen size={14} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
           </div>
           <div className={`mt-2 text-2xl font-extrabold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
-            {monthHeatmap.readingDays}
+            {safeBooks.length}
           </div>
-          <div className={`mt-1 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>in {monthLabel}</div>
+          <div className={`mt-1 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>library books</div>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className={`${isDarkLibraryTheme ? "workspace-card-dark" : "workspace-card"} p-4`}>
+          <div className="flex items-center justify-between">
+            <span className={`text-xs font-semibold uppercase tracking-[0.12em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+              Borrowed
+            </span>
+            <ArrowLeftRight size={14} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
+          </div>
+          <div className={`mt-2 text-2xl font-extrabold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+            {loanStats.borrowedActive}
+          </div>
+          <div className={`mt-1 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+            active of {loanStats.borrowedTotal} ({loanStats.borrowedEnded} ended)
+          </div>
+        </div>
+
+        <div className={`${isDarkLibraryTheme ? "workspace-card-dark" : "workspace-card"} p-4`}>
+          <div className="flex items-center justify-between">
+            <span className={`text-xs font-semibold uppercase tracking-[0.12em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+              Lent
+            </span>
+            <ArrowLeftRight size={14} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
+          </div>
+          <div className={`mt-2 text-2xl font-extrabold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+            {loanStats.lentActive}
+          </div>
+          <div className={`mt-1 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+            active of {loanStats.lentTotal} ({loanStats.lentEnded} ended)
+          </div>
+        </div>
+
+        <div className={`${isDarkLibraryTheme ? "workspace-card-dark" : "workspace-card"} p-4`}>
+          <div className="flex items-center justify-between">
+            <span className={`text-xs font-semibold uppercase tracking-[0.12em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+              Notes
+            </span>
+            <StickyNote size={14} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
+          </div>
+          <div className={`mt-2 text-2xl font-extrabold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+            {Math.max(0, Number(notesCount) || 0)}
+          </div>
+        </div>
+
+        <div className={`${isDarkLibraryTheme ? "workspace-card-dark" : "workspace-card"} p-4`}>
+          <div className="flex items-center justify-between">
+            <span className={`text-xs font-semibold uppercase tracking-[0.12em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+              Highlights
+            </span>
+            <Highlighter size={14} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
+          </div>
+          <div className={`mt-2 text-2xl font-extrabold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+            {Math.max(0, Number(highlightsCount) || 0)}
+          </div>
         </div>
       </div>
 
-      <div className={`mt-4 ${isDarkLibraryTheme ? "workspace-card-dark" : "workspace-card"} p-4`}>
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <div>
-            <h3 className={`text-sm font-bold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
-              Monthly heatmap
-            </h3>
-            <p className={`mt-1 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-              Darker cells mean more {heatmapMetric === "pages" ? "pages read" : "hours read"} on that day.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              aria-label="Previous month"
-              onClick={() => setMonthOffset((current) => current - 1)}
-              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg border ${
-                isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-200 text-gray-700 hover:bg-gray-50"
-              }`}
-            >
-              <ChevronLeft size={16} />
-            </button>
-            <div className={`min-w-[130px] text-center text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-200" : "text-gray-800"}`}>
-              <span data-testid="reading-stats-heatmap-month">{monthLabel}</span>
-            </div>
-            <button
-              type="button"
-              aria-label="Next month"
-              disabled={!canGoToNextMonth}
-              onClick={() => setMonthOffset((current) => Math.min(0, current + 1))}
-              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg border ${
-                canGoToNextMonth
-                  ? (isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-200 text-gray-700 hover:bg-gray-50")
-                  : "cursor-not-allowed border-gray-200 text-gray-300"
-              }`}
-            >
-              <ChevronRight size={16} />
-            </button>
-          </div>
-        </div>
-
-        <div data-testid="reading-stats-monthly-heatmap" className="grid grid-cols-7 gap-2">
-          {WEEKDAY_LABELS.map((label) => (
-            <div
-              key={label}
-              className={`pb-1 text-center text-[11px] font-semibold uppercase tracking-[0.12em] ${
-                isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"
-              }`}
-            >
-              {label}
-            </div>
-          ))}
-          {monthHeatmap.cells.map((cell) => {
-            if (cell.empty) {
-              return <div key={cell.id} className="h-11 rounded-lg" aria-hidden="true" />;
-            }
-            const hasReading = cell.value > 0;
-            const style = getHeatmapCellStyle(isDarkLibraryTheme, cell.intensity, hasReading);
-            const dayDate = fromLocalDateKey(cell.key);
-            const tooltipDate = dayDate
-              ? dayDate.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
-              : cell.key;
-            const metricValue = heatmapMetric === "pages"
-              ? `${Math.round(cell.pages)} pages`
-              : `${formatDuration(cell.seconds, { short: true })}`;
-            return (
-              <div
-                key={cell.key}
-                data-testid="reading-heatmap-cell"
-                data-date-key={cell.key}
-                data-intensity={String(cell.intensity)}
-                data-value={String(cell.value)}
-                title={`${tooltipDate}: ${metricValue}`}
-                className="flex h-11 items-center justify-center rounded-lg border border-transparent text-sm font-semibold transition-transform hover:scale-[1.03]"
-                style={style}
-              >
-                {cell.dayNumber}
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="mt-3 flex items-center justify-end gap-2">
-          <span className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Less</span>
-          {[0.2, 0.4, 0.6, 0.8, 1].map((sample) => (
-            <span
-              key={`legend-${sample}`}
-              className="h-3 w-6 rounded-sm"
-              style={{ backgroundColor: `rgba(37, 99, 235, ${sample})` }}
-              aria-hidden="true"
-            />
-          ))}
-          <span className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>More</span>
-        </div>
-      </div>
-
-      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+      <div className="mt-4">
         <div className={`${isDarkLibraryTheme ? "workspace-card-dark" : "workspace-card"} p-4`}>
           <div className="flex items-center justify-between gap-2">
             <h3 className={`text-sm font-bold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>Top books</h3>
@@ -627,30 +436,6 @@ export default function LibraryReadingStatisticsSection({
               ))}
             </div>
           )}
-        </div>
-
-        <div className={`${isDarkLibraryTheme ? "workspace-card-dark" : "workspace-card"} p-4`}>
-          <div className="flex items-center justify-between gap-2">
-            <h3 className={`text-sm font-bold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>Status distribution</h3>
-            <BookOpen size={15} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
-          </div>
-          <div className="mt-4 space-y-3">
-            {statusBreakdown.map((status) => (
-              <div key={status.label}>
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusToneClasses[status.label]}`}>
-                    {status.label}
-                  </span>
-                  <span className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>
-                    {status.count} ({status.percent}%)
-                  </span>
-                </div>
-                <div className={`h-2 rounded-full ${isDarkLibraryTheme ? "bg-slate-800" : "bg-gray-100"}`}>
-                  <div className={`h-full rounded-full ${statusColorClasses[status.label]}`} style={{ width: `${status.percent}%` }} />
-                </div>
-              </div>
-            ))}
-          </div>
         </div>
       </div>
     </section>

@@ -5099,8 +5099,13 @@ const formatNotificationTimeAgo = (value) => {
           <LibraryReadingStatisticsSection
             isDarkLibraryTheme={isDarkLibraryTheme}
             books={activeBooks}
+            borrowedLoans={borrowedLoans}
+            lentLoans={lentLoans}
+            notesCount={notesCenterEntries.length}
+            highlightsCount={highlightsCenterEntries.length}
             buildReaderPath={buildReaderPath}
             onOpenBook={handleOpenBook}
+            onBrowseLibrary={() => handleSidebarSectionSelect("library")}
           />
         )}
 
