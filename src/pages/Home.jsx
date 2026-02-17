@@ -1364,6 +1364,20 @@ export default function Home() {
         canBorrow: true,
         canViewActivity: true
       });
+    } catch (err) {
+      setSelectedFriendProfile(null);
+      setSelectedFriendLibrary([]);
+      setSelectedFriendHistory({ recentReads: [], loanEvents: [] });
+      setSelectedFriendPermissions({
+        canViewLibrary: false,
+        canBorrow: false,
+        canViewActivity: false
+      });
+      showFeedbackToast({
+        tone: "error",
+        title: "Profile unavailable",
+        message: err?.response?.data?.error || "This profile is not available yet."
+      });
     } finally {
       setIsSelectedFriendLoading(false);
     }
@@ -4625,6 +4639,34 @@ const formatNotificationTimeAgo = (value) => {
   );
   const filteredNotifications = notificationView === "unread" ? unreadNotifications : visibleNotifications;
   const notificationCount = unreadNotifications.length;
+  const friendIds = useMemo(
+    () => new Set((friends || []).map((row) => row?.friend?.id).filter(Boolean)),
+    [friends]
+  );
+  const outgoingFriendRequestIds = useMemo(
+    () => new Set((outgoingFriendRequests || []).map((row) => row?.toUser?.id).filter(Boolean)),
+    [outgoingFriendRequests]
+  );
+  const incomingFriendRequestIds = useMemo(
+    () => new Set((incomingFriendRequests || []).map((row) => row?.fromUser?.id).filter(Boolean)),
+    [incomingFriendRequests]
+  );
+  const getFriendSearchState = (userId) => {
+    if (!userId) return "add";
+    if (friendIds.has(userId)) return "friend";
+    if (outgoingFriendRequestIds.has(userId)) return "sent";
+    if (incomingFriendRequestIds.has(userId)) return "incoming";
+    return "add";
+  };
+  const renderMiniAvatar = (person, sizeClass = "h-8 w-8", textClass = "text-xs") => {
+    const label = person?.displayName || person?.email || "Reader";
+    const initial = (label || "R").charAt(0).toUpperCase();
+    return (
+      <span className={`${sizeClass} inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full border ${isDarkLibraryTheme ? "border-slate-600 bg-slate-800 text-slate-200" : "border-gray-200 bg-gray-100 text-gray-700"} ${textClass} font-semibold`}>
+        {person?.avatarUrl ? <img src={person.avatarUrl} alt="" className="h-full w-full object-cover" /> : initial}
+      </span>
+    );
+  };
   const profileLabel = (accountProfile?.firstName || accountProfile?.email || "Reader").trim();
   const profileAvatarUrl = (accountProfile?.avatarUrl || "").trim();
   const profileInitials = (() => {
@@ -4852,6 +4894,14 @@ const formatNotificationTimeAgo = (value) => {
       return;
     }
 
+    if (item.actionType === "open-friends") {
+      handleSidebarSectionSelect("friends");
+      if (item.actionTargetId) {
+        openFriendProfile(item.actionTargetId);
+      }
+      return;
+    }
+
     handleSidebarSectionSelect("library");
   };
 
@@ -4880,7 +4930,7 @@ const formatNotificationTimeAgo = (value) => {
     setActiveNotificationMenuId("");
     setIsNotificationsOpen(false);
 
-    if (item.actionType === "open-inbox" || item.actionType === "open-borrowed" || item.actionType === "open-lent" || item.actionType === "open-trash") {
+    if (item.actionType === "open-inbox" || item.actionType === "open-borrowed" || item.actionType === "open-lent" || item.actionType === "open-trash" || item.actionType === "open-friends") {
       handleOpenNotificationTarget(item);
       return;
     }
@@ -6020,9 +6070,12 @@ const formatNotificationTimeAgo = (value) => {
           />
         )}
         {isFriendsSection && !isTrashSection && (
-          <section className={`space-y-4 rounded-2xl border p-5 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "border-gray-200 bg-white"}`}>
+          <section className={`space-y-4 rounded-2xl border p-5 shadow-sm ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "border-gray-200 bg-white"}`}>
             <div className="flex items-center justify-between gap-3">
-              <h2 className={`text-lg font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Friends Hub</h2>
+              <div>
+                <h2 className={`text-xl font-semibold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Friends Hub</h2>
+                <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Find readers, lend books, and follow friend activity.</p>
+              </div>
               <button
                 type="button"
                 onClick={() => {
@@ -6037,7 +6090,7 @@ const formatNotificationTimeAgo = (value) => {
 
             <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
               <div className="space-y-4">
-                <article className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/70"}`}>
+                <article className={`rounded-2xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/55" : "border-gray-200 bg-gray-50/70"}`}>
                   <label className={`text-xs font-semibold uppercase tracking-[0.12em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
                     Search by name, email, username, or user id
                   </label>
@@ -6051,47 +6104,61 @@ const formatNotificationTimeAgo = (value) => {
                     }`}
                   />
                   <div className="mt-3 space-y-2">
-                    {friendSearchResults.slice(0, 6).map((user) => (
-                      <div key={`search-user-${user.id}`} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/60" : "border-gray-200 bg-white"}`}>
-                        <button
-                          type="button"
-                          onClick={() => openFriendProfile(user.id)}
-                          className="w-full text-left"
-                        >
-                          <p className={`truncate text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                            {user.displayName || user.username || user.email}
-                          </p>
-                          <p className={`truncate text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>
-                            {user.email}
-                          </p>
-                          <p className={`truncate text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                            @{user.username || "no-username"} · {user.id}
-                          </p>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleSendFriendRequest(user.id)}
-                          disabled={friendActionBusyId === `send-${user.id}`}
-                          className={`mt-2 rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
-                            isDarkLibraryTheme ? "bg-blue-700 text-white hover:bg-blue-600" : "bg-blue-600 text-white hover:bg-blue-700"
-                          }`}
-                        >
-                          {friendActionBusyId === `send-${user.id}` ? "Sending..." : "Add friend"}
-                        </button>
-                      </div>
-                    ))}
+                    {friendSearchResults.slice(0, 6).map((user) => {
+                      const searchState = getFriendSearchState(user.id);
+                      return (
+                        <div key={`search-user-${user.id}`} className={`rounded-xl border px-3 py-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/75" : "border-gray-200 bg-white"}`}>
+                          <div className="flex items-start justify-between gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (searchState === "friend") openFriendProfile(user.id);
+                              }}
+                              className={`flex min-w-0 flex-1 items-start gap-3 text-left ${searchState === "friend" ? "" : "cursor-default"}`}
+                            >
+                              {renderMiniAvatar(user, "h-10 w-10", "text-sm")}
+                              <span className="min-w-0">
+                                <span className={`block truncate text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
+                                  {user.displayName || user.username || user.email}
+                                </span>
+                                <span className={`block truncate text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>{user.email}</span>
+                                <span className={`block truncate text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>@{user.username || "no-username"}</span>
+                              </span>
+                            </button>
+                            {searchState === "add" && (
+                              <button
+                                type="button"
+                                onClick={() => handleSendFriendRequest(user.id)}
+                                disabled={friendActionBusyId === `send-${user.id}`}
+                                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
+                                  isDarkLibraryTheme ? "bg-blue-700 text-white hover:bg-blue-600" : "bg-blue-600 text-white hover:bg-blue-700"
+                                }`}
+                              >
+                                {friendActionBusyId === `send-${user.id}` ? "Sending..." : "Add friend"}
+                              </button>
+                            )}
+                            {searchState === "sent" && <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${isDarkLibraryTheme ? "bg-blue-900/35 text-blue-200" : "bg-blue-50 text-blue-700"}`}>Sent</span>}
+                            {searchState === "friend" && <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${isDarkLibraryTheme ? "bg-emerald-900/35 text-emerald-200" : "bg-emerald-50 text-emerald-700"}`}>Friend</span>}
+                            {searchState === "incoming" && <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${isDarkLibraryTheme ? "bg-amber-900/35 text-amber-200" : "bg-amber-50 text-amber-700"}`}>Respond in incoming</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
                     {isFriendSearchLoading && <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Searching...</p>}
                   </div>
                 </article>
 
-                <article className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/70"}`}>
+                <article className={`rounded-2xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/55" : "border-gray-200 bg-gray-50/70"}`}>
                   <h3 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Incoming requests</h3>
                   <div className="mt-2 space-y-2">
                     {incomingFriendRequests.map((request) => (
-                      <div key={request.id} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/60" : "border-gray-200 bg-white"}`}>
-                        <button type="button" onClick={() => openFriendProfile(request.fromUser?.id)} className="w-full text-left">
-                          <p className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{request.fromUser?.displayName || request.fromUser?.email}</p>
-                          <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>{request.fromUser?.email}</p>
+                      <div key={request.id} className={`rounded-xl border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/75" : "border-gray-200 bg-white"}`}>
+                        <button type="button" onClick={() => openFriendProfile(request.fromUser?.id)} className="flex w-full items-center gap-3 text-left">
+                          {renderMiniAvatar(request.fromUser, "h-9 w-9", "text-xs")}
+                          <span className="min-w-0">
+                            <span className={`block truncate text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{request.fromUser?.displayName || request.fromUser?.email}</span>
+                            <span className={`block truncate text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>{request.fromUser?.email}</span>
+                          </span>
                         </button>
                         <div className="mt-2 flex items-center gap-2">
                           <button type="button" onClick={() => handleAcceptFriendRequest(request.id)} disabled={friendActionBusyId === `accept-${request.id}`} className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${isDarkLibraryTheme ? "bg-emerald-700 text-white hover:bg-emerald-600" : "bg-emerald-600 text-white hover:bg-emerald-700"}`}>
@@ -6107,16 +6174,19 @@ const formatNotificationTimeAgo = (value) => {
                   </div>
                 </article>
 
-                <article className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/70"}`}>
+                <article className={`rounded-2xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/55" : "border-gray-200 bg-gray-50/70"}`}>
                   <h3 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>My friends</h3>
                   <div className="mt-2 space-y-2">
                     {friends.map((item) => {
                       const friend = item.friend || {};
                       return (
-                        <div key={item.id} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/60" : "border-gray-200 bg-white"}`}>
-                          <button type="button" onClick={() => openFriendProfile(friend.id)} className="w-full text-left">
-                            <p className={`truncate text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{friend.displayName || friend.email}</p>
-                            <p className={`truncate text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>{friend.email}</p>
+                        <div key={item.id} className={`rounded-xl border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/75" : "border-gray-200 bg-white"}`}>
+                          <button type="button" onClick={() => openFriendProfile(friend.id)} className="flex w-full items-center gap-3 text-left">
+                            {renderMiniAvatar(friend, "h-9 w-9", "text-xs")}
+                            <span className="min-w-0">
+                              <span className={`block truncate text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{friend.displayName || friend.email}</span>
+                              <span className={`block truncate text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>{friend.email}</span>
+                            </span>
                           </button>
                           <div className="mt-2 flex items-center justify-between gap-2">
                             <button
@@ -6139,38 +6209,39 @@ const formatNotificationTimeAgo = (value) => {
                 </article>
               </div>
 
-              <article className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/70"}`}>
+              <article className={`rounded-2xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/55" : "border-gray-200 bg-gray-50/70"}`}>
                 {!selectedFriendId ? (
                   <div className={`rounded-lg border border-dashed px-4 py-8 text-center text-sm ${isDarkLibraryTheme ? "border-slate-700 text-slate-400" : "border-gray-300 text-gray-600"}`}>
-                    Select a friend to view profile, shared library, and activity.
+                    Select a friend from the list to open their profile and library.
                   </div>
                 ) : isSelectedFriendLoading ? (
                   <p className={`text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Loading friend profile...</p>
                 ) : (
                   <div className="space-y-4">
-                    <div className={`rounded-xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/55" : "border-gray-200 bg-white"}`}>
-                      <p className={`text-base font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                        {selectedFriendProfile?.user?.displayName || selectedFriendProfile?.user?.email}
-                      </p>
-                      <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>{selectedFriendProfile?.user?.email}</p>
-                      <p className={`mt-1 text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                        @{selectedFriendProfile?.user?.username || "no-username"} · {selectedFriendProfile?.stats?.mutualFriends || 0} mutual friends
-                      </p>
-                      <div className={`mt-2 grid grid-cols-2 gap-2 text-[11px] ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>
-                        <span>Books: {selectedFriendProfile?.stats?.totalBooks || 0}</span>
-                        <span>Finished: {selectedFriendProfile?.stats?.finishedBooks || 0}</span>
+                    <div className={`rounded-2xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/75" : "border-gray-200 bg-white"}`}>
+                      <div className="flex items-center gap-3">
+                        {renderMiniAvatar(selectedFriendProfile?.user, "h-12 w-12", "text-sm")}
+                        <div className="min-w-0">
+                          <p className={`truncate text-base font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{selectedFriendProfile?.user?.displayName || selectedFriendProfile?.user?.email}</p>
+                          <p className={`truncate text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>{selectedFriendProfile?.user?.email}</p>
+                          <p className={`mt-0.5 truncate text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>@{selectedFriendProfile?.user?.username || "no-username"} · {selectedFriendProfile?.stats?.mutualFriends || 0} mutual friends</p>
+                        </div>
+                      </div>
+                      <div className={`mt-3 grid grid-cols-2 gap-2 text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>
+                        <span className={`rounded-lg px-2 py-1 ${isDarkLibraryTheme ? "bg-slate-800" : "bg-gray-100"}`}>Books: {selectedFriendProfile?.stats?.totalBooks || 0}</span>
+                        <span className={`rounded-lg px-2 py-1 ${isDarkLibraryTheme ? "bg-slate-800" : "bg-gray-100"}`}>Finished: {selectedFriendProfile?.stats?.finishedBooks || 0}</span>
                       </div>
                     </div>
 
-                    <div className={`rounded-xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/55" : "border-gray-200 bg-white"}`}>
+                    <div className={`rounded-2xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/75" : "border-gray-200 bg-white"}`}>
                       <h4 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>My privacy for this friend</h4>
-                      <div className="mt-2 space-y-2 text-xs">
+                      <div className="mt-2 grid gap-2 text-xs sm:grid-cols-3">
                         {[
                           { key: "canViewLibrary", label: "Allow view my library" },
                           { key: "canBorrow", label: "Allow borrow from me" },
                           { key: "canViewActivity", label: "Allow view my activity" }
                         ].map((item) => (
-                          <label key={item.key} className="flex items-center justify-between gap-3">
+                          <label key={item.key} className={`flex items-center justify-between gap-2 rounded-lg border px-2 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800" : "border-gray-200 bg-gray-50"}`}>
                             <span className={isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}>{item.label}</span>
                             <input
                               type="checkbox"
@@ -6182,50 +6253,59 @@ const formatNotificationTimeAgo = (value) => {
                       </div>
                     </div>
 
-                    <div className={`rounded-xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/55" : "border-gray-200 bg-white"}`}>
+                    <div className={`rounded-2xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/75" : "border-gray-200 bg-white"}`}>
                       <h4 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Lend a book to this friend</h4>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
                         <select
                           value={lendSelectedBookId}
                           onChange={(event) => setLendSelectedBookId(event.target.value)}
-                          className={`h-9 min-w-[240px] rounded-lg border px-2 text-xs ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800 text-slate-100" : "border-gray-200 bg-white text-gray-900"}`}
+                          className={`h-10 min-w-[280px] rounded-lg border px-2 text-xs ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800 text-slate-100" : "border-gray-200 bg-white text-gray-900"}`}
                         >
                           <option value="">Select one of my books...</option>
                           {activeBooks.filter((book) => !book?.isDeleted).map((book) => (
-                            <option key={`lend-book-${book.id}`} value={book.id}>{book.title}</option>
+                            <option key={`lend-book-${book.id}`} value={book.id}>
+                              {(book.title || "Untitled")} ({book.author || "Unknown author"})
+                            </option>
                           ))}
                         </select>
                         <button
                           type="button"
                           onClick={handleLendToSelectedFriend}
                           disabled={!lendSelectedBookId || friendActionBusyId === `lend-${lendSelectedBookId}`}
-                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${isDarkLibraryTheme ? "bg-blue-700 text-white hover:bg-blue-600" : "bg-blue-600 text-white hover:bg-blue-700"}`}
+                          className={`rounded-lg px-3 py-2 text-xs font-semibold transition disabled:opacity-50 ${isDarkLibraryTheme ? "bg-blue-700 text-white hover:bg-blue-600" : "bg-blue-600 text-white hover:bg-blue-700"}`}
                         >
                           {friendActionBusyId === `lend-${lendSelectedBookId}` ? "Sending..." : "Lend"}
                         </button>
                       </div>
                     </div>
 
-                    <div className={`rounded-xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/55" : "border-gray-200 bg-white"}`}>
+                    <div className={`rounded-2xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/75" : "border-gray-200 bg-white"}`}>
                       <h4 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Friend library</h4>
                       {!selectedFriendPermissions?.canViewLibrary ? (
                         <p className={`mt-2 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>This friend hides their library.</p>
                       ) : (
-                        <div className="mt-2 grid gap-2 md:grid-cols-2">
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                           {selectedFriendLibrary.map((book) => (
-                            <div key={`friend-book-${book.id}`} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/60" : "border-gray-200 bg-gray-50"}`}>
-                              <p className={`truncate text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{book.title}</p>
-                              <p className={`truncate text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>{book.author || "Unknown author"}</p>
-                              <div className="mt-2 flex items-center gap-2">
+                            <div key={`friend-book-${book.id}`} className={`overflow-hidden rounded-xl border ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/80" : "border-gray-200 bg-gray-50"}`}>
+                              <div className={`aspect-[3/4] relative ${isDarkLibraryTheme ? "bg-slate-800" : "bg-gray-100"}`}>
+                                {book.cover ? (
+                                  <img src={book.cover} alt={book.title || "Book cover"} className="h-full w-full object-cover" />
+                                ) : (
+                                  <div className={`flex h-full w-full items-center justify-center text-xs ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}`}>No cover</div>
+                                )}
+                                <span className={`absolute bottom-2 right-2 rounded-md px-1.5 py-0.5 text-[10px] font-semibold ${isDarkLibraryTheme ? "bg-slate-900/80 text-slate-100" : "bg-black/70 text-white"}`}>{book.progress || 0}%</span>
+                              </div>
+                              <div className="space-y-2 p-3">
+                                <p className={`line-clamp-1 text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{book.title || "Untitled"}</p>
+                                <p className={`line-clamp-1 text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>{book.author || "Unknown author"}</p>
                                 <button
                                   type="button"
                                   onClick={() => handleBorrowFromFriend(selectedFriendId, book.id)}
                                   disabled={!selectedFriendPermissions?.canBorrow || friendActionBusyId === `borrow-${selectedFriendId}-${book.id}`}
-                                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${isDarkLibraryTheme ? "bg-emerald-700 text-white hover:bg-emerald-600" : "bg-emerald-600 text-white hover:bg-emerald-700"}`}
+                                  className={`w-full rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${isDarkLibraryTheme ? "bg-emerald-700 text-white hover:bg-emerald-600" : "bg-emerald-600 text-white hover:bg-emerald-700"}`}
                                 >
                                   {friendActionBusyId === `borrow-${selectedFriendId}-${book.id}` ? "Borrowing..." : "Borrow"}
                                 </button>
-                                <span className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>{book.progress || 0}%</span>
                               </div>
                             </div>
                           ))}
@@ -6236,20 +6316,21 @@ const formatNotificationTimeAgo = (value) => {
                       )}
                     </div>
 
-                    <div className={`rounded-xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/55" : "border-gray-200 bg-white"}`}>
+                    <div className={`rounded-2xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/75" : "border-gray-200 bg-white"}`}>
                       <h4 className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>History</h4>
                       {!selectedFriendPermissions?.canViewActivity ? (
                         <p className={`mt-2 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>This friend hides activity.</p>
                       ) : (
                         <div className="mt-2 space-y-2">
-                          {(selectedFriendHistory?.loanEvents || []).slice(0, 6).map((event) => (
-                            <div key={`friend-event-${event.id}`} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/60" : "border-gray-200 bg-gray-50"}`}>
-                              <p className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                                {event.action.replaceAll("_", " ")}
-                              </p>
-                              <p className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                                {event.loan?.book?.title || "Book"} · {new Date(event.createdAt).toLocaleString()}
-                              </p>
+                          {(selectedFriendHistory?.loanEvents || []).slice(0, 8).map((event) => (
+                            <div key={`friend-event-${event.id}`} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/85" : "border-gray-200 bg-gray-50"}`}>
+                              <div className="flex items-center gap-2">
+                                {renderMiniAvatar(event.actorUser, "h-7 w-7", "text-[11px]")}
+                                <div className="min-w-0">
+                                  <p className={`truncate text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{event.action.replaceAll("_", " ")}</p>
+                                  <p className={`truncate text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>{event.loan?.book?.title || "Book"} · {new Date(event.createdAt).toLocaleString()}</p>
+                                </div>
+                              </div>
                             </div>
                           ))}
                           {!selectedFriendHistory?.loanEvents?.length && (
