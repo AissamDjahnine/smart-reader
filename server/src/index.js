@@ -1,0 +1,2200 @@
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
+import dotenv from 'dotenv';
+import express from 'express';
+import cors from 'cors';
+import multer from 'multer';
+import { z } from 'zod';
+import { prisma } from './prisma.js';
+import { config } from './config.js';
+import { comparePassword, hashPassword, signToken } from './auth.js';
+import { requireAuth, requireBookAccess, isSafeRelativePath } from './middleware.js';
+import { clampPercent, ensureEpubHash, statusFromProgress, toBookResponse } from './utils.js';
+import {
+  LOAN_EXPORT_WINDOW_DAYS,
+  ensureBookEntitlement,
+  resolveLoanAnnotationScope,
+  buildAnnotationAccessWhere,
+  requireBorrowCapability,
+  expireLoanIfNeeded
+} from './loanPolicy.js';
+import { formatNotification, toJson, upsertUserNotification } from './notifications.js';
+
+dotenv.config();
+
+const app = express();
+app.use(cors({ origin: true, credentials: false }));
+app.use(express.json({ limit: '10mb' }));
+
+fs.mkdirSync(config.uploadsDir, { recursive: true });
+
+const sanitize = (value = '') => String(value).toLowerCase().replace(/[^a-z0-9._-]/g, '_');
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, config.uploadsDir),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || '.epub') || '.epub';
+    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${sanitize(file.originalname)}${ext}`);
+  }
+});
+const upload = multer({ storage });
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 }
+});
+
+const getBaseUrl = (req) => {
+  if (config.appBaseUrl) return config.appBaseUrl.replace(/\/$/, '');
+  return `${req.protocol}://${req.get('host')}`;
+};
+
+const includeBookGraph = {
+  userBooks: true
+};
+
+const includeShareGraph = {
+  book: true,
+  fromUser: { select: { id: true, email: true, displayName: true, avatarUrl: true } },
+  toUser: { select: { id: true, email: true, displayName: true, avatarUrl: true } }
+};
+
+const includeLoanGraph = {
+  book: true,
+  lender: { select: { id: true, email: true, displayName: true, avatarUrl: true } },
+  borrower: { select: { id: true, email: true, displayName: true, avatarUrl: true } }
+};
+const TRASH_RETENTION_DAYS = 30;
+
+const toLoanResponse = (loan) => ({
+  id: loan.id,
+  status: loan.status,
+  message: loan.message || null,
+  durationDays: loan.durationDays,
+  graceDays: loan.graceDays,
+  requestedAt: loan.requestedAt,
+  acceptedAt: loan.acceptedAt || null,
+  dueAt: loan.dueAt || null,
+  returnedAt: loan.returnedAt || null,
+  revokedAt: loan.revokedAt || null,
+  expiredAt: loan.expiredAt || null,
+  exportAvailableUntil: loan.exportAvailableUntil || null,
+  createdUserBookOnAccept: Boolean(loan.createdUserBookOnAccept),
+  permissions: {
+    canAddHighlights: loan.canAddHighlights,
+    canEditHighlights: loan.canEditHighlights,
+    canAddNotes: loan.canAddNotes,
+    canEditNotes: loan.canEditNotes,
+    annotationVisibility: loan.annotationVisibility,
+    shareLenderAnnotations: Boolean(loan.shareLenderAnnotations)
+  },
+  book: loan.book ? toBookResponse({ ...loan.book, userBooks: [] }, null, '') : null,
+  lender: loan.lender ? toUserResponse(loan.lender) : null,
+  borrower: loan.borrower ? toUserResponse(loan.borrower) : null
+});
+
+const buildLoanAuditDetails = (value = null) => {
+  if (!value) return null;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
+};
+
+const addLoanAuditEvent = async (tx, payload) => {
+  const {
+    loanId,
+    actorUserId = null,
+    targetUserId = null,
+    action,
+    details = null
+  } = payload;
+  await tx.loanAuditEvent.create({
+    data: {
+      loanId,
+      actorUserId,
+      targetUserId,
+      action,
+      detailsJson: buildLoanAuditDetails(details)
+    }
+  });
+};
+
+
+const toUserResponse = (user) => ({
+  id: user.id,
+  email: user.email,
+  displayName: user.displayName || null,
+  avatarUrl: user.avatarUrl || null,
+  loanReminderDays: Number.isInteger(user.loanReminderDays) ? user.loanReminderDays : 3
+});
+
+const parseExpectedRevision = (req) => {
+  const header = req.headers['if-match-revision'];
+  const raw = Array.isArray(header) ? header[0] : header;
+  if (raw === undefined || raw === null || raw === '') return null;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) return null;
+  return value;
+};
+
+const ensureLoanTemplate = async (db, userId) => {
+  const existing = await db.userLoanTemplate.findUnique({ where: { userId } });
+  if (existing) return existing;
+  return db.userLoanTemplate.create({
+    data: {
+      userId
+    }
+  });
+};
+
+const toTemplateResponse = (row) => ({
+  id: row.id,
+  name: row.name,
+  durationDays: row.durationDays,
+  graceDays: row.graceDays,
+  remindBeforeDays: row.remindBeforeDays,
+  permissions: {
+    canAddHighlights: row.canAddHighlights,
+    canEditHighlights: row.canEditHighlights,
+    canAddNotes: row.canAddNotes,
+    canEditNotes: row.canEditNotes,
+    annotationVisibility: row.annotationVisibility,
+    shareLenderAnnotations: Boolean(row.shareLenderAnnotations)
+  }
+});
+
+const emitLoanNotification = async (db, payload) => {
+  const {
+    userId,
+    eventKey,
+    kind,
+    title,
+    message,
+    loanId = null,
+    actionType = null,
+    actionTargetId = null,
+    meta = null
+  } = payload;
+  await upsertUserNotification(db, {
+    userId,
+    eventKey,
+    loanId,
+    kind,
+    title,
+    message,
+    payloadJson: toJson(meta),
+    actionType,
+    actionTargetId
+  });
+};
+
+const purgeExpiredUserTrash = async (db, userId, retentionDays = TRASH_RETENTION_DAYS) => {
+  if (!userId) return 0;
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+  const { count } = await db.userBook.deleteMany({
+    where: {
+      userId,
+      isDeleted: true,
+      deletedAt: { not: null, lte: cutoff }
+    }
+  });
+  return count || 0;
+};
+
+const toRenewalResponse = (row) => ({
+  id: row.id,
+  loanId: row.loanId,
+  status: row.status,
+  requestedExtraDays: row.requestedExtraDays,
+  previousDueAt: row.previousDueAt,
+  proposedDueAt: row.proposedDueAt,
+  decisionMessage: row.decisionMessage || null,
+  requestedAt: row.requestedAt,
+  reviewedAt: row.reviewedAt || null,
+  requester: row.requester ? toUserResponse(row.requester) : null,
+  reviewer: row.reviewer ? toUserResponse(row.reviewer) : null,
+  lender: row.lender ? toUserResponse(row.lender) : null,
+  borrower: row.borrower ? toUserResponse(row.borrower) : null,
+  loan: row.loan ? toLoanResponse(row.loan) : null
+});
+
+app.get('/health', (_req, res) => {
+  res.json({ ok: true });
+});
+
+app.post('/auth/register', async (req, res) => {
+  const schema = z.object({
+    email: z.string().email(),
+    password: z.string().min(8),
+    displayName: z.string().min(1)
+  });
+
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  const email = parsed.data.email.toLowerCase().trim();
+  const existing = await prisma.user.findUnique({ where: { email } });
+  if (existing) return res.status(409).json({ error: 'Email already registered' });
+
+  const passwordHash = await hashPassword(parsed.data.password);
+  const user = await prisma.user.create({
+    data: {
+      email,
+      passwordHash,
+      displayName: (parsed.data.displayName || '').trim()
+    }
+  });
+
+  const token = signToken(user);
+  return res.status(201).json({
+    token,
+    user: toUserResponse(user)
+  });
+});
+
+app.post('/auth/login', async (req, res) => {
+  const schema = z.object({
+    email: z.string().email(),
+    password: z.string().min(1)
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const email = parsed.data.email.toLowerCase().trim();
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+  const ok = await comparePassword(parsed.data.password, user.passwordHash);
+  if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
+
+  const token = signToken(user);
+  return res.json({
+    token,
+    user: toUserResponse(user)
+  });
+});
+
+app.get('/auth/me', requireAuth, async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.auth.userId },
+    select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true, createdAt: true }
+  });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  return res.json({ user: toUserResponse(user) });
+});
+
+app.get('/users/me', requireAuth, async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.auth.userId },
+    select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true }
+  });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  return res.json({ user: toUserResponse(user) });
+});
+
+app.patch('/users/me', requireAuth, async (req, res) => {
+  const schema = z.object({
+    displayName: z.string().min(1).max(120),
+    loanReminderDays: z.number().int().min(0).max(30).optional()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const user = await prisma.user.update({
+    where: { id: req.auth.userId },
+    data: {
+      displayName: parsed.data.displayName.trim(),
+      loanReminderDays: parsed.data.loanReminderDays === undefined ? undefined : parsed.data.loanReminderDays
+    },
+    select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true }
+  });
+  return res.json({ user: toUserResponse(user) });
+});
+
+app.post('/users/me/avatar', requireAuth, avatarUpload.single('avatar'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Avatar file is required' });
+  const mime = (req.file.mimetype || '').toLowerCase();
+  if (!mime.startsWith('image/')) return res.status(400).json({ error: 'Avatar must be an image' });
+  const avatarUrl = `data:${mime};base64,${req.file.buffer.toString('base64')}`;
+
+  const user = await prisma.user.update({
+    where: { id: req.auth.userId },
+    data: { avatarUrl },
+    select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true }
+  });
+  return res.json({ user: toUserResponse(user) });
+});
+
+app.get('/books', requireAuth, async (req, res) => {
+  await purgeExpiredUserTrash(prisma, req.auth.userId);
+  const rows = await prisma.userBook.findMany({
+    where: { userId: req.auth.userId },
+    include: { book: true },
+    orderBy: { updatedAt: 'desc' }
+  });
+
+  const baseUrl = getBaseUrl(req);
+  const books = rows.map((row) => toBookResponse({ ...row.book, userBooks: [row] }, req.auth.userId, baseUrl));
+  return res.json({ books });
+});
+
+app.post('/books', requireAuth, upload.single('file'), async (req, res) => {
+  const schema = z.object({
+    bookId: z.string().optional(),
+    epubHash: z.string().optional(),
+    title: z.string().min(1).optional(),
+    author: z.string().optional(),
+    language: z.string().optional(),
+    cover: z.string().optional(),
+    filePath: z.string().optional()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  let targetBook = null;
+  if (parsed.data.bookId) {
+    targetBook = await prisma.book.findUnique({ where: { id: parsed.data.bookId } });
+  }
+  if (!targetBook && parsed.data.epubHash) {
+    targetBook = await prisma.book.findUnique({ where: { epubHash: parsed.data.epubHash } });
+  }
+
+  if (!targetBook) {
+    const fallbackHash = ensureEpubHash(parsed.data.epubHash, `${parsed.data.title || ''}-${Date.now()}`);
+    const filePath = req.file
+      ? path.relative(config.uploadsDir, req.file.path).replace(/\\/g, '/')
+      : (isSafeRelativePath(parsed.data.filePath || '') ? parsed.data.filePath : null);
+
+    targetBook = await prisma.book.create({
+      data: {
+        epubHash: fallbackHash,
+        title: parsed.data.title || 'Untitled',
+        author: parsed.data.author || null,
+        language: parsed.data.language || null,
+        cover: parsed.data.cover || null,
+        filePath
+      }
+    });
+  } else if (req.file && targetBook.filePath) {
+    const abs = path.resolve(config.uploadsDir, targetBook.filePath);
+    try {
+      fs.unlinkSync(abs);
+    } catch {
+      // ignore missing
+    }
+    targetBook = await prisma.book.update({
+      where: { id: targetBook.id },
+      data: {
+        filePath: path.relative(config.uploadsDir, req.file.path).replace(/\\/g, '/'),
+        title: parsed.data.title || targetBook.title,
+        author: parsed.data.author || targetBook.author,
+        language: parsed.data.language || targetBook.language,
+        cover: parsed.data.cover || targetBook.cover
+      }
+    });
+  }
+
+  const userBook = await prisma.userBook.upsert({
+    where: {
+      userId_bookId: {
+        userId: req.auth.userId,
+        bookId: targetBook.id
+      }
+    },
+    update: {
+      isDeleted: false,
+      deletedAt: null
+    },
+    create: {
+      userId: req.auth.userId,
+      bookId: targetBook.id,
+      status: 'TO_READ',
+      progressPercent: 0,
+      progressCfi: null,
+      lastOpenedAt: null,
+      isDeleted: false,
+      deletedAt: null
+    }
+  });
+
+  const baseUrl = getBaseUrl(req);
+  return res.status(201).json({
+    book: toBookResponse({ ...targetBook, userBooks: [userBook] }, req.auth.userId, baseUrl)
+  });
+});
+
+app.get('/books/:bookId', requireAuth, requireBookAccess, async (req, res) => {
+  const book = await prisma.book.findUnique({
+    where: { id: req.params.bookId },
+    include: includeBookGraph
+  });
+  if (!book) return res.status(404).json({ error: 'Book not found' });
+  return res.json({ book: toBookResponse(book, req.auth.userId, getBaseUrl(req)) });
+});
+
+app.delete('/books/:bookId', requireAuth, async (req, res) => {
+  const userBook = await prisma.userBook.findUnique({
+    where: {
+      userId_bookId: {
+        userId: req.auth.userId,
+        bookId: req.params.bookId
+      }
+    }
+  });
+  if (!userBook) return res.status(404).json({ error: 'Book not found in your library' });
+
+  const activeLendingCount = await prisma.bookLoan.count({
+    where: {
+      bookId: req.params.bookId,
+      status: 'ACTIVE',
+      lenderId: req.auth.userId
+    }
+  });
+
+  if (activeLendingCount > 0) {
+    return res.status(409).json({
+      error: 'This book is actively lent. Revoke lending first, then delete.',
+      code: 'ACTIVE_LENDING_EXISTS'
+    });
+  }
+
+  const activeBorrowingCount = await prisma.bookLoan.count({
+    where: {
+      bookId: req.params.bookId,
+      status: 'ACTIVE',
+      borrowerId: req.auth.userId
+    }
+  });
+  if (activeBorrowingCount > 0) {
+    return res.status(409).json({
+      error: 'This book is currently borrowed. Return it first, then delete from trash.',
+      code: 'ACTIVE_BORROWING_EXISTS'
+    });
+  }
+
+  await prisma.userBook.delete({
+    where: {
+      userId_bookId: {
+        userId: req.auth.userId,
+        bookId: req.params.bookId
+      }
+    }
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: req.auth.userId,
+    eventKey: `book-removed-${req.params.bookId}-${Date.now()}`,
+    kind: 'book-removed',
+    title: 'Book removed',
+    message: `A book was removed from your library permanently.`,
+    actionType: 'open-library',
+    actionTargetId: req.params.bookId,
+    meta: {
+      bookId: req.params.bookId
+    }
+  });
+
+  return res.json({ ok: true });
+});
+
+app.patch('/books/:bookId/trash', requireAuth, async (req, res) => {
+  const schema = z.object({
+    deleted: z.boolean()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const existing = await prisma.userBook.findUnique({
+    where: {
+      userId_bookId: {
+        userId: req.auth.userId,
+        bookId: req.params.bookId
+      }
+    },
+    include: { book: true }
+  });
+  if (!existing) return res.status(404).json({ error: 'Book not found in your library' });
+
+  if (parsed.data.deleted) {
+    const activeLendingCount = await prisma.bookLoan.count({
+      where: {
+        bookId: req.params.bookId,
+        status: 'ACTIVE',
+        lenderId: req.auth.userId
+      }
+    });
+    if (activeLendingCount > 0) {
+      return res.status(409).json({
+        error: 'This book is actively lent. Revoke lending first, then move it to trash.',
+        code: 'ACTIVE_LENDING_EXISTS'
+      });
+    }
+  }
+
+  const now = new Date();
+  const updated = await prisma.userBook.update({
+    where: { id: existing.id },
+    data: {
+      isDeleted: parsed.data.deleted,
+      deletedAt: parsed.data.deleted ? now : null
+    },
+    include: { book: true }
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: req.auth.userId,
+    eventKey: parsed.data.deleted
+      ? `book-trashed-${req.params.bookId}-${Date.now()}`
+      : `book-restored-${req.params.bookId}-${Date.now()}`,
+    kind: parsed.data.deleted ? 'book-trashed' : 'book-restored',
+    title: parsed.data.deleted ? 'Moved to Trash' : 'Restored from Trash',
+    message: parsed.data.deleted
+      ? `${existing.book.title} moved to your Trash.`
+      : `${existing.book.title} restored to your library.`,
+    actionType: parsed.data.deleted ? 'open-trash' : 'open-library',
+    actionTargetId: req.params.bookId,
+    meta: {
+      bookId: req.params.bookId
+    }
+  });
+
+  return res.json({
+    book: toBookResponse({ ...updated.book, userBooks: [updated] }, req.auth.userId, getBaseUrl(req))
+  });
+});
+
+app.get('/books/:bookId/file', requireAuth, requireBookAccess, async (req, res) => {
+  const book = await prisma.book.findUnique({ where: { id: req.params.bookId } });
+  if (!book || !book.filePath) return res.status(404).json({ error: 'File not found' });
+  if (!isSafeRelativePath(book.filePath)) return res.status(400).json({ error: 'Invalid file path' });
+  const absolutePath = path.resolve(config.uploadsDir, book.filePath);
+  if (!absolutePath.startsWith(path.resolve(config.uploadsDir))) {
+    return res.status(400).json({ error: 'Invalid file path' });
+  }
+  return res.sendFile(absolutePath);
+});
+
+app.patch('/books/:bookId/progress', requireAuth, requireBookAccess, async (req, res) => {
+  const schema = z.object({
+    progressPercent: z.number().min(0).max(100),
+    progressCfi: z.string().optional().nullable()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const updated = await prisma.userBook.update({
+    where: { id: req.userBook.id },
+    data: {
+      progressPercent: clampPercent(parsed.data.progressPercent),
+      progressCfi: parsed.data.progressCfi || null,
+      status: statusFromProgress(parsed.data.progressPercent),
+      lastOpenedAt: new Date()
+    },
+    include: { book: true }
+  });
+
+  return res.json({
+    book: toBookResponse({ ...updated.book, userBooks: [updated] }, req.auth.userId, getBaseUrl(req))
+  });
+});
+
+app.get('/books/:bookId/highlights', requireAuth, requireBookAccess, async (req, res) => {
+  const where = await buildAnnotationAccessWhere(prisma, {
+    bookId: req.params.bookId,
+    userId: req.auth.userId
+  });
+  const highlights = await prisma.highlight.findMany({
+    where,
+    include: {
+      createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } }
+    },
+    orderBy: { createdAt: 'asc' }
+  });
+  return res.json({ highlights });
+});
+
+app.post('/books/:bookId/highlights', requireAuth, requireBookAccess, async (req, res) => {
+  const schema = z.object({
+    cfiRange: z.string().min(1),
+    text: z.string().min(1),
+    note: z.string().optional().nullable(),
+    color: z.string().optional().nullable(),
+    contextPrefix: z.string().optional().nullable(),
+    contextSuffix: z.string().optional().nullable(),
+    chapterHref: z.string().optional().nullable()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const capability = await requireBorrowCapability(prisma, {
+    userId: req.auth.userId,
+    bookId: req.params.bookId,
+    capability: 'addHighlights'
+  });
+  if (!capability.ok) return res.status(capability.status).json({ error: capability.error });
+  const { activeBorrowLoan } = capability;
+  const scope = resolveLoanAnnotationScope(activeBorrowLoan);
+
+  await prisma.highlight.upsert({
+    where: {
+      bookId_cfiRange_createdByUserId: {
+        bookId: req.params.bookId,
+        cfiRange: parsed.data.cfiRange,
+        createdByUserId: req.auth.userId
+      }
+    },
+    update: {
+      text: parsed.data.text,
+      note: parsed.data.note || null,
+      color: parsed.data.color || null,
+      contextPrefix: parsed.data.contextPrefix || null,
+      contextSuffix: parsed.data.contextSuffix || null,
+      chapterHref: parsed.data.chapterHref || null
+    },
+    create: {
+      bookId: req.params.bookId,
+      createdByUserId: req.auth.userId,
+      cfiRange: parsed.data.cfiRange,
+      text: parsed.data.text,
+      note: parsed.data.note || null,
+      color: parsed.data.color || null,
+      contextPrefix: parsed.data.contextPrefix || null,
+      contextSuffix: parsed.data.contextSuffix || null,
+      chapterHref: parsed.data.chapterHref || null,
+      scope
+    }
+  });
+
+  const where = await buildAnnotationAccessWhere(prisma, {
+    bookId: req.params.bookId,
+    userId: req.auth.userId
+  });
+  const highlights = await prisma.highlight.findMany({
+    where,
+    include: { createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } } },
+    orderBy: { createdAt: 'asc' }
+  });
+
+  return res.status(201).json({ highlights });
+});
+
+app.patch('/highlights/:highlightId', requireAuth, async (req, res) => {
+  const schema = z.object({
+    note: z.string().optional().nullable(),
+    color: z.string().optional().nullable(),
+    text: z.string().optional(),
+    contextPrefix: z.string().optional().nullable(),
+    contextSuffix: z.string().optional().nullable(),
+    chapterHref: z.string().optional().nullable()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const existing = await prisma.highlight.findUnique({ where: { id: req.params.highlightId } });
+  if (!existing) return res.status(404).json({ error: 'Highlight not found' });
+  if (existing.createdByUserId !== req.auth.userId) {
+    return res.status(403).json({ error: 'You can edit only your own highlights' });
+  }
+  const entitlement = await ensureBookEntitlement(prisma, {
+    userId: req.auth.userId,
+    bookId: existing.bookId
+  });
+  if (!entitlement.userBook) return res.status(403).json({ error: 'No access to this book' });
+  const expectedRevision = parseExpectedRevision(req);
+  if (expectedRevision !== null && expectedRevision !== existing.revision) {
+    return res.status(409).json({
+      error: 'Highlight conflict',
+      code: 'REVISION_CONFLICT',
+      currentRevision: existing.revision
+    });
+  }
+
+  const capability = await requireBorrowCapability(prisma, {
+    userId: req.auth.userId,
+    bookId: existing.bookId,
+    capability: 'editHighlights'
+  });
+  if (!capability.ok) return res.status(capability.status).json({ error: capability.error });
+  const { activeBorrowLoan } = capability;
+
+  await prisma.highlight.update({
+    where: { id: existing.id },
+    data: {
+      note: parsed.data.note === undefined ? existing.note : parsed.data.note,
+      color: parsed.data.color === undefined ? existing.color : parsed.data.color,
+      text: parsed.data.text === undefined ? existing.text : parsed.data.text,
+      contextPrefix: parsed.data.contextPrefix === undefined ? existing.contextPrefix : parsed.data.contextPrefix,
+      contextSuffix: parsed.data.contextSuffix === undefined ? existing.contextSuffix : parsed.data.contextSuffix,
+      chapterHref: parsed.data.chapterHref === undefined ? existing.chapterHref : parsed.data.chapterHref,
+      scope: activeBorrowLoan ? resolveLoanAnnotationScope(activeBorrowLoan) : existing.scope,
+      revision: { increment: 1 }
+    }
+  });
+
+  const where = await buildAnnotationAccessWhere(prisma, {
+    bookId: existing.bookId,
+    userId: req.auth.userId
+  });
+  const highlights = await prisma.highlight.findMany({
+    where,
+    include: { createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } } },
+    orderBy: { createdAt: 'asc' }
+  });
+
+  return res.json({ highlights });
+});
+
+app.delete('/highlights/:highlightId', requireAuth, async (req, res) => {
+  const existing = await prisma.highlight.findUnique({ where: { id: req.params.highlightId } });
+  if (!existing) return res.status(404).json({ error: 'Highlight not found' });
+  if (existing.createdByUserId !== req.auth.userId) {
+    return res.status(403).json({ error: 'You can delete only your own highlights' });
+  }
+  const entitlement = await ensureBookEntitlement(prisma, {
+    userId: req.auth.userId,
+    bookId: existing.bookId
+  });
+  if (!entitlement.userBook) return res.status(403).json({ error: 'No access to this book' });
+  const expectedRevision = parseExpectedRevision(req);
+  if (expectedRevision !== null && expectedRevision !== existing.revision) {
+    return res.status(409).json({
+      error: 'Highlight conflict',
+      code: 'REVISION_CONFLICT',
+      currentRevision: existing.revision
+    });
+  }
+
+  const capability = await requireBorrowCapability(prisma, {
+    userId: req.auth.userId,
+    bookId: existing.bookId,
+    capability: 'editHighlights'
+  });
+  if (!capability.ok) return res.status(capability.status).json({ error: capability.error });
+
+  await prisma.highlight.delete({ where: { id: existing.id } });
+  const where = await buildAnnotationAccessWhere(prisma, {
+    bookId: existing.bookId,
+    userId: req.auth.userId
+  });
+  const highlights = await prisma.highlight.findMany({
+    where,
+    include: { createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } } },
+    orderBy: { createdAt: 'asc' }
+  });
+
+  return res.json({ highlights });
+});
+
+app.get('/books/:bookId/notes', requireAuth, requireBookAccess, async (req, res) => {
+  const where = await buildAnnotationAccessWhere(prisma, {
+    bookId: req.params.bookId,
+    userId: req.auth.userId
+  });
+  const notes = await prisma.note.findMany({
+    where,
+    include: { createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } } },
+    orderBy: { createdAt: 'asc' }
+  });
+  return res.json({ notes });
+});
+
+app.post('/books/:bookId/notes', requireAuth, requireBookAccess, async (req, res) => {
+  const schema = z.object({
+    text: z.string().min(1),
+    cfi: z.string().optional().nullable(),
+    message: z.string().optional().nullable()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const capability = await requireBorrowCapability(prisma, {
+    userId: req.auth.userId,
+    bookId: req.params.bookId,
+    capability: 'addNotes'
+  });
+  if (!capability.ok) return res.status(capability.status).json({ error: capability.error });
+  const { activeBorrowLoan } = capability;
+  const scope = resolveLoanAnnotationScope(activeBorrowLoan);
+
+  const note = await prisma.note.create({
+    data: {
+      bookId: req.params.bookId,
+      createdByUserId: req.auth.userId,
+      text: parsed.data.text,
+      cfi: parsed.data.cfi || null,
+      message: parsed.data.message || null,
+      scope
+    },
+    include: { createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } } }
+  });
+
+  return res.status(201).json({ note });
+});
+
+app.patch('/notes/:noteId', requireAuth, async (req, res) => {
+  const schema = z.object({
+    text: z.string().min(1).optional(),
+    cfi: z.string().optional().nullable(),
+    message: z.string().optional().nullable()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const existing = await prisma.note.findUnique({ where: { id: req.params.noteId } });
+  if (!existing) return res.status(404).json({ error: 'Note not found' });
+  if (existing.createdByUserId !== req.auth.userId) {
+    return res.status(403).json({ error: 'You can edit only your own notes' });
+  }
+  const entitlement = await ensureBookEntitlement(prisma, {
+    userId: req.auth.userId,
+    bookId: existing.bookId
+  });
+  if (!entitlement.userBook) return res.status(403).json({ error: 'No access to this book' });
+  const expectedRevision = parseExpectedRevision(req);
+  if (expectedRevision !== null && expectedRevision !== existing.revision) {
+    return res.status(409).json({
+      error: 'Note conflict',
+      code: 'REVISION_CONFLICT',
+      currentRevision: existing.revision
+    });
+  }
+
+  const capability = await requireBorrowCapability(prisma, {
+    userId: req.auth.userId,
+    bookId: existing.bookId,
+    capability: 'editNotes'
+  });
+  if (!capability.ok) return res.status(capability.status).json({ error: capability.error });
+  const { activeBorrowLoan } = capability;
+
+  const note = await prisma.note.update({
+    where: { id: existing.id },
+    data: {
+      text: parsed.data.text === undefined ? existing.text : parsed.data.text,
+      cfi: parsed.data.cfi === undefined ? existing.cfi : parsed.data.cfi,
+      message: parsed.data.message === undefined ? existing.message : parsed.data.message,
+      scope: activeBorrowLoan ? resolveLoanAnnotationScope(activeBorrowLoan) : existing.scope,
+      revision: { increment: 1 }
+    },
+    include: { createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } } }
+  });
+
+  return res.json({ note });
+});
+
+app.delete('/notes/:noteId', requireAuth, async (req, res) => {
+  const existing = await prisma.note.findUnique({ where: { id: req.params.noteId } });
+  if (!existing) return res.status(404).json({ error: 'Note not found' });
+  if (existing.createdByUserId !== req.auth.userId) {
+    return res.status(403).json({ error: 'You can delete only your own notes' });
+  }
+  const entitlement = await ensureBookEntitlement(prisma, {
+    userId: req.auth.userId,
+    bookId: existing.bookId
+  });
+  if (!entitlement.userBook) return res.status(403).json({ error: 'No access to this book' });
+  const expectedRevision = parseExpectedRevision(req);
+  if (expectedRevision !== null && expectedRevision !== existing.revision) {
+    return res.status(409).json({
+      error: 'Note conflict',
+      code: 'REVISION_CONFLICT',
+      currentRevision: existing.revision
+    });
+  }
+
+  const capability = await requireBorrowCapability(prisma, {
+    userId: req.auth.userId,
+    bookId: existing.bookId,
+    capability: 'editNotes'
+  });
+  if (!capability.ok) return res.status(capability.status).json({ error: capability.error });
+
+  await prisma.note.delete({ where: { id: existing.id } });
+  return res.json({ ok: true });
+});
+
+app.post('/shares/books', requireAuth, async (req, res) => {
+  const schema = z.object({
+    bookId: z.string().optional(),
+    epubHash: z.string().optional(),
+    toEmail: z.string().email(),
+    message: z.string().optional()
+  }).refine((v) => !!v.bookId || !!v.epubHash, {
+    message: 'bookId or epubHash is required'
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  let book = null;
+  if (parsed.data.bookId) book = await prisma.book.findUnique({ where: { id: parsed.data.bookId } });
+  if (!book && parsed.data.epubHash) book = await prisma.book.findUnique({ where: { epubHash: parsed.data.epubHash } });
+  if (!book) return res.status(404).json({ error: 'Book not found' });
+
+  const senderAccess = await prisma.userBook.findUnique({
+    where: { userId_bookId: { userId: req.auth.userId, bookId: book.id } }
+  });
+  if (!senderAccess) return res.status(403).json({ error: 'No access to this book' });
+
+  const toEmail = parsed.data.toEmail.toLowerCase().trim();
+  const recipient = await prisma.user.findUnique({ where: { email: toEmail } });
+  if (!recipient) return res.status(404).json({ error: 'Recipient not found' });
+  if (recipient.id === req.auth.userId) return res.status(400).json({ error: 'Cannot share with yourself' });
+
+  const share = await prisma.bookShare.upsert({
+    where: {
+      bookId_fromUserId_toUserId: {
+        bookId: book.id,
+        fromUserId: req.auth.userId,
+        toUserId: recipient.id
+      }
+    },
+    update: {
+      status: 'PENDING',
+      acceptedAt: null,
+      message: parsed.data.message || null
+    },
+    create: {
+      bookId: book.id,
+      fromUserId: req.auth.userId,
+      toUserId: recipient.id,
+      message: parsed.data.message || null,
+      status: 'PENDING'
+    },
+    include: includeShareGraph
+  });
+
+  return res.status(201).json({ share });
+});
+
+app.get('/shares/inbox', requireAuth, async (req, res) => {
+  const shares = await prisma.bookShare.findMany({
+    where: {
+      toUserId: req.auth.userId,
+      status: 'PENDING'
+    },
+    include: includeShareGraph,
+    orderBy: { createdAt: 'desc' }
+  });
+
+  return res.json({ shares });
+});
+
+app.post('/shares/:shareId/accept', requireAuth, async (req, res) => {
+  const share = await prisma.bookShare.findUnique({
+    where: { id: req.params.shareId },
+    include: includeShareGraph
+  });
+  if (!share) return res.status(404).json({ error: 'Share not found' });
+  if (share.toUserId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (share.status === 'REJECTED') return res.status(400).json({ error: 'Share rejected' });
+
+  const accepted = await prisma.$transaction(async (tx) => {
+    const next = await tx.bookShare.update({
+      where: { id: share.id },
+      data: {
+        status: 'ACCEPTED',
+        acceptedAt: share.acceptedAt || new Date()
+      },
+      include: includeShareGraph
+    });
+    return next;
+  });
+
+  return res.json({ share: accepted });
+});
+
+app.post('/shares/:shareId/borrow', requireAuth, async (req, res) => {
+  const schema = z.object({
+    borrowAnyway: z.boolean().default(false)
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const share = await prisma.bookShare.findUnique({
+    where: { id: req.params.shareId },
+    include: includeShareGraph
+  });
+  if (!share) return res.status(404).json({ error: 'Share not found' });
+  if (share.toUserId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (share.status === 'REJECTED') return res.status(400).json({ error: 'Share rejected' });
+
+  const lenderAccess = await prisma.userBook.findUnique({
+    where: {
+      userId_bookId: {
+        userId: share.fromUserId,
+        bookId: share.bookId
+      }
+    }
+  });
+  if (!lenderAccess) return res.status(400).json({ error: 'Sharer no longer has access to this book' });
+
+  const existingAccess = await prisma.userBook.findUnique({
+    where: {
+      userId_bookId: {
+        userId: req.auth.userId,
+        bookId: share.bookId
+      }
+    }
+  });
+  if (existingAccess && !parsed.data.borrowAnyway) {
+    return res.status(409).json({
+      error: 'You already have this book',
+      code: 'ALREADY_HAVE_BOOK',
+      warning: 'Borrow anyway creates a loan relationship while keeping your existing library copy.'
+    });
+  }
+
+  const acceptedAt = new Date();
+  const dueAt = new Date(acceptedAt.getTime() + 14 * 24 * 60 * 60 * 1000);
+
+  const result = await prisma.$transaction(async (tx) => {
+    let createdAccess = false;
+    if (!existingAccess) {
+      await tx.userBook.create({
+        data: {
+          userId: req.auth.userId,
+          bookId: share.bookId,
+          status: 'TO_READ',
+          progressPercent: 0,
+          progressCfi: null,
+          lastOpenedAt: null
+        }
+      });
+      createdAccess = true;
+    }
+
+    const loan = await tx.bookLoan.create({
+      data: {
+        bookId: share.bookId,
+        lenderId: share.fromUserId,
+        borrowerId: req.auth.userId,
+        message: share.message || null,
+        status: 'ACTIVE',
+        durationDays: 14,
+        graceDays: 0,
+        acceptedAt,
+        dueAt,
+        createdUserBookOnAccept: createdAccess,
+        canAddHighlights: true,
+        canEditHighlights: true,
+        canAddNotes: true,
+        canEditNotes: true,
+        annotationVisibility: 'PRIVATE',
+        shareLenderAnnotations: false
+      },
+      include: includeLoanGraph
+    });
+
+    const nextShare = await tx.bookShare.update({
+      where: { id: share.id },
+      data: { status: 'ACCEPTED', acceptedAt: share.acceptedAt || acceptedAt },
+      include: includeShareGraph
+    });
+
+    await addLoanAuditEvent(tx, {
+      loanId: loan.id,
+      actorUserId: req.auth.userId,
+      targetUserId: share.fromUserId,
+      action: 'LOAN_ACCEPTED_FROM_SHARE',
+      details: {
+        dueAt,
+        borrowAnyway: Boolean(existingAccess)
+      }
+    });
+
+    return { loan, share: nextShare };
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: share.fromUserId,
+    eventKey: `loan-accepted-from-share-${result.loan.id}`,
+    kind: 'loan-accepted',
+    title: 'Recommendation borrowed',
+    message: `${result.loan.borrower.displayName || result.loan.borrower.email} borrowed "${result.loan.book.title}".`,
+    loanId: result.loan.id,
+    actionType: 'open-lent',
+    actionTargetId: result.loan.id
+  });
+
+  return res.json({
+    share: result.share,
+    loan: toLoanResponse(result.loan)
+  });
+});
+
+app.post('/shares/:shareId/reject', requireAuth, async (req, res) => {
+  const share = await prisma.bookShare.findUnique({ where: { id: req.params.shareId } });
+  if (!share) return res.status(404).json({ error: 'Share not found' });
+  if (share.toUserId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+
+  const updated = await prisma.bookShare.update({
+    where: { id: share.id },
+    data: { status: 'REJECTED' },
+    include: includeShareGraph
+  });
+
+  return res.json({ share: updated });
+});
+
+app.get('/loans/templates/default', requireAuth, async (req, res) => {
+  const template = await ensureLoanTemplate(prisma, req.auth.userId);
+  return res.json({ template: toTemplateResponse(template) });
+});
+
+app.put('/loans/templates/default', requireAuth, async (req, res) => {
+  const schema = z.object({
+    name: z.string().min(1).max(120).optional(),
+    durationDays: z.number().int().min(1).max(365),
+    graceDays: z.number().int().min(0).max(30),
+    remindBeforeDays: z.number().int().min(0).max(30).default(3),
+    permissions: z.object({
+      canAddHighlights: z.boolean(),
+      canEditHighlights: z.boolean(),
+      canAddNotes: z.boolean(),
+      canEditNotes: z.boolean(),
+      annotationVisibility: z.enum(['PRIVATE', 'SHARED_WITH_LENDER']),
+      shareLenderAnnotations: z.boolean()
+    })
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  const template = await ensureLoanTemplate(prisma, req.auth.userId);
+  const updated = await prisma.userLoanTemplate.update({
+    where: { id: template.id },
+    data: {
+      name: (parsed.data.name || template.name).trim(),
+      durationDays: parsed.data.durationDays,
+      graceDays: parsed.data.graceDays,
+      remindBeforeDays: parsed.data.remindBeforeDays,
+      canAddHighlights: parsed.data.permissions.canAddHighlights,
+      canEditHighlights: parsed.data.permissions.canEditHighlights,
+      canAddNotes: parsed.data.permissions.canAddNotes,
+      canEditNotes: parsed.data.permissions.canEditNotes,
+      annotationVisibility: parsed.data.permissions.annotationVisibility,
+      shareLenderAnnotations: parsed.data.permissions.shareLenderAnnotations
+    }
+  });
+
+  return res.json({ template: toTemplateResponse(updated) });
+});
+
+app.post('/loans/books', requireAuth, async (req, res) => {
+  const schema = z.object({
+    bookId: z.string().optional(),
+    epubHash: z.string().optional(),
+    toEmail: z.string().email(),
+    message: z.string().max(2000).optional(),
+    durationDays: z.number().int().min(1).max(365).optional(),
+    graceDays: z.number().int().min(0).max(30).optional(),
+    permissions: z.object({
+      canAddHighlights: z.boolean().optional(),
+      canEditHighlights: z.boolean().optional(),
+      canAddNotes: z.boolean().optional(),
+      canEditNotes: z.boolean().optional(),
+      annotationVisibility: z.enum(['PRIVATE', 'SHARED_WITH_LENDER']).optional(),
+      shareLenderAnnotations: z.boolean().optional()
+    }).optional()
+  }).refine((v) => !!v.bookId || !!v.epubHash, {
+    message: 'bookId or epubHash is required'
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  let book = null;
+  if (parsed.data.bookId) book = await prisma.book.findUnique({ where: { id: parsed.data.bookId } });
+  if (!book && parsed.data.epubHash) book = await prisma.book.findUnique({ where: { epubHash: parsed.data.epubHash } });
+  if (!book) return res.status(404).json({ error: 'Book not found' });
+
+  const lenderAccess = await prisma.userBook.findUnique({
+    where: { userId_bookId: { userId: req.auth.userId, bookId: book.id } }
+  });
+  if (!lenderAccess) return res.status(403).json({ error: 'No access to this book' });
+
+  const toEmail = parsed.data.toEmail.toLowerCase().trim();
+  const borrower = await prisma.user.findUnique({ where: { email: toEmail } });
+  if (!borrower) return res.status(404).json({ error: 'Recipient not found' });
+  if (borrower.id === req.auth.userId) return res.status(400).json({ error: 'Cannot lend to yourself' });
+
+  const template = await ensureLoanTemplate(prisma, req.auth.userId);
+  const effectivePermissions = {
+    canAddHighlights: parsed.data.permissions?.canAddHighlights ?? template.canAddHighlights,
+    canEditHighlights: parsed.data.permissions?.canEditHighlights ?? template.canEditHighlights,
+    canAddNotes: parsed.data.permissions?.canAddNotes ?? template.canAddNotes,
+    canEditNotes: parsed.data.permissions?.canEditNotes ?? template.canEditNotes,
+    annotationVisibility: parsed.data.permissions?.annotationVisibility ?? template.annotationVisibility,
+    shareLenderAnnotations: parsed.data.permissions?.shareLenderAnnotations ?? template.shareLenderAnnotations
+  };
+  const effectiveDurationDays = parsed.data.durationDays ?? template.durationDays;
+  const effectiveGraceDays = parsed.data.graceDays ?? template.graceDays;
+
+  const existingPending = await prisma.bookLoan.findFirst({
+    where: {
+      bookId: book.id,
+      lenderId: req.auth.userId,
+      borrowerId: borrower.id,
+      status: 'PENDING'
+    }
+  });
+
+  const loan = existingPending
+    ? await prisma.bookLoan.update({
+        where: { id: existingPending.id },
+        data: {
+          message: parsed.data.message || null,
+          durationDays: effectiveDurationDays,
+          graceDays: effectiveGraceDays,
+          canAddHighlights: effectivePermissions.canAddHighlights,
+          canEditHighlights: effectivePermissions.canEditHighlights,
+          canAddNotes: effectivePermissions.canAddNotes,
+          canEditNotes: effectivePermissions.canEditNotes,
+          annotationVisibility: effectivePermissions.annotationVisibility,
+          shareLenderAnnotations: effectivePermissions.shareLenderAnnotations
+        },
+        include: includeLoanGraph
+      })
+    : await prisma.bookLoan.create({
+        data: {
+          bookId: book.id,
+          lenderId: req.auth.userId,
+          borrowerId: borrower.id,
+          message: parsed.data.message || null,
+          durationDays: effectiveDurationDays,
+          graceDays: effectiveGraceDays,
+          canAddHighlights: effectivePermissions.canAddHighlights,
+          canEditHighlights: effectivePermissions.canEditHighlights,
+          canAddNotes: effectivePermissions.canAddNotes,
+          canEditNotes: effectivePermissions.canEditNotes,
+          annotationVisibility: effectivePermissions.annotationVisibility,
+          shareLenderAnnotations: effectivePermissions.shareLenderAnnotations
+        },
+        include: includeLoanGraph
+      });
+
+  await addLoanAuditEvent(prisma, {
+    loanId: loan.id,
+    actorUserId: req.auth.userId,
+    targetUserId: borrower.id,
+    action: 'LOAN_REQUESTED',
+    details: {
+      durationDays: loan.durationDays,
+      graceDays: loan.graceDays
+    }
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: borrower.id,
+    eventKey: `loan-request-${loan.id}`,
+    kind: 'loan-request',
+    title: 'New loan request',
+    message: `${loan.lender.displayName || loan.lender.email} offered you "${loan.book.title}".`,
+    loanId: loan.id,
+    actionType: 'open-inbox',
+    actionTargetId: loan.id,
+    meta: {
+      bookId: loan.book.id
+    }
+  });
+
+  return res.status(201).json({ loan: toLoanResponse(loan) });
+});
+
+app.get('/loans/inbox', requireAuth, async (req, res) => {
+  const loans = await prisma.bookLoan.findMany({
+    where: {
+      borrowerId: req.auth.userId,
+      status: 'PENDING'
+    },
+    include: includeLoanGraph,
+    orderBy: { requestedAt: 'desc' }
+  });
+  return res.json({ loans: loans.map(toLoanResponse) });
+});
+
+app.post('/loans/:loanId/accept', requireAuth, async (req, res) => {
+  const schema = z.object({
+    borrowAnyway: z.boolean().default(false)
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const loan = await prisma.bookLoan.findUnique({
+    where: { id: req.params.loanId },
+    include: includeLoanGraph
+  });
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (loan.borrowerId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (loan.status !== 'PENDING') return res.status(400).json({ error: 'Loan is not pending' });
+
+  const existingAccess = await prisma.userBook.findUnique({
+    where: {
+      userId_bookId: {
+        userId: req.auth.userId,
+        bookId: loan.bookId
+      }
+    }
+  });
+
+  if (existingAccess && !parsed.data.borrowAnyway) {
+    return res.status(409).json({
+      error: 'You already have this book',
+      code: 'ALREADY_HAVE_BOOK',
+      warning: 'Borrow anyway creates a separate loan relationship but keeps your existing library copy.'
+    });
+  }
+
+  const acceptedAt = new Date();
+  const dueAt = new Date(acceptedAt.getTime() + loan.durationDays * 24 * 60 * 60 * 1000);
+  const accepted = await prisma.$transaction(async (tx) => {
+    let createdAccess = false;
+    if (!existingAccess) {
+      await tx.userBook.create({
+        data: {
+          userId: req.auth.userId,
+          bookId: loan.bookId,
+          status: 'TO_READ',
+          progressPercent: 0,
+          progressCfi: null,
+          lastOpenedAt: null
+        }
+      });
+      createdAccess = true;
+    }
+
+    const updated = await tx.bookLoan.update({
+      where: { id: loan.id },
+      data: {
+        status: 'ACTIVE',
+        acceptedAt,
+        dueAt,
+        createdUserBookOnAccept: createdAccess
+      },
+      include: includeLoanGraph
+    });
+
+    await addLoanAuditEvent(tx, {
+      loanId: loan.id,
+      actorUserId: req.auth.userId,
+      targetUserId: loan.lenderId,
+      action: 'LOAN_ACCEPTED',
+      details: {
+        dueAt,
+        borrowAnyway: Boolean(existingAccess)
+      }
+    });
+
+    return updated;
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: loan.lenderId,
+    eventKey: `loan-accepted-${loan.id}`,
+    kind: 'loan-accepted',
+    title: 'Loan accepted',
+    message: `${accepted.borrower.displayName || accepted.borrower.email} accepted "${accepted.book.title}".`,
+    loanId: loan.id,
+    actionType: 'open-lent',
+    actionTargetId: loan.id,
+    meta: {
+      dueAt: accepted.dueAt
+    }
+  });
+
+  return res.json({ loan: toLoanResponse(accepted) });
+});
+
+app.post('/loans/:loanId/reject', requireAuth, async (req, res) => {
+  const loan = await prisma.bookLoan.findUnique({
+    where: { id: req.params.loanId },
+    include: includeLoanGraph
+  });
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (loan.borrowerId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (loan.status !== 'PENDING') return res.status(400).json({ error: 'Loan is not pending' });
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const next = await tx.bookLoan.update({
+      where: { id: loan.id },
+      data: { status: 'REJECTED' },
+      include: includeLoanGraph
+    });
+    await addLoanAuditEvent(tx, {
+      loanId: loan.id,
+      actorUserId: req.auth.userId,
+      targetUserId: loan.lenderId,
+      action: 'LOAN_REJECTED'
+    });
+    return next;
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: loan.lenderId,
+    eventKey: `loan-rejected-${loan.id}`,
+    kind: 'loan-rejected',
+    title: 'Loan rejected',
+    message: `${updated.borrower.displayName || updated.borrower.email} rejected "${updated.book.title}".`,
+    loanId: loan.id,
+    actionType: 'open-lent',
+    actionTargetId: loan.id
+  });
+
+  return res.json({ loan: toLoanResponse(updated) });
+});
+
+app.get('/loans/borrowed', requireAuth, async (req, res) => {
+  const loans = await prisma.bookLoan.findMany({
+    where: { borrowerId: req.auth.userId },
+    include: includeLoanGraph,
+    orderBy: { requestedAt: 'desc' }
+  });
+
+  const normalized = [];
+  for (const loan of loans) {
+    normalized.push(await expireLoanIfNeeded(prisma, loan, {
+      include: includeLoanGraph,
+      cleanupBorrowerAccess: true,
+      addAuditEvent: true
+    }));
+  }
+  return res.json({ loans: normalized.map(toLoanResponse) });
+});
+
+app.get('/loans/lent', requireAuth, async (req, res) => {
+  const loans = await prisma.bookLoan.findMany({
+    where: { lenderId: req.auth.userId },
+    include: includeLoanGraph,
+    orderBy: { requestedAt: 'desc' }
+  });
+  return res.json({ loans: loans.map(toLoanResponse) });
+});
+
+const includeRenewalGraph = {
+  loan: { include: includeLoanGraph },
+  requester: { select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true } },
+  reviewer: { select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true } },
+  lender: { select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true } },
+  borrower: { select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true } }
+};
+
+app.get('/loans/renewals', requireAuth, async (req, res) => {
+  const renewals = await prisma.loanRenewalRequest.findMany({
+    where: {
+      OR: [
+        { lenderId: req.auth.userId },
+        { borrowerId: req.auth.userId }
+      ]
+    },
+    include: includeRenewalGraph,
+    orderBy: { requestedAt: 'desc' },
+    take: 200
+  });
+  return res.json({ renewals: renewals.map(toRenewalResponse) });
+});
+
+app.post('/loans/:loanId/renewals', requireAuth, async (req, res) => {
+  const schema = z.object({
+    extraDays: z.number().int().min(1).max(60),
+    message: z.string().max(500).optional()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  const loan = await prisma.bookLoan.findUnique({
+    where: { id: req.params.loanId },
+    include: includeLoanGraph
+  });
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (loan.borrowerId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (loan.status !== 'ACTIVE') return res.status(400).json({ error: 'Loan must be active' });
+  if (!loan.dueAt) return res.status(400).json({ error: 'Loan due date is missing' });
+
+  const existingPending = await prisma.loanRenewalRequest.findFirst({
+    where: {
+      loanId: loan.id,
+      status: 'PENDING'
+    }
+  });
+  if (existingPending) return res.status(409).json({ error: 'A renewal request is already pending' });
+
+  const previousDueAt = new Date(loan.dueAt);
+  const proposedDueAt = new Date(previousDueAt.getTime() + parsed.data.extraDays * 24 * 60 * 60 * 1000);
+  const renewal = await prisma.loanRenewalRequest.create({
+    data: {
+      loanId: loan.id,
+      requesterUserId: req.auth.userId,
+      lenderId: loan.lenderId,
+      borrowerId: loan.borrowerId,
+      requestedExtraDays: parsed.data.extraDays,
+      previousDueAt,
+      proposedDueAt,
+      decisionMessage: parsed.data.message || null
+    },
+    include: includeRenewalGraph
+  });
+
+  await addLoanAuditEvent(prisma, {
+    loanId: loan.id,
+    actorUserId: req.auth.userId,
+    targetUserId: loan.lenderId,
+    action: 'LOAN_RENEWAL_REQUESTED',
+    details: {
+      renewalRequestId: renewal.id,
+      requestedExtraDays: parsed.data.extraDays,
+      previousDueAt,
+      proposedDueAt
+    }
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: loan.lenderId,
+    eventKey: `loan-renewal-request-${renewal.id}`,
+    kind: 'loan-renewal-request',
+    title: 'Renewal requested',
+    message: `${loan.borrower.displayName || loan.borrower.email} requested +${parsed.data.extraDays} days for "${loan.book.title}".`,
+    loanId: loan.id,
+    actionType: 'open-lent',
+    actionTargetId: loan.id,
+    meta: {
+      renewalRequestId: renewal.id,
+      proposedDueAt
+    }
+  });
+
+  return res.status(201).json({ renewal: toRenewalResponse(renewal) });
+});
+
+app.post('/loans/renewals/:renewalId/approve', requireAuth, async (req, res) => {
+  const schema = z.object({
+    message: z.string().max(500).optional()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  const renewal = await prisma.loanRenewalRequest.findUnique({
+    where: { id: req.params.renewalId },
+    include: includeRenewalGraph
+  });
+  if (!renewal) return res.status(404).json({ error: 'Renewal request not found' });
+  if (renewal.lenderId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (renewal.status !== 'PENDING') return res.status(400).json({ error: 'Renewal is not pending' });
+  if (!renewal.loan || renewal.loan.status !== 'ACTIVE') return res.status(400).json({ error: 'Loan must be active' });
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const reviewedAt = new Date();
+    const nextRenewal = await tx.loanRenewalRequest.update({
+      where: { id: renewal.id },
+      data: {
+        status: 'APPROVED',
+        reviewedAt,
+        reviewerUserId: req.auth.userId,
+        decisionMessage: parsed.data.message || renewal.decisionMessage || null
+      },
+      include: includeRenewalGraph
+    });
+
+    await tx.bookLoan.update({
+      where: { id: renewal.loanId },
+      data: {
+        dueAt: renewal.proposedDueAt,
+        durationDays: renewal.loan.durationDays + renewal.requestedExtraDays,
+        dueSoonNotifiedAt: null,
+        overdueNotifiedAt: null
+      }
+    });
+
+    await addLoanAuditEvent(tx, {
+      loanId: renewal.loanId,
+      actorUserId: req.auth.userId,
+      targetUserId: renewal.borrowerId,
+      action: 'LOAN_RENEWAL_APPROVED',
+      details: {
+        renewalRequestId: renewal.id,
+        requestedExtraDays: renewal.requestedExtraDays,
+        previousDueAt: renewal.previousDueAt,
+        proposedDueAt: renewal.proposedDueAt
+      }
+    });
+
+    return nextRenewal;
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: renewal.borrowerId,
+    eventKey: `loan-renewal-approved-${renewal.id}`,
+    kind: 'loan-renewal-approved',
+    title: 'Renewal approved',
+    message: `${renewal.lender.displayName || renewal.lender.email} approved your renewal for "${renewal.loan.book.title}".`,
+    loanId: renewal.loanId,
+    actionType: 'open-borrowed',
+    actionTargetId: renewal.loanId,
+    meta: {
+      renewalRequestId: renewal.id,
+      dueAt: renewal.proposedDueAt
+    }
+  });
+
+  return res.json({ renewal: toRenewalResponse(updated) });
+});
+
+app.post('/loans/renewals/:renewalId/deny', requireAuth, async (req, res) => {
+  const schema = z.object({
+    message: z.string().max(500).optional()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  const renewal = await prisma.loanRenewalRequest.findUnique({
+    where: { id: req.params.renewalId },
+    include: includeRenewalGraph
+  });
+  if (!renewal) return res.status(404).json({ error: 'Renewal request not found' });
+  if (renewal.lenderId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (renewal.status !== 'PENDING') return res.status(400).json({ error: 'Renewal is not pending' });
+
+  const updated = await prisma.loanRenewalRequest.update({
+    where: { id: renewal.id },
+    data: {
+      status: 'DENIED',
+      reviewedAt: new Date(),
+      reviewerUserId: req.auth.userId,
+      decisionMessage: parsed.data.message || renewal.decisionMessage || null
+    },
+    include: includeRenewalGraph
+  });
+
+  await addLoanAuditEvent(prisma, {
+    loanId: renewal.loanId,
+    actorUserId: req.auth.userId,
+    targetUserId: renewal.borrowerId,
+    action: 'LOAN_RENEWAL_DENIED',
+    details: {
+      renewalRequestId: renewal.id,
+      requestedExtraDays: renewal.requestedExtraDays
+    }
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: renewal.borrowerId,
+    eventKey: `loan-renewal-denied-${renewal.id}`,
+    kind: 'loan-renewal-denied',
+    title: 'Renewal denied',
+    message: `${renewal.lender.displayName || renewal.lender.email} denied your renewal for "${renewal.loan.book.title}".`,
+    loanId: renewal.loanId,
+    actionType: 'open-borrowed',
+    actionTargetId: renewal.loanId,
+    meta: {
+      renewalRequestId: renewal.id
+    }
+  });
+
+  return res.json({ renewal: toRenewalResponse(updated) });
+});
+
+app.post('/loans/renewals/:renewalId/cancel', requireAuth, async (req, res) => {
+  const renewal = await prisma.loanRenewalRequest.findUnique({
+    where: { id: req.params.renewalId },
+    include: includeRenewalGraph
+  });
+  if (!renewal) return res.status(404).json({ error: 'Renewal request not found' });
+  if (renewal.requesterUserId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (renewal.status !== 'PENDING') return res.status(400).json({ error: 'Renewal is not pending' });
+
+  const updated = await prisma.loanRenewalRequest.update({
+    where: { id: renewal.id },
+    data: { status: 'CANCELLED', reviewedAt: new Date() },
+    include: includeRenewalGraph
+  });
+
+  await addLoanAuditEvent(prisma, {
+    loanId: renewal.loanId,
+    actorUserId: req.auth.userId,
+    targetUserId: renewal.lenderId,
+    action: 'LOAN_RENEWAL_CANCELLED',
+    details: {
+      renewalRequestId: renewal.id
+    }
+  });
+
+  return res.json({ renewal: toRenewalResponse(updated) });
+});
+
+const buildLoanExportPayload = async (loan, borrowerId) => {
+  const [notes, highlights] = await Promise.all([
+    prisma.note.findMany({
+      where: { bookId: loan.bookId, createdByUserId: borrowerId },
+      orderBy: { createdAt: 'asc' }
+    }),
+    prisma.highlight.findMany({
+      where: { bookId: loan.bookId, createdByUserId: borrowerId },
+      orderBy: { createdAt: 'asc' }
+    })
+  ]);
+
+  const exportData = {
+    schemaVersion: "loan-export.v2",
+    exportedAt: new Date().toISOString(),
+    loan: {
+      id: loan.id,
+      status: loan.status,
+      requestedAt: loan.requestedAt,
+      acceptedAt: loan.acceptedAt,
+      dueAt: loan.dueAt,
+      returnedAt: loan.returnedAt,
+      revokedAt: loan.revokedAt,
+      expiredAt: loan.expiredAt
+    },
+    portability: {
+      loanName: loan.lender.displayName || loan.lender.email,
+      lenderEmail: loan.lender.email,
+      borrowerEmail: loan.borrower.email
+    },
+    lender: {
+      id: loan.lender.id,
+      email: loan.lender.email,
+      displayName: loan.lender.displayName || null
+    },
+    borrower: {
+      id: loan.borrower.id,
+      email: loan.borrower.email,
+      displayName: loan.borrower.displayName || null
+    },
+    book: {
+      id: loan.book.id,
+      epubHash: loan.book.epubHash,
+      title: loan.book.title,
+      author: loan.book.author || null,
+      language: loan.book.language || null
+    },
+    notes,
+    highlights
+  };
+  const hash = crypto.createHash('sha256').update(JSON.stringify(exportData)).digest('hex');
+  return {
+    ...exportData,
+    integrity: {
+      algorithm: 'sha256',
+      hash
+    }
+  };
+};
+
+app.post('/loans/:loanId/return', requireAuth, async (req, res) => {
+  const schema = z.object({
+    exportAnnotations: z.boolean().default(false)
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const loan = await prisma.bookLoan.findUnique({
+    where: { id: req.params.loanId },
+    include: includeLoanGraph
+  });
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (loan.borrowerId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (loan.status !== 'ACTIVE') return res.status(400).json({ error: 'Loan is not active' });
+
+  const exportPayload = parsed.data.exportAnnotations
+    ? await buildLoanExportPayload(loan, req.auth.userId)
+    : null;
+
+  const returned = await prisma.$transaction(async (tx) => {
+    const now = new Date();
+    const exportAvailableUntil = new Date(now.getTime() + LOAN_EXPORT_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+    const next = await tx.bookLoan.update({
+      where: { id: loan.id },
+      data: {
+        status: 'RETURNED',
+        returnedAt: now,
+        exportAvailableUntil
+      },
+      include: includeLoanGraph
+    });
+
+    if (loan.createdUserBookOnAccept) {
+      await tx.userBook.deleteMany({
+        where: { userId: req.auth.userId, bookId: loan.bookId }
+      });
+    }
+
+    await addLoanAuditEvent(tx, {
+      loanId: loan.id,
+      actorUserId: req.auth.userId,
+      targetUserId: loan.lenderId,
+      action: 'LOAN_RETURNED',
+      details: { exported: Boolean(exportPayload) }
+    });
+
+    return next;
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: loan.lenderId,
+    eventKey: `loan-returned-${loan.id}-${returned.returnedAt?.toISOString?.() || Date.now()}`,
+    kind: 'loan-returned',
+    title: 'Book returned',
+    message: `${returned.borrower.displayName || returned.borrower.email} returned "${returned.book.title}".`,
+    loanId: loan.id,
+    actionType: 'open-lent',
+    actionTargetId: loan.id
+  });
+
+  return res.json({
+    loan: toLoanResponse(returned),
+    export: exportPayload
+  });
+});
+
+app.post('/loans/:loanId/revoke', requireAuth, async (req, res) => {
+  const loan = await prisma.bookLoan.findUnique({
+    where: { id: req.params.loanId },
+    include: includeLoanGraph
+  });
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (loan.lenderId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (loan.status !== 'ACTIVE') return res.status(400).json({ error: 'Loan is not active' });
+
+  const now = new Date();
+  const exportAvailableUntil = new Date(now.getTime() + LOAN_EXPORT_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const revoked = await prisma.$transaction(async (tx) => {
+    const next = await tx.bookLoan.update({
+      where: { id: loan.id },
+      data: {
+        status: 'REVOKED',
+        revokedAt: now,
+        exportAvailableUntil
+      },
+      include: includeLoanGraph
+    });
+
+    if (loan.createdUserBookOnAccept) {
+      await tx.userBook.deleteMany({
+        where: { userId: loan.borrowerId, bookId: loan.bookId }
+      });
+    }
+
+    await addLoanAuditEvent(tx, {
+      loanId: loan.id,
+      actorUserId: req.auth.userId,
+      targetUserId: loan.borrowerId,
+      action: 'LOAN_REVOKED',
+      details: {
+        exportAvailableUntil
+      }
+    });
+
+    return next;
+  });
+
+  await emitLoanNotification(prisma, {
+    userId: loan.borrowerId,
+    eventKey: `loan-revoked-${loan.id}-${revoked.revokedAt?.toISOString?.() || Date.now()}`,
+    kind: 'loan-revoked',
+    title: 'Loan revoked',
+    message: `${revoked.lender.displayName || revoked.lender.email} revoked your access to "${revoked.book.title}". Export remains available for 14 days.`,
+    loanId: loan.id,
+    actionType: 'open-borrowed',
+    actionTargetId: loan.id
+  });
+
+  return res.json({ loan: toLoanResponse(revoked) });
+});
+
+app.get('/loans/:loanId/export', requireAuth, async (req, res) => {
+  const loan = await prisma.bookLoan.findUnique({
+    where: { id: req.params.loanId },
+    include: includeLoanGraph
+  });
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (loan.borrowerId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+
+  if (!['REVOKED', 'RETURNED', 'EXPIRED'].includes(loan.status)) {
+    return res.status(400).json({ error: 'Export is available only for ended loans' });
+  }
+  const fallbackDeadlineSource = loan.revokedAt || loan.returnedAt || loan.expiredAt || loan.updatedAt || loan.createdAt;
+  const fallbackDeadline = new Date(new Date(fallbackDeadlineSource).getTime() + LOAN_EXPORT_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const deadlineMs = loan.exportAvailableUntil
+    ? new Date(loan.exportAvailableUntil).getTime()
+    : fallbackDeadline.getTime();
+  if (!Number.isFinite(deadlineMs) || Date.now() > deadlineMs) {
+    return res.status(403).json({ error: 'Export window ended' });
+  }
+
+  const payload = await buildLoanExportPayload(loan, req.auth.userId);
+  return res.json({ export: payload });
+});
+
+app.get('/loans/audit', requireAuth, async (req, res) => {
+  const events = await prisma.loanAuditEvent.findMany({
+    where: {
+      OR: [
+        { actorUserId: req.auth.userId },
+        { targetUserId: req.auth.userId },
+        { loan: { lenderId: req.auth.userId } },
+        { loan: { borrowerId: req.auth.userId } }
+      ]
+    },
+    include: {
+      actorUser: { select: { id: true, email: true, displayName: true, avatarUrl: true } },
+      targetUser: { select: { id: true, email: true, displayName: true, avatarUrl: true } },
+      loan: {
+        include: {
+          book: true,
+          lender: { select: { id: true, email: true, displayName: true, avatarUrl: true } },
+          borrower: { select: { id: true, email: true, displayName: true, avatarUrl: true } }
+        }
+      }
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 300
+  });
+
+  return res.json({
+    events: events.map((event) => ({
+      id: event.id,
+      action: event.action,
+      createdAt: event.createdAt,
+      details: (() => {
+        try {
+          return event.detailsJson ? JSON.parse(event.detailsJson) : null;
+        } catch {
+          return null;
+        }
+      })(),
+      actorUser: event.actorUser ? toUserResponse(event.actorUser) : null,
+      targetUser: event.targetUser ? toUserResponse(event.targetUser) : null,
+      loan: {
+        id: event.loan.id,
+        status: event.loan.status,
+        durationDays: event.loan.durationDays,
+        graceDays: event.loan.graceDays,
+        requestedAt: event.loan.requestedAt,
+        acceptedAt: event.loan.acceptedAt,
+        dueAt: event.loan.dueAt,
+        returnedAt: event.loan.returnedAt,
+        revokedAt: event.loan.revokedAt,
+        expiredAt: event.loan.expiredAt,
+        book: {
+          id: event.loan.book.id,
+          title: event.loan.book.title,
+          author: event.loan.book.author || null,
+          cover: event.loan.book.cover || null
+        },
+        lender: toUserResponse(event.loan.lender),
+        borrower: toUserResponse(event.loan.borrower)
+      }
+    }))
+  });
+});
+
+app.get('/notifications', requireAuth, async (req, res) => {
+  const notifications = await prisma.userNotification.findMany({
+    where: {
+      userId: req.auth.userId,
+      deletedAt: null
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 500
+  });
+  return res.json({ notifications: notifications.map(formatNotification) });
+});
+
+app.post('/notifications/read-all', requireAuth, async (req, res) => {
+  const now = new Date();
+  await prisma.userNotification.updateMany({
+    where: {
+      userId: req.auth.userId,
+      deletedAt: null,
+      readAt: null
+    },
+    data: {
+      readAt: now
+    }
+  });
+  return res.json({ ok: true });
+});
+
+app.patch('/notifications/:notificationId', requireAuth, async (req, res) => {
+  const schema = z.object({
+    read: z.boolean().optional(),
+    archived: z.boolean().optional(),
+    deleted: z.boolean().optional()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  const existing = await prisma.userNotification.findUnique({
+    where: { id: req.params.notificationId }
+  });
+  if (!existing || existing.userId !== req.auth.userId) {
+    return res.status(404).json({ error: 'Notification not found' });
+  }
+
+  const now = new Date();
+  const updated = await prisma.userNotification.update({
+    where: { id: existing.id },
+    data: {
+      readAt: parsed.data.read === undefined ? existing.readAt : (parsed.data.read ? now : null),
+      archivedAt: parsed.data.archived === undefined ? existing.archivedAt : (parsed.data.archived ? now : null),
+      deletedAt: parsed.data.deleted === undefined ? existing.deletedAt : (parsed.data.deleted ? now : null)
+    }
+  });
+
+  return res.json({ notification: formatNotification(updated) });
+});
+
+const runLoanMaintenanceJobs = async () => {
+  const activeLoans = await prisma.bookLoan.findMany({
+    where: { status: 'ACTIVE' },
+    include: {
+      ...includeLoanGraph,
+      borrower: { select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true } },
+      lender: { select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true } }
+    }
+  });
+
+  for (const loan of activeLoans) {
+    const maybeExpired = await expireLoanIfNeeded(prisma, loan, {
+      include: includeLoanGraph,
+      cleanupBorrowerAccess: true,
+      addAuditEvent: true
+    });
+
+    if (maybeExpired.status === 'EXPIRED') {
+      await prisma.loanRenewalRequest.updateMany({
+        where: {
+          loanId: maybeExpired.id,
+          status: 'PENDING'
+        },
+        data: {
+          status: 'EXPIRED',
+          reviewedAt: new Date()
+        }
+      });
+      await emitLoanNotification(prisma, {
+        userId: maybeExpired.borrowerId,
+        eventKey: `loan-expired-${maybeExpired.id}-${new Date(maybeExpired.expiredAt || maybeExpired.updatedAt).toISOString()}`,
+        kind: 'loan-expired',
+        title: 'Loan expired',
+        message: `Your access to "${maybeExpired.book.title}" expired. Export remains available for 14 days.`,
+        loanId: maybeExpired.id,
+        actionType: 'open-borrowed',
+        actionTargetId: maybeExpired.id
+      });
+      await emitLoanNotification(prisma, {
+        userId: maybeExpired.lenderId,
+        eventKey: `loan-expired-lender-${maybeExpired.id}-${new Date(maybeExpired.expiredAt || maybeExpired.updatedAt).toISOString()}`,
+        kind: 'loan-expired',
+        title: 'Borrow expired',
+        message: `${maybeExpired.borrower.displayName || maybeExpired.borrower.email} no longer has access to "${maybeExpired.book.title}" (expired).`,
+        loanId: maybeExpired.id,
+        actionType: 'open-lent',
+        actionTargetId: maybeExpired.id
+      });
+      continue;
+    }
+
+    if (!loan.dueAt) continue;
+    const dueMs = new Date(loan.dueAt).getTime();
+    if (!Number.isFinite(dueMs)) continue;
+    const diffDays = Math.ceil((dueMs - Date.now()) / (24 * 60 * 60 * 1000));
+    const reminderDays = Math.max(0, Number(loan.borrower?.loanReminderDays) || 0);
+
+    if (diffDays >= 0 && reminderDays > 0 && diffDays <= reminderDays && !loan.dueSoonNotifiedAt) {
+      await emitLoanNotification(prisma, {
+        userId: loan.borrowerId,
+        eventKey: `loan-due-soon-${loan.id}-${new Date(loan.dueAt).toISOString()}`,
+        kind: 'loan-due-soon',
+        title: 'Borrow due soon',
+        message: `"${loan.book.title}" is due in ${diffDays} day${diffDays === 1 ? '' : 's'}.`,
+        loanId: loan.id,
+        actionType: 'open-borrowed',
+        actionTargetId: loan.id
+      });
+      await prisma.bookLoan.update({
+        where: { id: loan.id },
+        data: { dueSoonNotifiedAt: new Date() }
+      });
+    }
+
+    if (diffDays < 0 && !loan.overdueNotifiedAt) {
+      await emitLoanNotification(prisma, {
+        userId: loan.borrowerId,
+        eventKey: `loan-overdue-${loan.id}-${new Date(loan.dueAt).toISOString()}`,
+        kind: 'loan-overdue',
+        title: 'Borrow overdue',
+        message: `"${loan.book.title}" is overdue. Return it or request renewal.`,
+        loanId: loan.id,
+        actionType: 'open-borrowed',
+        actionTargetId: loan.id
+      });
+      await emitLoanNotification(prisma, {
+        userId: loan.lenderId,
+        eventKey: `loan-overdue-lender-${loan.id}-${new Date(loan.dueAt).toISOString()}`,
+        kind: 'loan-overdue',
+        title: 'Borrower overdue',
+        message: `${loan.borrower.displayName || loan.borrower.email} is overdue on "${loan.book.title}".`,
+        loanId: loan.id,
+        actionType: 'open-lent',
+        actionTargetId: loan.id
+      });
+      await prisma.bookLoan.update({
+        where: { id: loan.id },
+        data: { overdueNotifiedAt: new Date() }
+      });
+    }
+  }
+
+  const endedLoans = await prisma.bookLoan.findMany({
+    where: {
+      status: { in: ['REVOKED', 'RETURNED', 'EXPIRED'] },
+      exportAvailableUntil: { not: null },
+      endedReminderNotifiedAt: null
+    },
+    include: includeLoanGraph
+  });
+  for (const loan of endedLoans) {
+    const deadlineMs = new Date(loan.exportAvailableUntil).getTime();
+    if (!Number.isFinite(deadlineMs) || Date.now() > deadlineMs) continue;
+    await emitLoanNotification(prisma, {
+      userId: loan.borrowerId,
+      eventKey: `loan-export-window-${loan.id}-${new Date(loan.exportAvailableUntil).toISOString()}`,
+      kind: 'loan-export-window',
+      title: 'Export available',
+      message: `Export your annotations for "${loan.book.title}" before ${new Date(loan.exportAvailableUntil).toLocaleString()}.`,
+      loanId: loan.id,
+      actionType: 'open-borrowed',
+      actionTargetId: loan.id
+    });
+    await prisma.bookLoan.update({
+      where: { id: loan.id },
+      data: { endedReminderNotifiedAt: new Date() }
+    });
+  }
+};
+
+app.use((err, _req, res) => {
+  console.error(err);
+  return res.status(500).json({ error: 'Internal server error' });
+});
+
+const start = async () => {
+  await prisma.$connect();
+  if (config.loanSchedulerEnabled) {
+    setInterval(() => {
+      runLoanMaintenanceJobs().catch((err) => {
+        console.error('Loan maintenance job failed', err);
+      });
+    }, config.loanSchedulerIntervalMs);
+    runLoanMaintenanceJobs().catch((err) => {
+      console.error('Initial loan maintenance job failed', err);
+    });
+  }
+  app.listen(config.port, '0.0.0.0', () => {
+    console.log(`Ariadne server listening on 0.0.0.0:${config.port}`);
+  });
+};
+
+start().catch((err) => {
+  console.error('Failed to start server', err);
+  process.exit(1);
+});

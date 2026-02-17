@@ -22,6 +22,7 @@ const getBoardColumnCount = () => {
 };
 
 export default function LibraryCollectionsBoard({
+  isDarkLibraryTheme = false,
   collections,
   books,
   collectionError,
@@ -263,22 +264,30 @@ export default function LibraryCollectionsBoard({
 
   return (
     <section data-testid="collections-board" className="space-y-4">
-      <div className="flex flex-col gap-3 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm md:flex-row md:items-center md:justify-between">
+      <div className={`flex flex-col gap-3 rounded-2xl border p-4 shadow-sm md:flex-row md:items-center md:justify-between ${
+        isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "border-gray-200 bg-white"
+      }`}>
         <div>
-          <h2 className="text-lg font-bold text-gray-900">Collections directory</h2>
-          <p className="mt-1 text-xs text-gray-500">
+          <h2 className={`text-lg font-bold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Collections directory</h2>
+          <p className={`mt-1 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
             Organize many collections with a scalable directory, and switch to a board overview when needed.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex h-10 items-center rounded-xl border border-gray-200 bg-white p-1">
+          <div className={`inline-flex h-10 items-center rounded-xl border p-1 ${
+            isDarkLibraryTheme ? "border-slate-700 bg-slate-800" : "border-gray-200 bg-white"
+          }`}>
             <button
               type="button"
               data-testid="collections-view-directory"
               onClick={() => setCollectionsViewMode("directory")}
               className={`inline-flex h-full items-center gap-1 rounded-lg px-3 text-xs font-semibold transition-colors ${
-                collectionsViewMode === "directory" ? "bg-blue-600 text-white" : "text-gray-600 hover:text-gray-900"
+                collectionsViewMode === "directory"
+                  ? "bg-blue-600 text-white"
+                  : isDarkLibraryTheme
+                    ? "text-slate-300 hover:text-slate-100"
+                    : "text-gray-600 hover:text-gray-900"
               }`}
             >
               <PanelsTopLeft size={14} />
@@ -289,7 +298,11 @@ export default function LibraryCollectionsBoard({
               data-testid="collections-view-board"
               onClick={() => setCollectionsViewMode("board")}
               className={`inline-flex h-full items-center gap-1 rounded-lg px-3 text-xs font-semibold transition-colors ${
-                collectionsViewMode === "board" ? "bg-blue-600 text-white" : "text-gray-600 hover:text-gray-900"
+                collectionsViewMode === "board"
+                  ? "bg-blue-600 text-white"
+                  : isDarkLibraryTheme
+                    ? "text-slate-300 hover:text-slate-100"
+                    : "text-gray-600 hover:text-gray-900"
               }`}
             >
               <KanbanSquare size={14} />
@@ -301,7 +314,11 @@ export default function LibraryCollectionsBoard({
             type="button"
             data-testid="collection-add-toggle"
             onClick={onToggleCreateForm}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 text-sm font-bold text-blue-700 hover:bg-blue-100"
+            className={`inline-flex h-10 items-center justify-center gap-2 rounded-xl border px-4 text-sm font-bold transition-colors ${
+              isDarkLibraryTheme
+                ? "border-blue-700 bg-blue-950/45 text-blue-200 hover:bg-blue-900/55"
+                : "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+            }`}
           >
             <Plus size={16} />
             <span>{showCreateCollectionForm ? "Close" : "Add collection"}</span>
@@ -310,15 +327,21 @@ export default function LibraryCollectionsBoard({
       </div>
 
       {showCreateCollectionForm && (
-        <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-          <div className="text-xs font-semibold text-gray-700">Create a collection</div>
+        <div className={`rounded-2xl border p-4 shadow-sm ${
+          isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "border-gray-200 bg-white"
+        }`}>
+          <div className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}`}>Create a collection</div>
           <div className="mt-2 flex flex-col gap-2 md:flex-row md:items-center">
             <input
               data-testid="collection-create-input"
               value={collectionNameDraft}
               onChange={(e) => onCollectionNameChange(e.target.value)}
               placeholder="Collection name (e.g. Classics)"
-              className="h-10 flex-1 rounded-xl border border-gray-200 bg-white px-3 text-sm text-gray-800 outline-none focus:ring-2 focus:ring-blue-500"
+              className={`h-10 flex-1 rounded-xl border px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 ${
+                isDarkLibraryTheme
+                  ? "border-slate-700 bg-slate-800 text-slate-100 placeholder:text-slate-500"
+                  : "border-gray-200 bg-white text-gray-800"
+              }`}
             />
             <div className="flex items-center gap-2">
               {collectionColorOptions.map((color) => (
@@ -351,11 +374,13 @@ export default function LibraryCollectionsBoard({
       {collections.length === 0 ? (
         <div
           data-testid="collections-empty"
-          className="rounded-3xl border-2 border-dashed border-gray-200 bg-white p-14 text-center shadow-sm"
+          className={`rounded-3xl border-2 border-dashed p-14 text-center shadow-sm ${
+            isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "border-gray-200 bg-white"
+          }`}
         >
-          <FolderClosed size={44} className="mx-auto mb-3 text-gray-300" />
-          <div className="text-lg font-semibold text-gray-900">No collections yet</div>
-          <div className="mt-1 text-sm text-gray-500">Create your first shelf to organize your reading board.</div>
+          <FolderClosed size={44} className={`mx-auto mb-3 ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-300"}`} />
+          <div className={`text-lg font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>No collections yet</div>
+          <div className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Create your first shelf to organize your reading board.</div>
         </div>
       ) : (
         <>

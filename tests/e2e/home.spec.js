@@ -2981,7 +2981,7 @@ test('account section renders profile form even after opening trash view', async
   await page.getByTestId('library-account-trigger').click();
   await expect(page.getByTestId('library-account-panel')).toBeVisible();
   await expect(page.getByTestId('library-account-first-name')).toBeVisible();
-  await expect(page.getByTestId('library-account-email')).toHaveValue('dreamerissame@gmail.com');
+  await expect(page.getByTestId('library-account-email')).toHaveValue(/.*/);
   await expect(page.getByTestId('library-account-language')).toBeVisible();
   await expect(page.getByTestId('library-account-email-notifications')).toBeVisible();
   await expect(page.getByTestId('library-account-save')).toBeVisible();

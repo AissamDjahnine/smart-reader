@@ -50,7 +50,9 @@ ariadne is built around real reading behavior:
   - Language labels shown in full form (`English`, `French`, etc.)
 - Clean inline metadata rows on cards (lightweight language/pages display)
 - Workspace sidebar for fast section switching: `My Library`, `My Collections`, `Notes`, `Highlights`, `Trash`, `Settings`
-- Dedicated brand slot at the top of the left sidebar (`public/brand/logo.png`) for app identity
+- Dedicated brand slot at the top of the left sidebar for app identity:
+  - `public/brand/logo-light.png` in light mode
+  - `public/brand/logo-dark.png` in dark mode
 - Reading Snapshot panel above the workspace sidebar:
   - Completion donut (`finished / total`)
   - Total hours spent across all books
@@ -106,6 +108,7 @@ ariadne is built around real reading behavior:
 - Top-right header controls now include:
   - Notifications bell with unread badge
   - Profile avatar menu (`Profile`, `Reading Statistics`, `Settings`, `FAQ`, `Sign out`)
+  - Custom profile pictures and display names (set in Settings)
   - Notification Center with `All` / `Unread` tabs
   - Notification actions menu (`...`) per item: `Open in Reader`, `Mark as read/unread`, `Archive`, `Delete`
   - Notification card click focuses/highlights the related book in `Continue Reading`
@@ -126,9 +129,14 @@ ariadne is built around real reading behavior:
 - First-open reading mode choice is mandatory per book:
   - choose `Book view` or `Infinite scrolling` once before reading starts
   - chosen mode stays locked while the book is in progress
+  - reopening an already in-progress book does not re-trigger this chooser
   - changing mode later uses a guided flow (`Change reading mode`) with mandatory relocation:
-    - restart from book start, or
-    - choose a chapter target
+    - `Restart book`:
+      - jumps to the beginning
+      - resets book progress to `0%`
+    - `Choose chapter`:
+      - jumps to selected chapter
+      - updates progress based on that chapter position in the table of contents
 - Paginated mode supports subtle edge click/tap zones for next/previous page turns (no intrusive on-page arrow buttons)
 - Centered portrait-style reading column in scroll mode
 - Per-book reading preferences:
@@ -212,6 +220,182 @@ npm run dev
 ```
 
 Open the app at the local Vite URL (usually `http://localhost:5173`).
+
+### Reader mode behavior test (local)
+
+1. Open a new book, choose reading mode, read enough to create non-zero progress, close reader.
+2. Reopen the same book:
+   - expected: no mode chooser appears.
+3. In reader, click `Change reading mode` then `Restart book`:
+   - expected: progress becomes `0%`.
+4. In reader, click `Change reading mode` then `Choose chapter`:
+   - expected: progress updates relative to selected chapter position.
+
+## Shared Server Mode
+
+This repository now includes a collaborative backend for multi-user sharing on one server.
+
+### Topology
+
+- One shared server runs `docker-compose` (backend + postgres).
+- All users access the app from a browser over your private network.
+- No per-user Docker setup is required.
+- Public internet exposure is optional.
+
+### Run on shared server
+
+1. Copy backend env:
+
+```bash
+cp server/.env.example server/.env
+```
+
+2. Set at least:
+- `JWT_SECRET` to a strong secret.
+- `APP_BASE_URL` to your backend URL, for example `http://<SERVER_IP>:4000`.
+
+3. Start backend + DB:
+
+```bash
+docker compose up -d --build backend db
+```
+
+4. Optional: run frontend in Docker too:
+
+```bash
+docker compose --profile frontend up -d --build frontend
+```
+
+### Frontend env for collaborative mode
+
+Set `VITE_API_BASE_URL` to your backend URL (for example `http://<SERVER_IP>:4000`).
+When this variable is set:
+
+- Email/password registration/login is enabled.
+- Display name is required at signup.
+- JWT auth is required.
+- Books/progress/highlights are loaded from shared backend.
+- Recommendation Inbox, Borrowed, Lent, and History sections are enabled.
+- Profile avatar upload and profile name updates are enabled.
+
+### Collaboration model (current)
+
+- `Book` is global/shared by `epubHash`.
+- Per-user progress is in `UserBook`.
+- Sharing is recommendation-first:
+  - `Share` sends book recommendation metadata.
+  - Recipient chooses whether to borrow.
+- Lending creates a `BookLoan` with immutable permission snapshot at creation/accept.
+- Borrower progress is always independent from lender progress.
+- Notes/highlights use scoped visibility:
+  - `OWNER`
+  - `LENDER_VISIBLE`
+  - `PRIVATE_BORROWER`
+- Borrowed annotation permissions are enforceable per loan:
+  - add/edit notes
+  - add/edit highlights
+  - borrower cannot edit/delete lender annotations.
+- Lender can choose whether borrower can see lender existing annotations (`shareLenderAnnotations`).
+- Borrower annotations do not affect lender reading state or progress.
+- Book access requires `UserBook` relation.
+- Recommendation records are stored in `BookShare`.
+- Loan events/timeline are stored in `LoanAuditEvent` and shown in `History`.
+- Loan renewal workflow:
+  - Borrower can request extension days.
+  - Lender can approve or deny.
+  - Renewal actions are audited and notified.
+- Default lending template per user:
+  - Saved server-side (`duration`, `grace`, permission defaults, reminder days).
+  - New loan requests use template defaults automatically unless overridden.
+- Loan state visibility in UI:
+  - Book cover badges in library and continue-reading:
+    - no badge = owned/non-loan
+    - `Borrowed` badge = active borrowed loan
+    - `Lent` badge = active lent loan
+  - Library filter includes `Borrowed books` and `Lent books`.
+- Collaboration workspace tabs:
+  - `My library`, `Borrowed`, `Lent`, `History`, `Inbox`.
+- Borrowed/Lent pages include richer book-first cards with cover thumbnails and view controls:
+  - `Grid`
+  - `Compact`
+  - `List`
+- Loan accept flow now includes a permission-summary confirmation step before final accept.
+- Borrowed and Lent views include renewal controls:
+  - borrower can request extension days,
+  - lender can approve/deny pending renewal requests.
+- History is grouped at book level:
+  - all lifecycle events for the same book are shown together
+  - each event row shows actor/target identity with small avatar chips.
+- Inbox has two collaboration streams:
+  - recommendation shares (`BookShare`)
+  - loan inbox (`BookLoan` requests).
+- Borrow reminders are surfaced in both:
+  - Notification Center events (`due soon`, `overdue`)
+  - Inbox `Borrow Reminders` panel.
+- Notification reliability (server-side):
+  - Loan notifications are persisted in backend (`UserNotification`) with stable per-user `eventKey`.
+  - Read/archive/delete state is persisted server-side.
+  - Notification actions in UI call backend mutation endpoints.
+
+### Entitlement and consistency rules
+
+- Central entitlement and policy logic is enforced server-side for loan reads/writes.
+- Notes/highlights updates use revision conflict protection:
+  - Send `if-match-revision` header to avoid overwriting newer server edits.
+  - Backend returns `409 REVISION_CONFLICT` when stale.
+- Borrower/lender permissions are snapshotted in loan record at request/accept time.
+
+### Borrow/Lend lifecycle
+
+- `PENDING` -> `ACTIVE` on borrower accept.
+- `ACTIVE` can become:
+  - `RETURNED` (borrower returns),
+  - `REVOKED` (lender revokes anytime),
+  - `EXPIRED` (due + grace exceeded).
+- On `RETURNED` / `REVOKED` / `EXPIRED`:
+  - reader access is blocked immediately,
+  - book appears as ended state in Borrowed view,
+  - only export actions remain available.
+
+### Export window (ended loans)
+
+- Borrower can export their annotations for **14 days** after loan end.
+- Export formats in UI:
+  - `JSON`
+  - `PDF` (summary export)
+- After export window ends, annotations are no longer accessible through loan export endpoints.
+
+### Borrow reminder setting
+
+- In `Settings`, users can define `Borrow reminder (days before due)` with range `0..30`.
+- `0` disables due-soon reminders.
+- Due-soon and overdue reminders are generated from active borrowed loans.
+
+### Background jobs
+
+- Backend includes a maintenance scheduler for:
+  - automatic active-loan expiry transition,
+  - due-soon and overdue notification generation,
+  - ended-loan export-window reminders.
+
+Environment variables:
+- `LOAN_SCHEDULER_ENABLED=true|false` (default `true`)
+- `LOAN_SCHEDULER_INTERVAL_MS` (default `60000`, minimum `15000`)
+- `server/.env.example` and `docker-compose.yml` already expose these values.
+
+### Backend migrations
+
+When pulling latest collaboration changes, run migrations on the server DB:
+
+```bash
+docker compose exec backend npx prisma migrate deploy
+```
+
+Then rebuild/restart backend/frontend so API + UI match:
+
+```bash
+docker compose up -d --build backend frontend
+```
 
 ## Main App Areas
 

@@ -6,14 +6,17 @@ import {
   FileText,
   Highlighter,
   CircleUserRound,
-  Trash2
+  Trash2,
+  Inbox
 } from "lucide-react";
 
 export function LibraryWorkspaceSidebar({
   librarySection,
   isDarkLibraryTheme,
+  isCollabMode = false,
   notesCount,
   highlightsCount,
+  inboxCount,
   trashCount,
   onSelectSection,
   className = ""
@@ -50,6 +53,44 @@ export function LibraryWorkspaceSidebar({
           <BookIcon size={17} className={librarySection === "library" ? "" : (isDarkLibraryTheme ? "text-slate-400 group-hover:text-blue-300" : "text-gray-500 group-hover:text-blue-600")} />
           <span>My Library</span>
         </button>
+        {isCollabMode && (
+          <>
+            <button
+              type="button"
+              data-testid="sidebar-borrowed"
+              onClick={() => onSelectSection("borrowed")}
+              className={`${sidebarButtonBase} ${librarySection === "borrowed" ? sidebarButtonActive : sidebarButtonIdle}`}
+            >
+              {librarySection === "borrowed" && (
+                <span
+                  aria-hidden="true"
+                  className={`absolute left-0 top-2.5 h-6 w-1 rounded-r-full ${
+                    isDarkLibraryTheme ? "bg-blue-400" : "bg-blue-500"
+                  }`}
+                />
+              )}
+              <BookIcon size={17} className={librarySection === "borrowed" ? "" : (isDarkLibraryTheme ? "text-slate-400 group-hover:text-blue-300" : "text-gray-500 group-hover:text-blue-600")} />
+              <span>Borrowed</span>
+            </button>
+            <button
+              type="button"
+              data-testid="sidebar-lent"
+              onClick={() => onSelectSection("lent")}
+              className={`${sidebarButtonBase} ${librarySection === "lent" ? sidebarButtonActive : sidebarButtonIdle}`}
+            >
+              {librarySection === "lent" && (
+                <span
+                  aria-hidden="true"
+                  className={`absolute left-0 top-2.5 h-6 w-1 rounded-r-full ${
+                    isDarkLibraryTheme ? "bg-blue-400" : "bg-blue-500"
+                  }`}
+                />
+              )}
+              <BookIcon size={17} className={librarySection === "lent" ? "" : (isDarkLibraryTheme ? "text-slate-400 group-hover:text-blue-300" : "text-gray-500 group-hover:text-blue-600")} />
+              <span>Lent</span>
+            </button>
+          </>
+        )}
         <button
           type="button"
           data-testid="sidebar-reading-statistics"
@@ -138,6 +179,51 @@ export function LibraryWorkspaceSidebar({
         </button>
         <button
           type="button"
+          data-testid="sidebar-inbox"
+          onClick={() => onSelectSection("inbox")}
+          className={`${sidebarButtonBase} ${librarySection === "inbox" ? sidebarButtonActive : sidebarButtonIdle}`}
+        >
+          {librarySection === "inbox" && (
+            <span
+              aria-hidden="true"
+              className={`absolute left-0 top-2.5 h-6 w-1 rounded-r-full ${
+                isDarkLibraryTheme ? "bg-blue-400" : "bg-blue-500"
+              }`}
+            />
+          )}
+          <Inbox size={17} className={librarySection === "inbox" ? "" : (isDarkLibraryTheme ? "text-slate-400 group-hover:text-blue-300" : "text-gray-500 group-hover:text-blue-600")} />
+          <span>Inbox</span>
+          {inboxCount > 0 && (
+            <span className={`ml-auto inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
+              librarySection === "inbox"
+                ? (isDarkLibraryTheme ? "bg-blue-900 text-blue-200" : "bg-blue-100 text-blue-700")
+                : (isDarkLibraryTheme ? "bg-slate-700 text-slate-300" : "bg-gray-100 text-gray-600")
+            }`}>
+              {inboxCount}
+            </span>
+          )}
+        </button>
+        {isCollabMode && (
+          <button
+            type="button"
+            data-testid="sidebar-history"
+            onClick={() => onSelectSection("history")}
+            className={`${sidebarButtonBase} ${librarySection === "history" ? sidebarButtonActive : sidebarButtonIdle}`}
+          >
+            {librarySection === "history" && (
+              <span
+                aria-hidden="true"
+                className={`absolute left-0 top-2.5 h-6 w-1 rounded-r-full ${
+                  isDarkLibraryTheme ? "bg-blue-400" : "bg-blue-500"
+                }`}
+              />
+            )}
+            <BarChart3 size={17} className={librarySection === "history" ? "" : (isDarkLibraryTheme ? "text-slate-400 group-hover:text-blue-300" : "text-gray-500 group-hover:text-blue-600")} />
+            <span>History</span>
+          </button>
+        )}
+        <button
+          type="button"
           data-testid="sidebar-trash"
           onClick={() => onSelectSection("trash")}
           className={`${sidebarButtonBase} ${librarySection === "trash" ? sidebarButtonActive : sidebarButtonIdle}`}
@@ -184,7 +270,7 @@ export function LibraryWorkspaceSidebar({
   );
 }
 
-export function LibraryWorkspaceMobileNav({ librarySection, onSelectSection }) {
+export function LibraryWorkspaceMobileNav({ librarySection, onSelectSection, isCollabMode = false }) {
   return (
     <div className="mb-4 md:hidden">
       <div className="flex gap-2 overflow-x-auto pb-1">
@@ -200,6 +286,34 @@ export function LibraryWorkspaceMobileNav({ librarySection, onSelectSection }) {
           <BookIcon size={13} />
           <span>Library</span>
         </button>
+        {isCollabMode && (
+          <>
+            <button
+              type="button"
+              onClick={() => onSelectSection("borrowed")}
+              className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold ${
+                librarySection === "borrowed"
+                  ? "border-blue-200 bg-blue-50 text-blue-700"
+                  : "border-gray-200 bg-white text-gray-700"
+              }`}
+            >
+              <BookIcon size={13} />
+              <span>Borrowed</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelectSection("lent")}
+              className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold ${
+                librarySection === "lent"
+                  ? "border-blue-200 bg-blue-50 text-blue-700"
+                  : "border-gray-200 bg-white text-gray-700"
+              }`}
+            >
+              <BookIcon size={13} />
+              <span>Lent</span>
+            </button>
+          </>
+        )}
         <button
           type="button"
           onClick={() => onSelectSection("statistics")}
@@ -250,6 +364,18 @@ export function LibraryWorkspaceMobileNav({ librarySection, onSelectSection }) {
         </button>
         <button
           type="button"
+          onClick={() => onSelectSection("inbox")}
+          className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold ${
+            librarySection === "inbox"
+              ? "border-blue-200 bg-blue-50 text-blue-700"
+              : "border-gray-200 bg-white text-gray-700"
+          }`}
+        >
+          <Inbox size={13} />
+          <span>Inbox</span>
+        </button>
+        <button
+          type="button"
           onClick={() => onSelectSection("trash")}
           className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold ${
             librarySection === "trash"
@@ -260,6 +386,20 @@ export function LibraryWorkspaceMobileNav({ librarySection, onSelectSection }) {
           <Trash2 size={13} />
           <span>Trash</span>
         </button>
+        {isCollabMode && (
+          <button
+            type="button"
+            onClick={() => onSelectSection("history")}
+            className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold ${
+              librarySection === "history"
+                ? "border-blue-200 bg-blue-50 text-blue-700"
+                : "border-gray-200 bg-white text-gray-700"
+            }`}
+          >
+            <BarChart3 size={13} />
+            <span>History</span>
+          </button>
+        )}
         <button
           type="button"
           onClick={() => onSelectSection("account")}

@@ -1,0 +1,320 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserBookStatus {
+  TO_READ
+  IN_PROGRESS
+  FINISHED
+}
+
+enum ShareStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+enum LoanStatus {
+  PENDING
+  ACTIVE
+  RETURNED
+  EXPIRED
+  REVOKED
+  REJECTED
+}
+
+enum AnnotationVisibility {
+  PRIVATE
+  SHARED_WITH_LENDER
+}
+
+enum AnnotationScope {
+  OWNER
+  LENDER_VISIBLE
+  PRIVATE_BORROWER
+}
+
+enum LoanRenewalStatus {
+  PENDING
+  APPROVED
+  DENIED
+  CANCELLED
+  EXPIRED
+}
+
+enum NotificationDeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+}
+
+model User {
+  id           String      @id @default(cuid())
+  email        String      @unique
+  passwordHash String
+  displayName  String?
+  avatarUrl    String?
+  loanReminderDays Int     @default(3)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  userBooks    UserBook[]
+  notes        Note[]
+  highlights   Highlight[]
+  sentShares   BookShare[] @relation("shares_sent")
+  recvShares   BookShare[] @relation("shares_received")
+  lentLoans    BookLoan[]  @relation("loans_lent")
+  borrowedLoans BookLoan[] @relation("loans_borrowed")
+  loanAuditActor LoanAuditEvent[] @relation("loan_audit_actor")
+  loanAuditTarget LoanAuditEvent[] @relation("loan_audit_target")
+  loanTemplate  UserLoanTemplate?
+  sentNotifications UserNotification[]
+  renewalRequests LoanRenewalRequest[] @relation("loan_renewal_requester")
+  renewalReviews LoanRenewalRequest[] @relation("loan_renewal_reviewer")
+  renewalLenderRecords LoanRenewalRequest[] @relation("loan_renewal_lender")
+  renewalBorrowerRecords LoanRenewalRequest[] @relation("loan_renewal_borrower")
+}
+
+model InviteCode {
+  id         String   @id @default(cuid())
+  code       String   @unique
+  isActive   Boolean  @default(true)
+  maxUses    Int?
+  usedCount  Int      @default(0)
+  createdAt  DateTime @default(now())
+}
+
+model Book {
+  id          String      @id @default(cuid())
+  epubHash    String      @unique
+  title       String
+  author      String?
+  language    String?
+  cover       String?
+  filePath    String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  userBooks   UserBook[]
+  notes       Note[]
+  highlights  Highlight[]
+  shares      BookShare[]
+  loans       BookLoan[]
+}
+
+model UserBook {
+  id              String         @id @default(cuid())
+  userId          String
+  bookId          String
+  status          UserBookStatus @default(TO_READ)
+  progressPercent Int            @default(0)
+  progressCfi     String?
+  lastOpenedAt    DateTime?
+  isDeleted       Boolean        @default(false)
+  deletedAt       DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book            Book           @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, bookId])
+  @@index([bookId])
+}
+
+model Note {
+  id              String   @id @default(cuid())
+  bookId          String
+  createdByUserId String
+  cfi             String?
+  text            String
+  message         String?
+  scope           AnnotationScope @default(OWNER)
+  revision        Int @default(1)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  book            Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  createdBy       User     @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  @@index([bookId])
+}
+
+model Highlight {
+  id              String   @id @default(cuid())
+  bookId          String
+  createdByUserId String
+  cfiRange        String
+  text            String
+  note            String?
+  color           String?
+  contextPrefix   String?
+  contextSuffix   String?
+  chapterHref     String?
+  scope           AnnotationScope @default(OWNER)
+  revision        Int @default(1)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  book            Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  createdBy       User     @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  @@unique([bookId, cfiRange, createdByUserId])
+  @@index([bookId])
+}
+
+model BookShare {
+  id         String      @id @default(cuid())
+  bookId      String
+  fromUserId  String
+  toUserId    String
+  message     String?
+  status      ShareStatus @default(PENDING)
+  createdAt   DateTime    @default(now())
+  acceptedAt  DateTime?
+
+  book        Book       @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  fromUser    User       @relation("shares_sent", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser      User       @relation("shares_received", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@index([toUserId, status])
+  @@unique([bookId, fromUserId, toUserId])
+}
+
+model BookLoan {
+  id                           String               @id @default(cuid())
+  bookId                        String
+  lenderId                      String
+  borrowerId                    String
+  status                        LoanStatus           @default(PENDING)
+  message                       String?
+  durationDays                  Int                  @default(14)
+  graceDays                     Int                  @default(0)
+  requestedAt                   DateTime             @default(now())
+  acceptedAt                    DateTime?
+  dueAt                         DateTime?
+  returnedAt                    DateTime?
+  revokedAt                     DateTime?
+  expiredAt                     DateTime?
+  exportAvailableUntil          DateTime?
+  createdUserBookOnAccept       Boolean              @default(false)
+  canAddHighlights              Boolean              @default(true)
+  canEditHighlights             Boolean              @default(true)
+  canAddNotes                   Boolean              @default(true)
+  canEditNotes                  Boolean              @default(true)
+  annotationVisibility          AnnotationVisibility @default(PRIVATE)
+  shareLenderAnnotations        Boolean              @default(false)
+  dueSoonNotifiedAt             DateTime?
+  overdueNotifiedAt             DateTime?
+  endedReminderNotifiedAt       DateTime?
+  createdAt                     DateTime             @default(now())
+  updatedAt                     DateTime             @updatedAt
+
+  book                          Book                 @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  lender                        User                 @relation("loans_lent", fields: [lenderId], references: [id], onDelete: Cascade)
+  borrower                      User                 @relation("loans_borrowed", fields: [borrowerId], references: [id], onDelete: Cascade)
+  auditEvents                   LoanAuditEvent[]
+  renewalRequests               LoanRenewalRequest[]
+  notifications                 UserNotification[]
+
+  @@index([borrowerId, status])
+  @@index([lenderId, status])
+  @@index([bookId, status])
+}
+
+model LoanAuditEvent {
+  id             String   @id @default(cuid())
+  loanId          String
+  actorUserId     String?
+  targetUserId    String?
+  action          String
+  detailsJson     String?
+  createdAt       DateTime @default(now())
+
+  loan            BookLoan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  actorUser       User?    @relation("loan_audit_actor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  targetUser      User?    @relation("loan_audit_target", fields: [targetUserId], references: [id], onDelete: SetNull)
+
+  @@index([loanId, createdAt])
+}
+
+model LoanRenewalRequest {
+  id                String            @id @default(cuid())
+  loanId            String
+  requesterUserId   String
+  reviewerUserId    String?
+  lenderId          String
+  borrowerId        String
+  status            LoanRenewalStatus @default(PENDING)
+  requestedExtraDays Int
+  previousDueAt     DateTime
+  proposedDueAt     DateTime
+  decisionMessage   String?
+  requestedAt       DateTime          @default(now())
+  reviewedAt        DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  loan              BookLoan          @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  requester         User              @relation("loan_renewal_requester", fields: [requesterUserId], references: [id], onDelete: Cascade)
+  reviewer          User?             @relation("loan_renewal_reviewer", fields: [reviewerUserId], references: [id], onDelete: SetNull)
+  lender            User              @relation("loan_renewal_lender", fields: [lenderId], references: [id], onDelete: Cascade)
+  borrower          User              @relation("loan_renewal_borrower", fields: [borrowerId], references: [id], onDelete: Cascade)
+
+  @@index([loanId, status])
+  @@index([borrowerId, status])
+  @@index([lenderId, status])
+}
+
+model UserLoanTemplate {
+  id                     String               @id @default(cuid())
+  userId                 String               @unique
+  name                   String               @default("Default lending template")
+  durationDays           Int                  @default(14)
+  graceDays              Int                  @default(0)
+  canAddHighlights       Boolean              @default(true)
+  canEditHighlights      Boolean              @default(true)
+  canAddNotes            Boolean              @default(true)
+  canEditNotes           Boolean              @default(true)
+  annotationVisibility   AnnotationVisibility @default(PRIVATE)
+  shareLenderAnnotations Boolean              @default(false)
+  remindBeforeDays       Int                  @default(3)
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+
+  user                   User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserNotification {
+  id            String                     @id @default(cuid())
+  userId        String
+  loanId        String?
+  eventKey      String
+  kind          String
+  title         String
+  message       String
+  payloadJson   String?
+  actionType    String?
+  actionTargetId String?
+  status        NotificationDeliveryStatus @default(PENDING)
+  deliveredAt   DateTime?
+  readAt        DateTime?
+  archivedAt    DateTime?
+  deletedAt     DateTime?
+  retryCount    Int                        @default(0)
+  lastError     String?
+  createdAt     DateTime                   @default(now())
+  updatedAt     DateTime                   @updatedAt
+
+  user          User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  loan          BookLoan?                  @relation(fields: [loanId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, eventKey])
+  @@index([userId, createdAt])
+  @@index([loanId])
+}

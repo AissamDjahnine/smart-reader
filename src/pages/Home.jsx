@@ -62,12 +62,41 @@ import {
   Archive,
   Check,
   Mail,
+  Send,
 } from 'lucide-react';
+import {
+  approveLoanRenewal,
+  acceptLoan,
+  createBookShare,
+  denyLoanRenewal,
+  exportLoanData,
+  fetchBorrowedLoans,
+  fetchLoanAudit,
+  fetchLoanInbox,
+  fetchLoanRenewals,
+  fetchLoanTemplate,
+  fetchNotifications,
+  fetchLentLoans,
+  fetchShareInbox,
+  isCollabMode,
+  markAllNotificationsRead,
+  patchNotification,
+  rejectLoan,
+  requestLoanRenewal,
+  requestBookLoan,
+  returnLoan,
+  revokeLoan,
+  updateLoanTemplate,
+  updateMe,
+  uploadMyAvatar
+} from '../services/collabApi';
+import { clearSession, getCurrentUser, setCurrentUser } from '../services/session';
 import LibraryAccountSection from './library/LibraryAccountSection';
 import { LibraryWorkspaceSidebar, LibraryWorkspaceMobileNav } from './library/LibraryWorkspaceNav';
 import LibraryNotesCenterPanel from './library/LibraryNotesCenterPanel';
 import LibraryHighlightsCenterPanel from './library/LibraryHighlightsCenterPanel';
 import LibraryCollectionsBoard from './library/LibraryCollectionsBoard';
+import LibraryShareInboxPanel from './library/LibraryShareInboxPanel';
 import LibraryGlobalSearchPanel from './library/LibraryGlobalSearchPanel';
 import LibraryToolbarSection from './library/LibraryToolbarSection';
 import LibraryReadingStatisticsSection from './library/LibraryReadingStatisticsSection';
@@ -89,7 +118,7 @@ const LIBRARY_THEME_KEY = 'library-theme';
 const LIBRARY_LANGUAGE_KEY = 'library-language';
 const ACCOUNT_PROFILE_KEY = 'library-account-profile';
 const LIBRARY_NOTIFICATION_STATE_KEY = 'library-notification-state';
-const ACCOUNT_DEFAULT_EMAIL = 'dreamerissame@gmail.com';
+const ACCOUNT_DEFAULT_EMAIL = '';
 const LIBRARY_PERF_DEBUG_KEY = "library-perf-debug";
 const LIBRARY_PERF_HISTORY_KEY = "__smartReaderPerfHistory";
 const LANGUAGE_DISPLAY_NAMES =
@@ -128,34 +157,69 @@ const recordPerfMetric = (label, startAt, details = {}) => {
 };
 
 const readStoredAccountProfile = () => {
+  const sessionEmail = (() => {
+    try {
+      return (getCurrentUser()?.email || "").trim();
+    } catch {
+      return "";
+    }
+  })();
+  const sessionDisplayName = (() => {
+    try {
+      return (getCurrentUser()?.displayName || "").trim();
+    } catch {
+      return "";
+    }
+  })();
+  const sessionAvatarUrl = (() => {
+    try {
+      return (getCurrentUser()?.avatarUrl || "").trim();
+    } catch {
+      return "";
+    }
+  })();
+  const sessionFirstName = sessionDisplayName ? sessionDisplayName.split(/\s+/).filter(Boolean)[0] || "" : "";
+
   if (typeof window === "undefined") {
     return {
-      firstName: "",
-      email: ACCOUNT_DEFAULT_EMAIL,
+      firstName: sessionFirstName,
+      email: sessionEmail || ACCOUNT_DEFAULT_EMAIL,
+      avatarUrl: sessionAvatarUrl,
       preferredLanguage: "en",
-      emailNotifications: "yes"
+      emailNotifications: "yes",
+      loanReminderDays: 3
     };
   }
   try {
     const raw = window.localStorage.getItem(ACCOUNT_PROFILE_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
     const fallbackLanguage = window.localStorage.getItem(LIBRARY_LANGUAGE_KEY) || "en";
+    const storedEmail = typeof parsed?.email === "string" && parsed.email.trim() ? parsed.email.trim() : "";
+    const resolvedEmail = isCollabMode
+      ? (sessionEmail || storedEmail || ACCOUNT_DEFAULT_EMAIL)
+      : (storedEmail || sessionEmail || ACCOUNT_DEFAULT_EMAIL);
+    const storedFirstName = typeof parsed?.firstName === "string" ? parsed.firstName : "";
+    const storedAvatar = typeof parsed?.avatarUrl === "string" ? parsed.avatarUrl.trim() : "";
     return {
-      firstName: typeof parsed?.firstName === "string" ? parsed.firstName : "",
-      email: typeof parsed?.email === "string" && parsed.email.trim() ? parsed.email.trim() : ACCOUNT_DEFAULT_EMAIL,
+      firstName: isCollabMode ? (sessionFirstName || storedFirstName) : storedFirstName,
+      email: resolvedEmail,
+      avatarUrl: isCollabMode ? (sessionAvatarUrl || storedAvatar) : storedAvatar,
       preferredLanguage:
         typeof parsed?.preferredLanguage === "string" && parsed.preferredLanguage.trim()
           ? parsed.preferredLanguage
           : fallbackLanguage,
-      emailNotifications: parsed?.emailNotifications === "no" ? "no" : "yes"
+      emailNotifications: parsed?.emailNotifications === "no" ? "no" : "yes",
+      loanReminderDays: Math.max(0, Math.min(30, Number(parsed?.loanReminderDays) || 3))
     };
   } catch (err) {
     console.error(err);
     return {
-      firstName: "",
-      email: ACCOUNT_DEFAULT_EMAIL,
+      firstName: sessionFirstName,
+      email: sessionEmail || ACCOUNT_DEFAULT_EMAIL,
+      avatarUrl: sessionAvatarUrl,
       preferredLanguage: "en",
-      emailNotifications: "yes"
+      emailNotifications: "yes",
+      loanReminderDays: 3
     };
   }
 };
@@ -201,6 +265,48 @@ const formatGenreLabel = (value) => {
 const compactWhitespace = (value) => (value || "").toString().replace(/\s+/g, " ").trim();
 const EXCLUDED_METADATA_KEYS = new Set(["modified", "identifier"]);
 const PRIORITIZED_METADATA_KEYS = ["title", "creator", "author", "language"];
+const FAQ_ITEMS = [
+  {
+    question: "How do I add a new book?",
+    answer: "Go to My Library and upload one or more EPUB files. Ariadne extracts metadata and adds them to your library automatically."
+  },
+  {
+    question: "Why does each user have different progress for the same book?",
+    answer: "Progress is personal per user. Shared books keep separate progress and last position for each account."
+  },
+  {
+    question: "How does sharing a book work?",
+    answer: "Open a book, click Share, enter a recipient email, and send. The recipient accepts from Inbox to add the book."
+  },
+  {
+    question: "Are highlights and notes private?",
+    answer: "Highlights and notes are shared for users who have access to that book. Reading progress remains private."
+  },
+  {
+    question: "How do I change reading mode after starting a book?",
+    answer: "Use Change reading mode in the reader. You can restart from 0% or choose a chapter and continue from there."
+  },
+  {
+    question: "Why am I not asked for reading mode every time?",
+    answer: "Mode is chosen once for a new book. Reopening an in-progress book continues directly without re-asking."
+  },
+  {
+    question: "Can I recover deleted books?",
+    answer: "Yes. Deleted books go to Trash first, where you can restore selected items or restore all."
+  },
+  {
+    question: "How do Collections help?",
+    answer: "Collections are custom shelves. You can organize books by theme, project, or reading plan and assign one book to multiple shelves."
+  },
+  {
+    question: "Where are account data and profile pictures stored?",
+    answer: "Your account data and profile image are stored on the shared backend and linked to your user profile."
+  },
+  {
+    question: "What should I do if the UI looks outdated after an update?",
+    answer: "Refresh the page first. If needed, clear browser cache for the site and reload to fetch the latest frontend build."
+  }
+];
 
 const decodeHtmlEntities = (value) => {
   if (typeof value !== "string") return value;
@@ -533,6 +639,14 @@ export default function Home() {
     if (typeof window === "undefined") return "comfortable";
     return window.localStorage.getItem(LIBRARY_DENSITY_MODE_KEY) === "compact" ? "compact" : "comfortable";
   });
+  const [loanViewMode, setLoanViewMode] = useState(() => {
+    if (typeof window === "undefined") return "list";
+    return window.localStorage.getItem("loan-view-mode") === "grid" ? "grid" : "list";
+  });
+  const [loanDensityMode, setLoanDensityMode] = useState(() => {
+    if (typeof window === "undefined") return "comfortable";
+    return window.localStorage.getItem("loan-density-mode") === "compact" ? "compact" : "comfortable";
+  });
   const [libraryTheme, setLibraryTheme] = useState(() => {
     if (typeof window === "undefined") return "light";
     return window.localStorage.getItem(LIBRARY_THEME_KEY) === "dark" ? "dark" : "light";
@@ -543,6 +657,7 @@ export default function Home() {
   });
   const [accountProfile, setAccountProfile] = useState(() => readStoredAccountProfile());
   const [accountSaveMessage, setAccountSaveMessage] = useState("");
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [isNotesCenterOpen, setIsNotesCenterOpen] = useState(false);
   const [isHighlightsCenterOpen, setIsHighlightsCenterOpen] = useState(false);
   const [notesCenterSortBy, setNotesCenterSortBy] = useState("recent");
@@ -569,6 +684,47 @@ export default function Home() {
   const [notificationView, setNotificationView] = useState("all");
   const [notificationStateById, setNotificationStateById] = useState(() => readStoredNotificationState());
   const [notificationFocusedBookId, setNotificationFocusedBookId] = useState("");
+  const [shareInboxCount, setShareInboxCount] = useState(0);
+  const [loanInboxCount, setLoanInboxCount] = useState(0);
+  const [loanInbox, setLoanInbox] = useState([]);
+  const [borrowedLoans, setBorrowedLoans] = useState([]);
+  const [lentLoans, setLentLoans] = useState([]);
+  const [loanAuditEvents, setLoanAuditEvents] = useState([]);
+  const [loanRenewals, setLoanRenewals] = useState([]);
+  const [remoteNotifications, setRemoteNotifications] = useState([]);
+  const [shareDialogBook, setShareDialogBook] = useState(null);
+  const [shareDialogMode, setShareDialogMode] = useState("share");
+  const [shareRecipientEmail, setShareRecipientEmail] = useState("");
+  const [shareMessage, setShareMessage] = useState("");
+  const [loanDurationDays, setLoanDurationDays] = useState(14);
+  const [loanGraceDays, setLoanGraceDays] = useState(0);
+  const [loanPermissions, setLoanPermissions] = useState({
+    canAddHighlights: true,
+    canEditHighlights: true,
+    canAddNotes: true,
+    canEditNotes: true,
+    annotationVisibility: "PRIVATE",
+    shareLenderAnnotations: false
+  });
+  const [loanTemplate, setLoanTemplate] = useState({
+    name: "Default lending template",
+    durationDays: 14,
+    graceDays: 0,
+    remindBeforeDays: 3,
+    permissions: {
+      canAddHighlights: true,
+      canEditHighlights: true,
+      canAddNotes: true,
+      canEditNotes: true,
+      annotationVisibility: "PRIVATE",
+      shareLenderAnnotations: false
+    }
+  });
+  const [isSavingLoanTemplate, setIsSavingLoanTemplate] = useState(false);
+  const [acceptLoanPreview, setAcceptLoanPreview] = useState(null);
+  const [shareError, setShareError] = useState("");
+  const [isSharingBook, setIsSharingBook] = useState(false);
+  const [isLoanActionBusyId, setIsLoanActionBusyId] = useState("");
   const contentSearchTokenRef = useRef(0);
   const uploadTimerRef = useRef(null);
   const feedbackToastTimerRef = useRef(null);
@@ -581,6 +737,35 @@ export default function Home() {
   const duplicateDecisionResolverRef = useRef(null);
   const notificationsMenuRef = useRef(null);
   const notificationFocusTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (!isCollabMode) return;
+    const sessionUser = getCurrentUser() || {};
+    const sessionEmail = (sessionUser.email || "").trim();
+    const sessionDisplayName = (sessionUser.displayName || "").trim();
+    const sessionAvatarUrl = (sessionUser.avatarUrl || "").trim();
+    const sessionLoanReminderDays = Math.max(0, Math.min(30, Number(sessionUser.loanReminderDays) || 3));
+    const sessionFirstName = sessionDisplayName ? sessionDisplayName.split(/\s+/).filter(Boolean)[0] || "" : "";
+    if (!sessionEmail && !sessionFirstName && !sessionAvatarUrl) return;
+    setAccountProfile((current) => {
+      const next = {
+        ...current,
+        email: sessionEmail || current?.email || "",
+        firstName: sessionFirstName || current?.firstName || "",
+        avatarUrl: sessionAvatarUrl || current?.avatarUrl || "",
+        loanReminderDays: Number.isInteger(sessionLoanReminderDays) ? sessionLoanReminderDays : (current?.loanReminderDays ?? 3)
+      };
+      if (
+        (next.email || "") === (current?.email || "") &&
+        (next.firstName || "") === (current?.firstName || "") &&
+        (next.avatarUrl || "") === (current?.avatarUrl || "") &&
+        Number(next.loanReminderDays || 0) === Number(current?.loanReminderDays || 0)
+      ) {
+        return current;
+      }
+      return next;
+    });
+  }, []);
 
   const openInfoPopover = (book, rect, pinned = false) => {
     if (!book || !rect) return;
@@ -614,7 +799,10 @@ export default function Home() {
     }
   };
 
-  useEffect(() => { loadLibrary(); }, []);
+  useEffect(() => {
+    loadLibrary();
+    refreshCollabPanels();
+  }, []);
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("library-view-mode", viewMode);
@@ -623,6 +811,14 @@ export default function Home() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(LIBRARY_DENSITY_MODE_KEY, densityMode);
   }, [densityMode]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("loan-view-mode", loanViewMode);
+  }, [loanViewMode]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("loan-density-mode", loanDensityMode);
+  }, [loanDensityMode]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(LIBRARY_THEME_KEY, libraryTheme);
@@ -953,10 +1149,16 @@ export default function Home() {
 
   const loadLibrary = async () => {
     const loadStartAt = getPerfNow();
-    await purgeExpiredTrashBooks(TRASH_RETENTION_DAYS);
+    if (!isCollabMode) {
+      await purgeExpiredTrashBooks(TRASH_RETENTION_DAYS);
+    }
     const [storedBooks, storedCollections] = await Promise.all([getAllBooks(), getAllCollections()]);
     setBooks(storedBooks);
     setCollections(storedCollections);
+
+    if (isCollabMode) {
+      return;
+    }
 
     const legacyBookIds = storedBooks
       .filter((book) => {
@@ -990,6 +1192,365 @@ export default function Home() {
       collections: storedCollections.length,
       legacyBackfills: legacyBookIds.length
     });
+  };
+
+  const loadLoansData = async () => {
+    if (!isCollabMode) {
+      setLoanInbox([]);
+      setBorrowedLoans([]);
+      setLentLoans([]);
+      setLoanAuditEvents([]);
+      setLoanRenewals([]);
+      setRemoteNotifications([]);
+      setLoanInboxCount(0);
+      return;
+    }
+    try {
+      const [loanInboxRows, borrowedRows, lentRows, auditRows, renewalsRows, notificationsRows, template] = await Promise.all([
+        fetchLoanInbox(),
+        fetchBorrowedLoans(),
+        fetchLentLoans(),
+        fetchLoanAudit(),
+        fetchLoanRenewals(),
+        fetchNotifications(),
+        fetchLoanTemplate()
+      ]);
+      setLoanInbox(Array.isArray(loanInboxRows) ? loanInboxRows : []);
+      setBorrowedLoans(Array.isArray(borrowedRows) ? borrowedRows : []);
+      setLentLoans(Array.isArray(lentRows) ? lentRows : []);
+      setLoanAuditEvents(Array.isArray(auditRows) ? auditRows : []);
+      setLoanRenewals(Array.isArray(renewalsRows) ? renewalsRows : []);
+      setRemoteNotifications(Array.isArray(notificationsRows) ? notificationsRows : []);
+      if (template) setLoanTemplate(template);
+      setLoanInboxCount(Array.isArray(loanInboxRows) ? loanInboxRows.length : 0);
+    } catch {
+      setLoanInbox([]);
+      setBorrowedLoans([]);
+      setLentLoans([]);
+      setLoanAuditEvents([]);
+      setLoanRenewals([]);
+      setRemoteNotifications([]);
+      setLoanInboxCount(0);
+    }
+  };
+
+  const refreshShareInboxCount = async () => {
+    if (!isCollabMode) {
+      setShareInboxCount(0);
+      setLoanInboxCount(0);
+      return;
+    }
+    try {
+      const [shares, loans] = await Promise.all([fetchShareInbox(), fetchLoanInbox()]);
+      setShareInboxCount(Array.isArray(shares) ? shares.length : 0);
+      setLoanInboxCount(Array.isArray(loans) ? loans.length : 0);
+    } catch {
+      setShareInboxCount(0);
+      setLoanInboxCount(0);
+    }
+  };
+
+  const refreshCollabPanels = async () => {
+    if (!isCollabMode) return;
+    await Promise.all([refreshShareInboxCount(), loadLoansData()]);
+  };
+
+  useEffect(() => {
+    if (!isCollabMode || typeof window === "undefined") return;
+    const key = "loan-revocation-notified-ids";
+    let seen = [];
+    try {
+      seen = JSON.parse(window.localStorage.getItem(key) || "[]");
+      if (!Array.isArray(seen)) seen = [];
+    } catch {
+      seen = [];
+    }
+    const revoked = borrowedLoans.filter((loan) => loan?.status === "REVOKED");
+    const newlyRevoked = revoked.filter((loan) => loan?.id && !seen.includes(loan.id));
+    if (!newlyRevoked.length) return;
+    const first = newlyRevoked[0];
+    showFeedbackToast({
+      title: "Loan revoked",
+      message: `Access removed for "${first?.book?.title || "book"}". You have 14 days to export annotations.`
+    });
+    const nextSeen = [...seen, ...newlyRevoked.map((loan) => loan.id)].slice(-200);
+    window.localStorage.setItem(key, JSON.stringify(nextSeen));
+  }, [borrowedLoans, isCollabMode]);
+
+  const openShareDialog = (event, book) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setShareDialogBook(book);
+    setShareDialogMode("share");
+    setShareRecipientEmail("");
+    setShareMessage("");
+    setLoanDurationDays(Math.max(1, Number(loanTemplate?.durationDays) || 14));
+    setLoanGraceDays(Math.max(0, Number(loanTemplate?.graceDays) || 0));
+    setLoanPermissions({
+      canAddHighlights: loanTemplate?.permissions?.canAddHighlights ?? true,
+      canEditHighlights: loanTemplate?.permissions?.canEditHighlights ?? true,
+      canAddNotes: loanTemplate?.permissions?.canAddNotes ?? true,
+      canEditNotes: loanTemplate?.permissions?.canEditNotes ?? true,
+      annotationVisibility: loanTemplate?.permissions?.annotationVisibility || "PRIVATE",
+      shareLenderAnnotations: loanTemplate?.permissions?.shareLenderAnnotations ?? false
+    });
+    setShareError("");
+  };
+
+  const closeShareDialog = () => {
+    setShareDialogBook(null);
+    setShareDialogMode("share");
+    setShareRecipientEmail("");
+    setShareMessage("");
+    setShareError("");
+    setIsSharingBook(false);
+  };
+
+  const handleShareBook = async () => {
+    if (!shareDialogBook?.id || !shareRecipientEmail.trim() || isSharingBook) return;
+    setIsSharingBook(true);
+    setShareError("");
+    const recipient = shareRecipientEmail.trim();
+    try {
+      if (shareDialogMode === "loan") {
+        await requestBookLoan({
+          bookId: shareDialogBook.id,
+          toEmail: recipient,
+          message: shareMessage.trim() || undefined,
+          durationDays: Math.max(1, Number(loanDurationDays) || 14),
+          graceDays: Math.max(0, Number(loanGraceDays) || 0),
+          permissions: loanPermissions
+        });
+        showFeedbackToast({
+          title: "Loan request sent",
+          message: `Borrow request sent to ${recipient}.`
+        });
+      } else {
+        await createBookShare({
+          bookId: shareDialogBook.id,
+          toEmail: recipient,
+          message: shareMessage.trim() || undefined
+        });
+        showFeedbackToast({
+          title: "Recommendation sent",
+          message: `Recommendation sent to ${recipient}.`
+        });
+      }
+      closeShareDialog();
+      await refreshCollabPanels();
+    } catch (err) {
+      setShareError(err?.response?.data?.error || "Could not send request");
+      setIsSharingBook(false);
+    }
+  };
+
+  const handleAcceptLoanRequest = async (loanId) => {
+    if (!loanId) return;
+    setIsLoanActionBusyId(`accept-${loanId}`);
+    try {
+      await acceptLoan(loanId);
+      showFeedbackToast({ title: "Loan accepted", message: "Book access granted." });
+      await Promise.all([loadLibrary(), refreshCollabPanels()]);
+    } catch (err) {
+      if (err?.response?.status === 409 && err?.response?.data?.code === "ALREADY_HAVE_BOOK") {
+        const allowDuplicate = typeof window !== "undefined"
+          ? window.confirm("You already have this book. Borrow anyway to keep a separate borrowed copy state?")
+          : false;
+        if (allowDuplicate) {
+          await acceptLoan(loanId, { borrowAnyway: true });
+          showFeedbackToast({ title: "Loan accepted", message: "Borrowed copy added." });
+          await Promise.all([loadLibrary(), refreshCollabPanels()]);
+          return;
+        }
+      }
+      setShareError(err?.response?.data?.error || "Could not accept loan");
+    } finally {
+      setIsLoanActionBusyId("");
+    }
+  };
+
+  const handleOpenAcceptLoanPreview = (loan) => {
+    if (!loan?.id) return;
+    setAcceptLoanPreview(loan);
+  };
+
+  const handleConfirmAcceptLoan = async () => {
+    if (!acceptLoanPreview?.id) return;
+    await handleAcceptLoanRequest(acceptLoanPreview.id);
+    setAcceptLoanPreview(null);
+  };
+
+  const handleRejectLoanRequest = async (loanId) => {
+    if (!loanId) return;
+    setIsLoanActionBusyId(`reject-${loanId}`);
+    try {
+      await rejectLoan(loanId);
+      showFeedbackToast({ title: "Loan rejected", message: "Request declined." });
+      await refreshCollabPanels();
+    } catch (err) {
+      setShareError(err?.response?.data?.error || "Could not reject loan");
+    } finally {
+      setIsLoanActionBusyId("");
+    }
+  };
+
+  const handleReturnBorrowedLoan = async (loanId) => {
+    if (!loanId) return;
+    const exportAnnotations = typeof window !== "undefined"
+      ? window.confirm("Export your notes/highlights before returning this borrowed book?")
+      : false;
+    setIsLoanActionBusyId(`return-${loanId}`);
+    try {
+      await returnLoan(loanId, { exportAnnotations });
+      showFeedbackToast({ title: "Book returned", message: "Loan marked as returned." });
+      await Promise.all([loadLibrary(), refreshCollabPanels()]);
+    } catch (err) {
+      setShareError(err?.response?.data?.error || "Could not return loan");
+    } finally {
+      setIsLoanActionBusyId("");
+    }
+  };
+
+  const handleRevokeLentLoan = async (loanId) => {
+    if (!loanId) return;
+    const confirmed = typeof window !== "undefined"
+      ? window.confirm("Revoke this loan now? Borrower access stops immediately and they can only export annotations for 14 days.")
+      : false;
+    if (!confirmed) return;
+    setIsLoanActionBusyId(`revoke-${loanId}`);
+    try {
+      await revokeLoan(loanId);
+      showFeedbackToast({ title: "Loan revoked", message: "Borrower access removed." });
+      await Promise.all([loadLibrary(), refreshCollabPanels()]);
+    } catch (err) {
+      setShareError(err?.response?.data?.error || "Could not revoke loan");
+    } finally {
+      setIsLoanActionBusyId("");
+    }
+  };
+
+  const handleRequestLoanRenewal = async (loan) => {
+    if (!loan?.id || loan?.status !== "ACTIVE") return;
+    const value = window.prompt("How many extra days do you want to request?", "7");
+    if (value === null) return;
+    const extraDays = Math.max(1, Number.parseInt(value, 10) || 0);
+    if (!extraDays) return;
+    setIsLoanActionBusyId(`renew-request-${loan.id}`);
+    try {
+      await requestLoanRenewal(loan.id, { extraDays });
+      await loadLoansData();
+      setShareError("");
+    } catch (err) {
+      console.error(err);
+      setShareError(err?.response?.data?.error || "Could not request renewal");
+    } finally {
+      setIsLoanActionBusyId("");
+    }
+  };
+
+  const handleApproveLoanRenewal = async (renewalId) => {
+    if (!renewalId) return;
+    setIsLoanActionBusyId(`renew-approve-${renewalId}`);
+    try {
+      await approveLoanRenewal(renewalId);
+      await loadLoansData();
+      setShareError("");
+    } catch (err) {
+      console.error(err);
+      setShareError(err?.response?.data?.error || "Could not approve renewal");
+    } finally {
+      setIsLoanActionBusyId("");
+    }
+  };
+
+  const handleDenyLoanRenewal = async (renewalId) => {
+    if (!renewalId) return;
+    setIsLoanActionBusyId(`renew-deny-${renewalId}`);
+    try {
+      await denyLoanRenewal(renewalId);
+      await loadLoansData();
+      setShareError("");
+    } catch (err) {
+      console.error(err);
+      setShareError(err?.response?.data?.error || "Could not deny renewal");
+    } finally {
+      setIsLoanActionBusyId("");
+    }
+  };
+
+  const handleSaveLoanTemplate = async () => {
+    if (!isCollabMode) return;
+    setIsSavingLoanTemplate(true);
+    setShareError("");
+    try {
+      const next = await updateLoanTemplate(loanTemplate);
+      setLoanTemplate(next || loanTemplate);
+      setAccountSaveMessage("Changes saved.");
+    } catch (err) {
+      console.error(err);
+      setShareError(err?.response?.data?.error || "Could not save lending defaults");
+    } finally {
+      setIsSavingLoanTemplate(false);
+    }
+  };
+
+  const handleLoanTemplateFieldChange = (field, value) => {
+    setLoanTemplate((current) => ({ ...current, [field]: value }));
+  };
+
+  const handleLoanTemplatePermissionChange = (field, value) => {
+    setLoanTemplate((current) => ({
+      ...current,
+      permissions: {
+        ...(current.permissions || {}),
+        [field]: value
+      }
+    }));
+  };
+
+  const handleExportLoanData = async (loanId, format = "json") => {
+    if (!loanId) return;
+    setIsLoanActionBusyId(`export-${loanId}-${format}`);
+    try {
+      const payload = await exportLoanData(loanId);
+      if (typeof window !== "undefined") {
+        if (format === "pdf") {
+          const { jsPDF } = await import("jspdf");
+          const doc = new jsPDF();
+          const lines = [
+            `Loan export: ${loanId}`,
+            `Exported at: ${payload?.exportedAt || ""}`,
+            `Book: ${payload?.book?.title || "Untitled"}${payload?.book?.author ? ` - ${payload.book.author}` : ""}`,
+            `Lender: ${payload?.lender?.email || ""}`,
+            `Borrower: ${payload?.borrower?.email || ""}`,
+            "",
+            `Notes: ${Array.isArray(payload?.notes) ? payload.notes.length : 0}`,
+            `Highlights: ${Array.isArray(payload?.highlights) ? payload.highlights.length : 0}`
+          ];
+          let y = 18;
+          lines.forEach((line) => {
+            doc.text(String(line), 12, y);
+            y += 8;
+          });
+          doc.save(`loan-export-${loanId}.pdf`);
+        } else {
+          const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+          const objectUrl = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = objectUrl;
+          link.download = `loan-export-${loanId}.json`;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          URL.revokeObjectURL(objectUrl);
+        }
+      }
+      showFeedbackToast({ title: "Export ready", message: "Loan annotations exported." });
+    } catch (err) {
+      setShareError(err?.response?.data?.error || "Could not export loan data");
+    } finally {
+      setIsLoanActionBusyId("");
+    }
   };
 
   const readStartedBookIds = () => {
@@ -1046,36 +1607,52 @@ export default function Home() {
     const targetBook = books.find((book) => book.id === id);
     if (!targetBook) return;
 
-    await moveBookToTrash(id);
-    await loadLibrary();
+    try {
+      await moveBookToTrash(id);
+      await loadLibrary();
 
-    clearPendingTrashUndo();
-    pendingTrashUndoRef.current = {
-      bookId: id,
-      title: targetBook.title || "Book"
-    };
-    pendingTrashUndoTimerRef.current = setTimeout(() => {
       clearPendingTrashUndo();
-    }, 6000);
-
-    showFeedbackToast({
-      tone: "destructive",
-      title: "Moved to Trash",
-      message: `${targetBook.title || "Book"} moved to Trash.`,
-      actionLabel: "Undo",
-      onAction: async () => {
-        const pending = pendingTrashUndoRef.current;
-        if (!pending?.bookId) return;
-        await restoreBookFromTrash(pending.bookId);
-        await loadLibrary();
+      pendingTrashUndoRef.current = {
+        bookId: id,
+        title: targetBook.title || "Book"
+      };
+      pendingTrashUndoTimerRef.current = setTimeout(() => {
         clearPendingTrashUndo();
-        showFeedbackToast({
-          tone: "success",
-          title: "Restored",
-          message: `${pending.title} restored from Trash.`
-        });
-      }
-    }, { duration: 6200 });
+      }, 6000);
+
+      showFeedbackToast({
+        tone: "destructive",
+        title: "Moved to Trash",
+        message: `${targetBook.title || "Book"} moved to Trash.`,
+        actionLabel: "Undo",
+        onAction: async () => {
+          const pending = pendingTrashUndoRef.current;
+          if (!pending?.bookId) return;
+          await restoreBookFromTrash(pending.bookId);
+          await loadLibrary();
+          clearPendingTrashUndo();
+          showFeedbackToast({
+            tone: "success",
+            title: "Restored",
+            message: `${pending.title} restored from Trash.`
+          });
+        }
+      }, { duration: 6200 });
+    } catch (err) {
+      const serverCode = err?.response?.data?.code;
+      const serverMessage = err?.response?.data?.error;
+      const hint =
+        serverCode === "ACTIVE_LENDING_EXISTS"
+          ? "Revoke lending first in Lent."
+          : serverCode === "ACTIVE_BORROWING_EXISTS"
+            ? "Return the borrowed loan first in Borrowed."
+            : "Try again.";
+      showFeedbackToast({
+        tone: "destructive",
+        title: "Could not move to Trash",
+        message: serverMessage || hint
+      });
+    }
   };
 
   const handleRestoreBook = async (e, id) => {
@@ -1107,13 +1684,29 @@ export default function Home() {
         await exportTrashBackups([targetBook]);
       }
     }
-    await deleteBook(id);
-    await loadLibrary();
-    showFeedbackToast({
-      tone: "destructive",
-      title: "Deleted permanently",
-      message: `${targetBook.title || "Book"} was deleted forever.`
-    }, { duration: 3600 });
+    try {
+      await deleteBook(id);
+      await loadLibrary();
+      showFeedbackToast({
+        tone: "destructive",
+        title: "Deleted permanently",
+        message: `${targetBook.title || "Book"} was deleted forever.`
+      }, { duration: 3600 });
+    } catch (err) {
+      const serverCode = err?.response?.data?.code;
+      const serverMessage = err?.response?.data?.error;
+      const hint =
+        serverCode === "ACTIVE_LENDING_EXISTS"
+          ? "Revoke lending first in Lent."
+          : serverCode === "ACTIVE_BORROWING_EXISTS"
+            ? "Return the borrowed loan first in Borrowed."
+            : "Try again.";
+      showFeedbackToast({
+        tone: "destructive",
+        title: "Could not delete permanently",
+        message: serverMessage || hint
+      });
+    }
   };
 
   const buildBookBackupPayload = (book) => {
@@ -1286,11 +1879,6 @@ export default function Home() {
     setIsLibrarySelectionMode(true);
   };
 
-  const handleExitLibrarySelectionMode = () => {
-    setSelectedLibraryBookIds([]);
-    setIsLibrarySelectionMode(false);
-  };
-
   const handleBulkMarkToRead = async () => {
     if (!selectedLibraryBookIds.length) return;
     const selectedBooks = activeBooks.filter((book) => selectedLibraryBookIds.includes(book.id));
@@ -1337,14 +1925,30 @@ export default function Home() {
     if (!selectedLibraryBookIds.length) return;
     const selectedBooks = activeBooks.filter((book) => selectedLibraryBookIds.includes(book.id));
     if (!selectedBooks.length) return;
-    await Promise.all(selectedBooks.map((book) => moveBookToTrash(book.id)));
-    setSelectedLibraryBookIds([]);
-    await loadLibrary();
-    showFeedbackToast({
-      tone: "warning",
-      title: "Moved to Trash",
-      message: `${selectedBooks.length} book${selectedBooks.length === 1 ? "" : "s"} moved to Trash.`
-    });
+    try {
+      await Promise.all(selectedBooks.map((book) => moveBookToTrash(book.id)));
+      setSelectedLibraryBookIds([]);
+      await loadLibrary();
+      showFeedbackToast({
+        tone: "warning",
+        title: "Moved to Trash",
+        message: `${selectedBooks.length} book${selectedBooks.length === 1 ? "" : "s"} moved to Trash.`
+      });
+    } catch (err) {
+      const serverCode = err?.response?.data?.code;
+      const serverMessage = err?.response?.data?.error;
+      const hint =
+        serverCode === "ACTIVE_LENDING_EXISTS"
+          ? "Some selected books are actively lent. Revoke lending first."
+          : serverCode === "ACTIVE_BORROWING_EXISTS"
+            ? "Some selected books are currently borrowed. Return them first."
+            : "Try again.";
+      showFeedbackToast({
+        tone: "destructive",
+        title: "Could not move selected books",
+        message: serverMessage || hint
+      });
+    }
   };
 
   const handleRestoreSelectedTrash = async () => {
@@ -1374,14 +1978,30 @@ export default function Home() {
         await exportTrashBackups(selectedBooks);
       }
     }
-    await Promise.all(selectedTrashBookIds.map((id) => deleteBook(id)));
-    setSelectedTrashBookIds([]);
-    await loadLibrary();
-    showFeedbackToast({
-      tone: "destructive",
-      title: "Deleted permanently",
-      message: `${selectedBooks.length} book${selectedBooks.length === 1 ? "" : "s"} deleted forever.`
-    }, { duration: 3600 });
+    try {
+      await Promise.all(selectedTrashBookIds.map((id) => deleteBook(id)));
+      setSelectedTrashBookIds([]);
+      await loadLibrary();
+      showFeedbackToast({
+        tone: "destructive",
+        title: "Deleted permanently",
+        message: `${selectedBooks.length} book${selectedBooks.length === 1 ? "" : "s"} deleted forever.`
+      }, { duration: 3600 });
+    } catch (err) {
+      const serverCode = err?.response?.data?.code;
+      const serverMessage = err?.response?.data?.error;
+      const hint =
+        serverCode === "ACTIVE_LENDING_EXISTS"
+          ? "Some books are actively lent. Revoke lending first."
+          : serverCode === "ACTIVE_BORROWING_EXISTS"
+            ? "Some books are currently borrowed. Return them first."
+            : "Try again.";
+      showFeedbackToast({
+        tone: "destructive",
+        title: "Could not delete selected books",
+        message: serverMessage || hint
+      });
+    }
   };
 
   const handleRestoreAllTrash = async () => {
@@ -1410,14 +2030,30 @@ export default function Home() {
         await exportTrashBackups(trashedBooks);
       }
     }
-    await Promise.all(trashedBooks.map((book) => deleteBook(book.id)));
-    setSelectedTrashBookIds([]);
-    await loadLibrary();
-    showFeedbackToast({
-      tone: "destructive",
-      title: "Trash deleted permanently",
-      message: "All books in Trash were deleted forever."
-    }, { duration: 3600 });
+    try {
+      await Promise.all(trashedBooks.map((book) => deleteBook(book.id)));
+      setSelectedTrashBookIds([]);
+      await loadLibrary();
+      showFeedbackToast({
+        tone: "destructive",
+        title: "Trash deleted permanently",
+        message: "All books in Trash were deleted forever."
+      }, { duration: 3600 });
+    } catch (err) {
+      const serverCode = err?.response?.data?.code;
+      const serverMessage = err?.response?.data?.error;
+      const hint =
+        serverCode === "ACTIVE_LENDING_EXISTS"
+          ? "Some books are actively lent. Revoke lending first."
+          : serverCode === "ACTIVE_BORROWING_EXISTS"
+            ? "Some books are currently borrowed. Return them first."
+            : "Try again.";
+      showFeedbackToast({
+        tone: "destructive",
+        title: "Could not delete all trash",
+        message: serverMessage || hint
+      });
+    }
   };
 
   const handleToggleFavorite = async (e, id) => {
@@ -1572,7 +2208,19 @@ export default function Home() {
       setSelectedTrashBookIds([]);
       return;
     }
-    if (section === "account" || section === "statistics") {
+    if (section === "inbox") {
+      setStatusFilter("all");
+      setCollectionFilter("all");
+      setSelectedTrashBookIds([]);
+      refreshCollabPanels();
+    }
+    if (section === "borrowed" || section === "lent" || section === "history") {
+      setStatusFilter("all");
+      setCollectionFilter("all");
+      setSelectedTrashBookIds([]);
+      loadLoansData();
+    }
+    if (section === "account" || section === "statistics" || section === "faq") {
       setStatusFilter("all");
       setCollectionFilter("all");
       setSelectedTrashBookIds([]);
@@ -1587,12 +2235,49 @@ export default function Home() {
   };
 
   const handleSaveAccountProfile = () => {
+    const sessionEmail = (getCurrentUser()?.email || "").trim();
+    const fallbackEmail = sessionEmail || ACCOUNT_DEFAULT_EMAIL;
     const nextProfile = {
       firstName: (accountProfile.firstName || "").trim(),
-      email: (accountProfile.email || ACCOUNT_DEFAULT_EMAIL).trim() || ACCOUNT_DEFAULT_EMAIL,
+      email: (accountProfile.email || fallbackEmail).trim() || fallbackEmail,
+      avatarUrl: (accountProfile.avatarUrl || "").trim(),
       preferredLanguage: accountProfile.preferredLanguage || "en",
-      emailNotifications: accountProfile.emailNotifications === "no" ? "no" : "yes"
+      emailNotifications: accountProfile.emailNotifications === "no" ? "no" : "yes",
+      loanReminderDays: Math.max(0, Math.min(30, Number(accountProfile.loanReminderDays) || 0))
     };
+
+    if (isCollabMode) {
+      const name = nextProfile.firstName || "Reader";
+      updateMe({
+        displayName: name,
+        loanReminderDays: nextProfile.loanReminderDays
+      })
+        .then((user) => {
+          if (user) setCurrentUser(user);
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem(ACCOUNT_PROFILE_KEY, JSON.stringify({
+              ...nextProfile,
+              firstName: user?.displayName ? user.displayName.split(/\s+/).filter(Boolean)[0] || nextProfile.firstName : nextProfile.firstName,
+              email: user?.email || nextProfile.email,
+              avatarUrl: user?.avatarUrl || nextProfile.avatarUrl,
+              loanReminderDays: Number.isInteger(user?.loanReminderDays) ? user.loanReminderDays : nextProfile.loanReminderDays
+            }));
+          }
+          setAccountProfile((current) => ({
+            ...current,
+            firstName: user?.displayName ? user.displayName.split(/\s+/).filter(Boolean)[0] || nextProfile.firstName : nextProfile.firstName,
+            email: user?.email || nextProfile.email,
+            avatarUrl: user?.avatarUrl || nextProfile.avatarUrl,
+            loanReminderDays: Number.isInteger(user?.loanReminderDays) ? user.loanReminderDays : nextProfile.loanReminderDays
+          }));
+          setAccountSaveMessage("Changes saved.");
+        })
+        .catch((err) => {
+          console.error(err);
+          setAccountSaveMessage("Could not save profile.");
+        });
+      return;
+    }
 
     if (typeof window !== "undefined") {
       window.localStorage.setItem(ACCOUNT_PROFILE_KEY, JSON.stringify(nextProfile));
@@ -1600,6 +2285,37 @@ export default function Home() {
     setAccountProfile(nextProfile);
     setLibraryLanguage(nextProfile.preferredLanguage);
     setAccountSaveMessage("Changes saved.");
+  };
+
+  const handleAccountAvatarUpload = async (file) => {
+    if (!file || !isCollabMode || isUploadingAvatar) return;
+    setIsUploadingAvatar(true);
+    setAccountSaveMessage("");
+    try {
+      const user = await uploadMyAvatar(file);
+      const firstName = user?.displayName ? user.displayName.split(/\s+/).filter(Boolean)[0] || accountProfile.firstName : accountProfile.firstName;
+      setAccountProfile((current) => ({
+        ...current,
+        firstName,
+        email: user?.email || current.email,
+        avatarUrl: user?.avatarUrl || current.avatarUrl
+      }));
+      if (typeof window !== "undefined") {
+        const next = {
+          ...accountProfile,
+          firstName,
+          email: user?.email || accountProfile.email,
+          avatarUrl: user?.avatarUrl || accountProfile.avatarUrl
+        };
+        window.localStorage.setItem(ACCOUNT_PROFILE_KEY, JSON.stringify(next));
+      }
+      setAccountSaveMessage("Profile picture updated.");
+    } catch (err) {
+      console.error(err);
+      setAccountSaveMessage("Could not upload profile picture.");
+    } finally {
+      setIsUploadingAvatar(false);
+    }
   };
 
   const handleStartNoteEdit = (entry) => {
@@ -1878,7 +2594,9 @@ export default function Home() {
     { value: "all", label: "All books" },
     { value: "to-read", label: "To read" },
     { value: "in-progress", label: "In progress" },
-    { value: "finished", label: "Finished" }
+    { value: "finished", label: "Finished" },
+    { value: "borrowed", label: "Borrowed books" },
+    { value: "lent", label: "Lent books" }
   ];
   const flagFilterOptions = [
     { value: "favorites", label: "Favorites" },
@@ -1935,7 +2653,6 @@ export default function Home() {
     );
   };
   const isBookToRead = (book) => Boolean(book?.isToRead);
-  const isFlagFilterActive = (flag) => flagFilters.includes(flag);
   const toggleFlagFilter = (flag) => {
     setFlagFilters((current) =>
       current.includes(flag) ? current.filter((item) => item !== flag) : [...current, flag]
@@ -2062,34 +2779,6 @@ export default function Home() {
   const trashedBooksCount = useMemo(
     () => books.length - activeBooks.length,
     [books.length, activeBooks.length]
-  );
-  const quickFilterStats = useMemo(
-    () => [
-      {
-        key: "to-read",
-        label: "To read",
-        count: activeBooks.filter((book) => isBookToRead(book)).length
-      },
-      {
-        key: "in-progress",
-        label: "In progress",
-        count: activeBooks.filter((book) => {
-          const progress = normalizeNumber(book.progress);
-          return isBookStarted(book) && progress < 100;
-        }).length
-      },
-      {
-        key: "finished",
-        label: "Finished",
-        count: activeBooks.filter((book) => normalizeNumber(book.progress) >= 100).length
-      },
-      {
-        key: "favorites",
-        label: "Favorites",
-        count: activeBooks.filter((book) => Boolean(book.isFavorite)).length
-      }
-    ],
-    [activeBooks]
   );
   const normalizedDebouncedNotesSearchQuery = normalizeString(debouncedNotesSearchQuery.trim());
   const normalizedDebouncedHighlightsSearchQuery = normalizeString(debouncedHighlightsSearchQuery.trim());
@@ -2240,12 +2929,16 @@ export default function Home() {
         ? book.highlights.filter((h) => (h?.note || "").trim()).length
         : 0;
       const progress = normalizeNumber(book.progress);
+      const hasBorrowedLoan = borrowedLoans.some((loan) => loan?.book?.id === book.id && loan?.status !== "PENDING");
+      const hasLentLoan = lentLoans.some((loan) => loan?.book?.id === book.id && loan?.status !== "PENDING");
 
       const matchesStatus =
         statusFilter === "all" ? true
         : statusFilter === "to-read" ? isBookToRead(book)
         : statusFilter === "in-progress" ? isBookStarted(book) && progress < 100
         : statusFilter === "finished" ? progress >= 100
+        : statusFilter === "borrowed" ? hasBorrowedLoan
+        : statusFilter === "lent" ? hasLentLoan
         : true;
 
       const matchesFlags = flagFilters.every((flag) => {
@@ -2282,6 +2975,8 @@ export default function Home() {
       collectionFilter,
       sortBy,
       isBookStarted,
+      borrowedLoans,
+      lentLoans,
       contentSearchMatches,
       searchIndexByBook
     ]
@@ -2302,6 +2997,21 @@ export default function Home() {
     }),
     [trashedBooks, debouncedSearchQuery, trashSortBy]
   );
+  const quickFilterCounts = useMemo(() => {
+    let toRead = 0;
+    let inProgress = 0;
+    let finished = 0;
+    let favorites = 0;
+    activeBooks.forEach((book) => {
+      const progress = normalizeNumber(book?.progress);
+      const started = isBookStarted(book);
+      if (book?.isToRead) toRead += 1;
+      if (started && progress < 100) inProgress += 1;
+      if (progress >= 100) finished += 1;
+      if (book?.isFavorite) favorites += 1;
+    });
+    return { toRead, inProgress, finished, favorites };
+  }, [activeBooks, isBookStarted]);
 
   useEffect(() => {
     if (librarySection === "trash") {
@@ -2675,12 +3385,12 @@ export default function Home() {
     return `${hours}h ${remainingMinutes} min`;
   };
 
-const formatRoundedHours = (seconds) => {
-    const safeSeconds = Math.max(0, Number(seconds) || 0);
-    if (!safeSeconds) return "0h";
-    const hours = safeSeconds / 3600;
-    if (hours >= 10) return `${Math.round(hours)}h`;
-    return `${Math.round(hours * 10) / 10}h`;
+const formatSnapshotDuration = (seconds) => {
+  const safeSeconds = Math.max(0, Number(seconds) || 0);
+  const totalMinutes = Math.floor(safeSeconds / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${minutes}m`;
 };
 
 const formatNotificationTimeAgo = (value) => {
@@ -2937,12 +3647,19 @@ const formatNotificationTimeAgo = (value) => {
     (sortBy !== "last-read-desc" ? 1 : 0);
   const canShowResetFilters = hasActiveLibraryFilters;
   const isDarkLibraryTheme = libraryTheme === "dark";
+  const brandLogoSrc = isDarkLibraryTheme ? "/brand/logo-dark.png" : "/brand/logo-light.png";
+  const brandLogoFallbackSrc = isDarkLibraryTheme ? "/brand/logo-light.png" : "/brand/logo-dark.png";
   const isAccountSection = librarySection === "account";
   const isStatisticsSection = librarySection === "statistics";
   const isCollectionsPage = librarySection === "collections";
   const isNotesSection = librarySection === "notes";
   const isHighlightsSection = librarySection === "highlights";
+  const isInboxSection = librarySection === "inbox";
+  const isBorrowedSection = librarySection === "borrowed";
+  const isLentSection = librarySection === "lent";
+  const isLoanAuditSection = librarySection === "history";
   const isTrashSection = librarySection === "trash";
+  const isFaqSection = librarySection === "faq";
   const shouldShowLibraryHomeContent = librarySection === "library";
   const sectionHeader = useMemo(() => {
     if (isAccountSection) {
@@ -2975,6 +3692,42 @@ const formatNotificationTimeAgo = (value) => {
         summary: `${count} highlight${count === 1 ? "" : "s"} shown`
       };
     }
+    if (isInboxSection) {
+      const pendingCount = shareInboxCount + loanInboxCount;
+      return {
+        title: "Inbox",
+        subtitle: "Pending recommendations and loan requests.",
+        summary: `${pendingCount} pending request${pendingCount === 1 ? "" : "s"}`
+      };
+    }
+    if (isBorrowedSection) {
+      return {
+        title: "Borrowed Books",
+        subtitle: "Books borrowed from other users, with due dates and permissions.",
+        summary: `${borrowedLoans.length} loan${borrowedLoans.length === 1 ? "" : "s"}`
+      };
+    }
+    if (isLentSection) {
+      return {
+        title: "Lent Books",
+        subtitle: "Books you lent to others, including active and completed loans.",
+        summary: `${lentLoans.length} loan${lentLoans.length === 1 ? "" : "s"}`
+      };
+    }
+    if (isLoanAuditSection) {
+      return {
+        title: "History",
+        subtitle: "Timeline of requests, accepts, returns, revokes, and expirations.",
+        summary: `${loanAuditEvents.length} event${loanAuditEvents.length === 1 ? "" : "s"}`
+      };
+    }
+    if (isFaqSection) {
+      return {
+        title: "FAQ",
+        subtitle: "Answers to the most common questions about Ariadne.",
+        summary: `${FAQ_ITEMS.length} questions`
+      };
+    }
     if (isCollectionsPage) {
       return {
         title: "My Collections",
@@ -3004,9 +3757,19 @@ const formatNotificationTimeAgo = (value) => {
     isHighlightsSection,
     isCollectionsPage,
     isTrashSection,
+    isInboxSection,
+    isBorrowedSection,
+    isLentSection,
+    isLoanAuditSection,
+    isFaqSection,
     activeBooks.length,
     notesCenterDisplayEntries.length,
     highlightsCenterDisplayEntries.length,
+    shareInboxCount,
+    loanInboxCount,
+    borrowedLoans.length,
+    lentLoans.length,
+    loanAuditEvents.length,
     collections.length,
     sortedTrashBooks.length,
     trashedBooksCount,
@@ -3042,10 +3805,30 @@ const formatNotificationTimeAgo = (value) => {
   const readingSnapshot = useMemo(() => {
     const liveBooks = books.filter((book) => !book?.isDeleted);
     const totalBooks = liveBooks.length;
+    const startedBooks = liveBooks.filter((book) => {
+      const progress = normalizeNumber(book?.progress);
+      return progress > 0 || Boolean(book?.hasStarted);
+    }).length;
     const completedBooks = liveBooks.filter((book) => normalizeNumber(book.progress) >= 100);
     const finishedBooks = completedBooks.length;
-    const completedPages = completedBooks.reduce((sum, book) => sum + (toPositiveNumber(book?.estimatedPages) || 0), 0);
-    const totalSeconds = liveBooks.reduce((sum, book) => sum + Math.max(0, Number(book?.readingTime) || 0), 0);
+    const knownEstimatedPages = liveBooks
+      .map((book) => toPositiveNumber(book?.estimatedPages) || 0)
+      .filter((value) => value > 0);
+    const fallbackEstimatedPages = knownEstimatedPages.length
+      ? Math.round(knownEstimatedPages.reduce((sum, value) => sum + value, 0) / knownEstimatedPages.length)
+      : 320;
+    const pagesDone = liveBooks.reduce((sum, book) => {
+      const progressRatio = Math.max(0, Math.min(1, normalizeNumber(book?.progress) / 100));
+      if (progressRatio <= 0) return sum;
+      const estimatedPages = toPositiveNumber(book?.estimatedPages) || fallbackEstimatedPages;
+      return sum + Math.round(estimatedPages * progressRatio);
+    }, 0);
+    const totalSeconds = liveBooks.reduce((sum, book) => {
+      const readingTimeSeconds = Math.max(0, Number(book?.readingTime) || 0);
+      const sessions = Array.isArray(book?.readingSessions) ? book.readingSessions : [];
+      const sessionsSeconds = sessions.reduce((sessionSum, session) => sessionSum + Math.max(0, Number(session?.seconds) || 0), 0);
+      return sum + Math.max(readingTimeSeconds, sessionsSeconds);
+    }, 0);
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     const todaySeconds = liveBooks.reduce((sum, book) => {
@@ -3058,15 +3841,184 @@ const formatNotificationTimeAgo = (value) => {
     }, 0);
     return {
       totalBooks,
+      startedBooks,
       finishedBooks,
-      completedPages,
+      pagesDone,
       totalSeconds,
       todaySeconds
     };
   }, [books]);
+  const activeBorrowedLoanByBookId = useMemo(() => {
+    const map = new Map();
+    borrowedLoans.forEach((loan) => {
+      if (loan?.status !== "ACTIVE" || !loan?.book?.id) return;
+      map.set(loan.book.id, loan);
+    });
+    return map;
+  }, [borrowedLoans]);
+  const activeLentLoanByBookId = useMemo(() => {
+    const map = new Map();
+    lentLoans.forEach((loan) => {
+      if (loan?.status !== "ACTIVE" || !loan?.book?.id) return;
+      map.set(loan.book.id, loan);
+    });
+    return map;
+  }, [lentLoans]);
+  const getBookLoanBadge = (bookId) => {
+    if (!bookId) return null;
+    if (activeBorrowedLoanByBookId.has(bookId)) {
+      return { label: "Borrowed", tone: "amber" };
+    }
+    if (activeLentLoanByBookId.has(bookId)) {
+      return { label: "Lent", tone: "blue" };
+    }
+    return null;
+  };
+  const getLoanDeadline = (loan) => {
+    if (!loan?.dueAt) return null;
+    const dueMs = new Date(loan.dueAt).getTime();
+    if (!Number.isFinite(dueMs)) return null;
+    const graceDays = Math.max(0, Number(loan?.graceDays) || 0);
+    return new Date(dueMs + graceDays * 24 * 60 * 60 * 1000);
+  };
+  const formatLoanRemaining = (loan) => {
+    const deadline = getLoanDeadline(loan);
+    if (!deadline) return "No due date";
+    const remainingMs = deadline.getTime() - Date.now();
+    if (remainingMs <= 0) return "Overdue";
+    const remainingDays = Math.floor(remainingMs / (24 * 60 * 60 * 1000));
+    if (remainingDays >= 1) return `${remainingDays}d left`;
+    const remainingHours = Math.max(1, Math.floor(remainingMs / (60 * 60 * 1000)));
+    return `${remainingHours}h left`;
+  };
+  const loanReminderDays = Math.max(0, Math.min(30, Number(accountProfile?.loanReminderDays) || 0));
+  const getLoanVisualStatusKey = (loan, dueSoonDays = 0) => {
+    const raw = String(loan?.status || "").toUpperCase();
+    if (!raw) return "PENDING";
+    if (raw !== "ACTIVE") return raw;
+    const deadline = getLoanDeadline(loan);
+    if (!deadline) return "ACTIVE";
+    const diffDays = Math.ceil((deadline.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+    if (diffDays < 0) return "OVERDUE";
+    if (dueSoonDays > 0 && diffDays <= dueSoonDays) return "DUE_SOON";
+    return "ACTIVE";
+  };
+  const getLoanStatusMeta = (loan, dueSoonDays = 0) => {
+    const key = getLoanVisualStatusKey(loan, dueSoonDays);
+    const labelMap = {
+      PENDING: "Pending",
+      ACTIVE: "Active",
+      DUE_SOON: "Due Soon",
+      OVERDUE: "Overdue",
+      RETURNED: "Returned",
+      REVOKED: "Revoked",
+      EXPIRED: "Expired",
+      REJECTED: "Rejected"
+    };
+    return {
+      key,
+      label: labelMap[key] || key
+    };
+  };
+  const getLoanStatusChipClass = (statusKey) => {
+    const key = String(statusKey || "").toUpperCase();
+    const themeMap = {
+      PENDING: isDarkLibraryTheme ? "bg-slate-800 text-slate-300" : "bg-gray-100 text-gray-700",
+      ACTIVE: isDarkLibraryTheme ? "bg-emerald-900/35 text-emerald-200" : "bg-emerald-100 text-emerald-700",
+      DUE_SOON: isDarkLibraryTheme ? "bg-amber-900/35 text-amber-200" : "bg-amber-100 text-amber-700",
+      OVERDUE: isDarkLibraryTheme ? "bg-rose-900/35 text-rose-200" : "bg-rose-100 text-rose-700",
+      RETURNED: isDarkLibraryTheme ? "bg-indigo-900/35 text-indigo-200" : "bg-indigo-100 text-indigo-700",
+      REVOKED: isDarkLibraryTheme ? "bg-rose-900/35 text-rose-200" : "bg-rose-100 text-rose-700",
+      EXPIRED: isDarkLibraryTheme ? "bg-slate-700 text-slate-200" : "bg-slate-200 text-slate-700",
+      REJECTED: isDarkLibraryTheme ? "bg-slate-800 text-slate-300" : "bg-gray-100 text-gray-700"
+    };
+    return themeMap[key] || themeMap.PENDING;
+  };
+  const formatLoanStatusLine = (loan, dueSoonDays = 0) => {
+    const statusMeta = getLoanStatusMeta(loan, dueSoonDays);
+    const deadline = getLoanDeadline(loan);
+    const endedAt = loan?.returnedAt || loan?.revokedAt || loan?.expiredAt || null;
+    if (["ACTIVE", "DUE_SOON", "OVERDUE"].includes(statusMeta.key) && deadline) {
+      return `${statusMeta.label} · ${formatLoanRemaining(loan)} · due ${formatLoanDate(deadline)}`;
+    }
+    if (statusMeta.key === "PENDING" && loan?.requestedAt) {
+      return `${statusMeta.label} · requested ${formatLoanDate(loan.requestedAt)}`;
+    }
+    if (endedAt) {
+      return `${statusMeta.label} · ${formatLoanDate(endedAt)}`;
+    }
+    return statusMeta.label;
+  };
+  const getLoanPermissionChips = (loan, mode = "borrowed") => {
+    const perms = loan?.permissions || {};
+    const noteLabel = perms.canAddNotes
+      ? (perms.canEditNotes ? "Notes: add/edit" : "Notes: add only")
+      : "Notes: off";
+    const highlightLabel = perms.canAddHighlights
+      ? (perms.canEditHighlights ? "Highlights: add/edit" : "Highlights: add only")
+      : "Highlights: off";
+    const visibilityLabel =
+      perms.annotationVisibility === "SHARED_WITH_LENDER"
+        ? "Borrower notes: shared"
+        : "Borrower notes: private";
+    const lenderLabel = perms.shareLenderAnnotations
+      ? "Lender notes: visible"
+      : "Lender notes: hidden";
+    return mode === "lent"
+      ? [noteLabel, highlightLabel, visibilityLabel, lenderLabel]
+      : [noteLabel, highlightLabel, visibilityLabel, lenderLabel];
+  };
+  const renderLoanEmptyState = ({ icon: EmptyIcon, title, description, actionLabel, onAction }) => (
+    <div
+      className={`mt-3 rounded-xl border p-6 text-center ${
+        isDarkLibraryTheme ? "border-slate-700/80 bg-slate-900/40" : "border-gray-200 bg-gray-50"
+      }`}
+    >
+      {EmptyIcon ? React.createElement(EmptyIcon, { size: 22, className: `mx-auto mb-2 ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}` }) : null}
+      <p className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-200" : "text-gray-800"}`}>{title}</p>
+      <p className={`mt-1 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-600"}`}>{description}</p>
+      {actionLabel && onAction ? (
+        <button
+          type="button"
+          onClick={onAction}
+          className={`mt-3 rounded-lg px-3 py-1.5 text-xs font-semibold ${
+            isDarkLibraryTheme ? "bg-slate-800 text-slate-200 hover:bg-slate-700" : "bg-white text-gray-700 hover:bg-gray-100"
+          }`}
+        >
+          {actionLabel}
+        </button>
+      ) : null}
+    </div>
+  );
+  const formatLoanDate = (value) => {
+    if (!value) return "N/A";
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "N/A";
+    return date.toLocaleString();
+  };
+  const formatLoanActionLabel = (action) =>
+    String(action || "")
+      .toLowerCase()
+      .split("_")
+      .filter(Boolean)
+      .map((part) => part[0].toUpperCase() + part.slice(1))
+      .join(" ");
+  const getLoanActionToneClass = (action) => {
+    const value = String(action || "").toUpperCase();
+    if (value.includes("REVOKE") || value.includes("DENY") || value.includes("REJECT") || value.includes("EXPIRE")) {
+      return isDarkLibraryTheme ? "bg-rose-900/35 text-rose-200" : "bg-rose-100 text-rose-700";
+    }
+    if (value.includes("RETURN") || value.includes("ACCEPT") || value.includes("APPROVE")) {
+      return isDarkLibraryTheme ? "bg-emerald-900/35 text-emerald-200" : "bg-emerald-100 text-emerald-700";
+    }
+    if (value.includes("RENEW")) {
+      return isDarkLibraryTheme ? "bg-amber-900/35 text-amber-200" : "bg-amber-100 text-amber-700";
+    }
+    return isDarkLibraryTheme ? "bg-blue-900/35 text-blue-200" : "bg-blue-100 text-blue-700";
+  };
   const showReadingSnapshot = shouldShowLibraryHomeContent;
   const readingSnapshotProgress = readingSnapshot.totalBooks > 0
-    ? Math.max(0, Math.min(100, Math.round((readingSnapshot.finishedBooks / readingSnapshot.totalBooks) * 100)))
+    ? Math.round((readingSnapshot.startedBooks / readingSnapshot.totalBooks) * 100)
     : 0;
   const libraryNotifications = useMemo(() => (
     buildLibraryNotifications({
@@ -3097,11 +4049,161 @@ const formatNotificationTimeAgo = (value) => {
     isDuplicateTitleBook,
     stripDuplicateTitleSuffix
   ]);
+  const loanNotifications = useMemo(() => {
+    const items = [];
+    const nowMs = Date.now();
+    loanInbox.forEach((loan) => {
+      if (!loan?.id) return;
+      items.push({
+        id: `loan-request-${loan.id}`,
+        kind: "loan-request",
+        bookId: loan?.book?.id || "",
+        title: "Borrow request received",
+        author: loan?.book?.author || "",
+        message: `${loan.lender?.displayName || loan.lender?.email || "Someone"} invited you to borrow ${loan?.book?.title || "a book"}.`,
+        createdAt: loan.requestedAt || new Date().toISOString(),
+        priority: 0,
+        actionType: "open-inbox",
+        actionLabel: "Open inbox"
+      });
+    });
+    borrowedLoans.forEach((loan) => {
+      if (!loan?.id || loan?.status !== "ACTIVE") return;
+      const deadline = getLoanDeadline(loan);
+      if (!deadline) return;
+      const diffDays = Math.ceil((deadline.getTime() - nowMs) / (24 * 60 * 60 * 1000));
+      if (diffDays < 0) {
+        items.push({
+          id: `loan-overdue-${loan.id}`,
+          kind: "loan-overdue",
+          bookId: loan?.book?.id || "",
+          title: "Borrowed book overdue",
+          author: loan?.book?.author || "",
+          message: `${loan?.book?.title || "This book"} is overdue. Return it or export if revoked/ended.`,
+          createdAt: loan.updatedAt || loan.dueAt || new Date().toISOString(),
+          priority: 0,
+          actionType: "open-borrowed",
+          actionLabel: "Open borrowed"
+        });
+        return;
+      }
+      if (loanReminderDays > 0 && diffDays <= loanReminderDays) {
+        items.push({
+          id: `loan-due-soon-${loan.id}`,
+          kind: "loan-due-soon",
+          bookId: loan?.book?.id || "",
+          title: "Borrow period ending soon",
+          author: loan?.book?.author || "",
+          message: `${loan?.book?.title || "Book"} is due in ${diffDays} day${diffDays === 1 ? "" : "s"}.`,
+          createdAt: loan.updatedAt || loan.dueAt || new Date().toISOString(),
+          priority: 1,
+          actionType: "open-borrowed",
+          actionLabel: "Review loan"
+        });
+      }
+    });
+    lentLoans.forEach((loan) => {
+      if (!loan?.id) return;
+      if (loan.status === "RETURNED") {
+        items.push({
+          id: `loan-returned-${loan.id}`,
+          kind: "loan-returned",
+          bookId: loan?.book?.id || "",
+          title: "Borrow returned",
+          author: loan?.book?.author || "",
+          message: `${loan.borrower?.displayName || loan.borrower?.email || "Borrower"} returned ${loan?.book?.title || "a book"}.`,
+          createdAt: loan.returnedAt || loan.updatedAt || new Date().toISOString(),
+          priority: 2,
+          actionType: "open-lent",
+          actionLabel: "Open lent"
+        });
+      }
+      if (loan.status === "REVOKED") {
+        items.push({
+          id: `loan-revoked-${loan.id}`,
+          kind: "loan-revoked",
+          bookId: loan?.book?.id || "",
+          title: "Loan revoked",
+          author: loan?.book?.author || "",
+          message: `You revoked ${loan?.book?.title || "a loaned book"}.`,
+          createdAt: loan.revokedAt || loan.updatedAt || new Date().toISOString(),
+          priority: 2,
+          actionType: "open-lent",
+          actionLabel: "Open lent"
+        });
+      }
+    });
+    return items;
+  }, [loanInbox, borrowedLoans, lentLoans, loanReminderDays]);
+  const loanReminderInboxItems = useMemo(() => {
+    const nowMs = Date.now();
+    return borrowedLoans
+      .filter((loan) => loan?.id && loan?.status === "ACTIVE")
+      .map((loan) => {
+        const deadline = getLoanDeadline(loan);
+        if (!deadline) return null;
+        const diffDays = Math.ceil((deadline.getTime() - nowMs) / (24 * 60 * 60 * 1000));
+        if (diffDays < 0) {
+          return {
+            id: `loan-reminder-overdue-${loan.id}`,
+            loan,
+            kind: "overdue",
+            diffDays
+          };
+        }
+        if (loanReminderDays > 0 && diffDays <= loanReminderDays) {
+          return {
+            id: `loan-reminder-due-soon-${loan.id}`,
+            loan,
+            kind: "due-soon",
+            diffDays
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
+  }, [borrowedLoans, loanReminderDays]);
+  const pendingRenewalsByLoanId = useMemo(() => {
+    const map = new Map();
+    (loanRenewals || []).forEach((renewal) => {
+      if (renewal?.status !== "PENDING" || !renewal?.loanId) return;
+      const rows = map.get(renewal.loanId) || [];
+      rows.push(renewal);
+      map.set(renewal.loanId, rows);
+    });
+    return map;
+  }, [loanRenewals]);
+  const inboxTotalCount = shareInboxCount + loanInboxCount + loanReminderInboxItems.length;
+  const persistedLoanNotifications = useMemo(() => (
+    (remoteNotifications || []).map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      title: item.title,
+      message: item.message,
+      createdAt: item.createdAt,
+      actionType: item.actionType || null,
+      actionLabel: null,
+      bookId: item?.payload?.bookId || null,
+      author: "",
+      priority: 1,
+      __serverNotification: true,
+      __serverState: {
+        readAt: item.readAt || null,
+        archivedAt: item.archivedAt || null,
+        deletedAt: item.deletedAt || null
+      }
+    }))
+  ), [remoteNotifications]);
+  const allNotifications = useMemo(
+    () => [...libraryNotifications, ...(isCollabMode ? persistedLoanNotifications : loanNotifications)],
+    [libraryNotifications, loanNotifications, isCollabMode, persistedLoanNotifications]
+  );
   useEffect(() => {
     setNotificationStateById((current) => {
       const nowIso = new Date().toISOString();
       const next = {};
-      libraryNotifications.forEach((item) => {
+      allNotifications.forEach((item) => {
+        if (item.__serverNotification) return;
         const previous = current[item.id] || {};
         next[item.id] = {
           firstSeenAt: previous.firstSeenAt || item.createdAt || nowIso,
@@ -3130,10 +4232,27 @@ const formatNotificationTimeAgo = (value) => {
       }
       return current;
     });
-  }, [libraryNotifications]);
+  }, [allNotifications]);
 
   const libraryNotificationsWithState = useMemo(() => (
-    libraryNotifications.map((item) => {
+    allNotifications.map((item) => {
+      if (item.__serverNotification) {
+        const readAt = item.__serverState?.readAt || null;
+        const archivedAt = item.__serverState?.archivedAt || null;
+        const deletedAt = item.__serverState?.deletedAt || null;
+        return {
+          ...item,
+          firstSeenAt: item.createdAt || null,
+          readAt,
+          snoozedUntil: null,
+          archivedAt,
+          deletedAt,
+          isRead: Boolean(readAt),
+          isSnoozed: false,
+          isArchived: Boolean(archivedAt),
+          isDeleted: Boolean(deletedAt)
+        };
+      }
       const state = notificationStateById[item.id] || {};
       const firstSeenAt = state.firstSeenAt || null;
       const readAt = state.readAt || null;
@@ -3154,7 +4273,7 @@ const formatNotificationTimeAgo = (value) => {
         isDeleted: Boolean(deletedAt)
       };
     })
-  ), [libraryNotifications, notificationStateById]);
+  ), [allNotifications, notificationStateById]);
 
   const visibleNotifications = useMemo(
     () => libraryNotificationsWithState.filter((item) => !item.isSnoozed && !item.isArchived && !item.isDeleted),
@@ -3167,6 +4286,7 @@ const formatNotificationTimeAgo = (value) => {
   const filteredNotifications = notificationView === "unread" ? unreadNotifications : visibleNotifications;
   const notificationCount = unreadNotifications.length;
   const profileLabel = (accountProfile?.firstName || accountProfile?.email || "Reader").trim();
+  const profileAvatarUrl = (accountProfile?.avatarUrl || "").trim();
   const profileInitials = (() => {
     const firstName = (accountProfile?.firstName || "").trim();
     if (firstName) {
@@ -3191,7 +4311,20 @@ const formatNotificationTimeAgo = (value) => {
     "daily-goal": { label: "Daily goal", Icon: Target, tone: "indigo" },
     milestone: { label: "Milestone", Icon: Trophy, tone: "violet" },
     "to-read-nudge": { label: "To Read", Icon: Tag, tone: "pink" },
-    "duplicate-cleanup": { label: "Duplicates", Icon: Trash2, tone: "rose" }
+    "duplicate-cleanup": { label: "Duplicates", Icon: Trash2, tone: "rose" },
+    "loan-request": { label: "Loan", Icon: Mail, tone: "blue" },
+    "loan-due-soon": { label: "Due soon", Icon: Clock, tone: "amber" },
+    "loan-overdue": { label: "Overdue", Icon: Clock, tone: "rose" },
+    "loan-returned": { label: "Returned", Icon: RotateCcw, tone: "green" },
+    "loan-revoked": { label: "Revoked", Icon: Archive, tone: "rose" },
+    "loan-expired": { label: "Expired", Icon: Archive, tone: "rose" },
+    "loan-renewal-request": { label: "Renewal", Icon: Calendar, tone: "blue" },
+    "loan-renewal-approved": { label: "Renewal", Icon: Check, tone: "green" },
+    "loan-renewal-denied": { label: "Renewal", Icon: X, tone: "rose" },
+    "loan-export-window": { label: "Export", Icon: FileText, tone: "amber" },
+    "book-trashed": { label: "Trash", Icon: Trash2, tone: "rose" },
+    "book-restored": { label: "Restored", Icon: RotateCcw, tone: "green" },
+    "book-removed": { label: "Removed", Icon: Archive, tone: "rose" }
   };
   const notificationToneClasses = {
     amber: isDarkLibraryTheme ? "bg-amber-900/30 text-amber-300" : "bg-amber-100 text-amber-700",
@@ -3203,7 +4336,18 @@ const formatNotificationTimeAgo = (value) => {
     rose: isDarkLibraryTheme ? "bg-rose-900/30 text-rose-300" : "bg-rose-100 text-rose-700"
   };
 
-  const handleNotificationReadState = (id, read) => {
+  const handleNotificationReadState = (itemOrId, read) => {
+    const id = typeof itemOrId === "string" ? itemOrId : itemOrId?.id;
+    const isServerNotification = typeof itemOrId === "object" && Boolean(itemOrId?.__serverNotification);
+    if (!id) return;
+    if (isServerNotification) {
+      patchNotification(id, { read: Boolean(read) })
+        .then((updated) => {
+          setRemoteNotifications((current) => current.map((row) => (row.id === id ? updated : row)));
+        })
+        .catch((err) => console.error(err));
+      return;
+    }
     setNotificationStateById((current) => {
       const prev = current[id] || {};
       const nextReadAt = read ? (prev.readAt || new Date().toISOString()) : null;
@@ -3221,7 +4365,19 @@ const formatNotificationTimeAgo = (value) => {
     });
   };
 
-  const handleNotificationArchive = (id) => {
+  const handleNotificationArchive = (itemOrId) => {
+    const id = typeof itemOrId === "string" ? itemOrId : itemOrId?.id;
+    const isServerNotification = typeof itemOrId === "object" && Boolean(itemOrId?.__serverNotification);
+    if (!id) return;
+    if (isServerNotification) {
+      patchNotification(id, { archived: true, read: true })
+        .then((updated) => {
+          setRemoteNotifications((current) => current.map((row) => (row.id === id ? updated : row)));
+        })
+        .catch((err) => console.error(err));
+      if (activeNotificationMenuId === id) setActiveNotificationMenuId("");
+      return;
+    }
     const archivedAt = new Date().toISOString();
     setNotificationStateById((current) => {
       const previous = current[id] || {};
@@ -3239,7 +4395,19 @@ const formatNotificationTimeAgo = (value) => {
     if (activeNotificationMenuId === id) setActiveNotificationMenuId("");
   };
 
-  const handleNotificationDelete = (id) => {
+  const handleNotificationDelete = (itemOrId) => {
+    const id = typeof itemOrId === "string" ? itemOrId : itemOrId?.id;
+    const isServerNotification = typeof itemOrId === "object" && Boolean(itemOrId?.__serverNotification);
+    if (!id) return;
+    if (isServerNotification) {
+      patchNotification(id, { deleted: true, read: true })
+        .then((updated) => {
+          setRemoteNotifications((current) => current.map((row) => (row.id === id ? updated : row)));
+        })
+        .catch((err) => console.error(err));
+      if (activeNotificationMenuId === id) setActiveNotificationMenuId("");
+      return;
+    }
     const deletedAt = new Date().toISOString();
     setNotificationStateById((current) => {
       const previous = current[id] || {};
@@ -3258,6 +4426,16 @@ const formatNotificationTimeAgo = (value) => {
   };
 
   const handleMarkAllNotificationsRead = () => {
+    if (isCollabMode) {
+      markAllNotificationsRead()
+        .then(() => {
+          setRemoteNotifications((current) => current.map((row) => (row?.readAt ? row : {
+            ...row,
+            readAt: new Date().toISOString()
+          })));
+        })
+        .catch((err) => console.error(err));
+    }
     const nowIso = new Date().toISOString();
     setNotificationStateById((current) => {
       let changed = false;
@@ -3280,7 +4458,7 @@ const formatNotificationTimeAgo = (value) => {
 
   const handleOpenNotificationTarget = (item) => {
     if (!item) return;
-    handleNotificationReadState(item.id, true);
+    handleNotificationReadState(item, true);
     setIsNotificationsOpen(false);
     setActiveNotificationMenuId("");
 
@@ -3314,6 +4492,26 @@ const formatNotificationTimeAgo = (value) => {
       return;
     }
 
+    if (item.actionType === "open-inbox") {
+      handleSidebarSectionSelect("inbox");
+      return;
+    }
+
+    if (item.actionType === "open-borrowed") {
+      handleSidebarSectionSelect("borrowed");
+      return;
+    }
+
+    if (item.actionType === "open-lent") {
+      handleSidebarSectionSelect("lent");
+      return;
+    }
+
+    if (item.actionType === "open-trash") {
+      handleSidebarSectionSelect("trash");
+      return;
+    }
+
     handleSidebarSectionSelect("library");
   };
 
@@ -3338,9 +4536,14 @@ const formatNotificationTimeAgo = (value) => {
 
   const handleNotificationCardClick = (item) => {
     if (!item) return;
-    handleNotificationReadState(item.id, true);
+    handleNotificationReadState(item, true);
     setActiveNotificationMenuId("");
     setIsNotificationsOpen(false);
+
+    if (item.actionType === "open-inbox" || item.actionType === "open-borrowed" || item.actionType === "open-lent" || item.actionType === "open-trash") {
+      handleOpenNotificationTarget(item);
+      return;
+    }
 
     if (item.bookId) {
       handleSidebarSectionSelect("library");
@@ -3366,12 +4569,14 @@ const formatNotificationTimeAgo = (value) => {
       return;
     }
     if (actionKey === "faq") {
-      if (typeof window !== "undefined") {
-        window.open("https://github.com/AissamDjahnine/smart-reader#faq", "_blank", "noopener,noreferrer");
-      }
+      handleSidebarSectionSelect("faq");
       return;
     }
     if (actionKey === "sign-out") {
+      clearSession();
+      if (typeof window !== "undefined") {
+        window.location.reload();
+      }
       handleSidebarSectionSelect("library");
     }
   };
@@ -3386,68 +4591,109 @@ const formatNotificationTimeAgo = (value) => {
               isDarkLibraryTheme ? "border-slate-700/70" : "border-gray-200/80"
             }`}
           >
-            <img
-              src="/brand/logo.png"
-              alt="Ariadne logo"
-              className="h-14 w-auto max-w-[200px] origin-left scale-110 object-contain"
-              onError={(event) => {
-                event.currentTarget.style.display = "none";
-              }}
-            />
+            <button
+              type="button"
+              data-testid="library-logo-home-link"
+              onClick={() => handleSidebarSectionSelect("library")}
+              className={`inline-flex items-center rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                isDarkLibraryTheme
+                  ? "border border-slate-700/70 bg-slate-800/85 px-2.5 py-1.5 shadow-[0_8px_22px_rgba(2,8,23,0.45)]"
+                  : ""
+              }`}
+              title="Go to My Library"
+              aria-label="Go to My Library"
+            >
+              <img
+                src={brandLogoSrc}
+                alt="Ariadne logo"
+                className="h-14 w-auto max-w-[200px] origin-left scale-110 object-contain"
+                onError={(event) => {
+                  const { currentTarget } = event;
+                  if (currentTarget.src.includes(brandLogoFallbackSrc)) {
+                    currentTarget.style.display = "none";
+                    return;
+                  }
+                  currentTarget.src = brandLogoFallbackSrc;
+                }}
+              />
+            </button>
           </div>
           {showReadingSnapshot && (
             <aside
               data-testid="reading-snapshot-card"
-              className={`workspace-surface p-5 ${
+              className={`workspace-surface p-4 ${
                 isDarkLibraryTheme ? "workspace-surface-dark" : "workspace-surface-light library-zone-sidebar-light"
               }`}
             >
-              <div className={`text-sm font-semibold ${
-                isDarkLibraryTheme ? "text-slate-200" : "text-[#1A1A2E]"
-              }`}>
-                Reading Snapshot
-              </div>
-              <div className="mt-4 flex items-center gap-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className={`text-sm font-semibold ${
+                  isDarkLibraryTheme ? "text-slate-200" : "text-[#1A1A2E]"
+                }`}>
+                  Reading Snapshot
+                </div>
                 <div
-                  className="relative h-20 w-20 shrink-0 rounded-full"
+                  data-testid="library-streak-badge"
+                  className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                    streakCount > 0
+                      ? (isDarkLibraryTheme ? "bg-amber-900/35 text-amber-200 ring-1 ring-amber-800/70" : "bg-orange-100 text-orange-700 ring-1 ring-orange-200")
+                      : (isDarkLibraryTheme ? "bg-slate-800 text-slate-400 ring-1 ring-slate-700" : "bg-gray-100 text-gray-600 ring-1 ring-gray-200")
+                  }`}
+                  title={streakCount > 0 && !readToday ? 'Read today to keep your streak alive.' : 'Daily reading streak'}
+                >
+                  <Flame
+                    size={12}
+                    className={
+                      streakCount > 0
+                        ? (isDarkLibraryTheme ? "text-amber-300" : "text-orange-500")
+                        : (isDarkLibraryTheme ? "text-slate-500" : "text-gray-400")
+                    }
+                  />
+                  <span>{streakCount > 0 ? `${streakCount}-day streak` : "No streak yet"}</span>
+                </div>
+              </div>
+              <div className="mt-3 grid grid-cols-[78px_minmax(0,1fr)] items-center gap-3">
+                <div
+                  className="relative h-[78px] w-[78px] shrink-0 rounded-full"
                   style={{
                     background: `conic-gradient(${isDarkLibraryTheme ? "#60a5fa" : "#2563eb"} ${readingSnapshotProgress}%, ${isDarkLibraryTheme ? "#334155" : "#e5e7eb"} ${readingSnapshotProgress}% 100%)`
                   }}
                 >
                   <div className={`absolute inset-[7px] rounded-full ${isDarkLibraryTheme ? "bg-slate-900" : "bg-white"}`} />
                   <div className="absolute inset-0 flex flex-col items-center justify-center leading-tight">
-                    <span className={`text-[18px] font-extrabold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
-                      {readingSnapshot.finishedBooks}
+                    <span className={`text-[17px] font-extrabold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+                      {readingSnapshot.startedBooks}
                     </span>
                     <span className={`text-[10px] font-semibold ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
                       / {readingSnapshot.totalBooks || 0}
                     </span>
                   </div>
                 </div>
-                <div className="space-y-2.5">
-                  <div className="inline-flex items-center gap-2">
-                    <Clock size={14} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
-                    <div className="leading-tight">
-                      <div className={`text-[11px] font-medium ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Hours</div>
-                      <div className={`text-lg font-bold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
-                        {formatRoundedHours(readingSnapshot.totalSeconds)}
-                      </div>
+                <div className="space-y-2">
+                  <div className={`rounded-lg px-2 py-1.5 ${isDarkLibraryTheme ? "bg-slate-900/55" : "bg-white/70"}`}>
+                    <div className="inline-flex items-center gap-1.5">
+                      <Clock size={13} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
+                      <div className={`text-[10px] font-semibold uppercase tracking-[0.08em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Overall time passed (hours)</div>
+                    </div>
+                    <div className={`mt-1 text-[34px] leading-none font-extrabold tracking-tight tabular-nums whitespace-nowrap ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+                        {formatSnapshotDuration(readingSnapshot.totalSeconds)}
                     </div>
                   </div>
-                  <div className="inline-flex items-center gap-2">
-                    <FileText size={14} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
-                    <div className="leading-tight">
-                      <div className={`text-[11px] font-medium ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Pages done</div>
-                      <div className={`text-lg font-bold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
-                        {readingSnapshot.completedPages}
-                      </div>
+                  <div className={`rounded-lg px-2 py-1.5 ${isDarkLibraryTheme ? "bg-slate-900/55" : "bg-white/70"}`}>
+                    <div className="inline-flex items-center gap-1.5">
+                      <FileText size={13} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
+                      <div className={`text-[10px] font-semibold uppercase tracking-[0.08em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Pages done</div>
+                    </div>
+                    <div className={`mt-1 text-[26px] leading-none font-bold tracking-tight tabular-nums ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+                        {readingSnapshot.pagesDone}
                     </div>
                   </div>
                 </div>
               </div>
-              <div className={`mt-4 inline-flex w-full items-center gap-2 border-t pt-3 text-[12px] ${isDarkLibraryTheme ? "border-slate-700 text-slate-400" : "border-gray-100 text-gray-600"}`}>
+              <div className={`mt-3 inline-flex w-full items-center justify-between gap-2 border-t pt-2.5 text-[12px] ${isDarkLibraryTheme ? "border-slate-700 text-slate-400" : "border-gray-100 text-gray-600"}`}>
+                <span className="inline-flex items-center gap-2">
                 <History size={14} className={isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"} />
                 <span className="font-medium">Today</span>
+                </span>
                 <span className={`ml-1 font-semibold ${isDarkLibraryTheme ? "text-blue-300" : "text-blue-600"}`}>
                   {formatSessionDuration(readingSnapshot.todaySeconds)}
                 </span>
@@ -3457,8 +4703,10 @@ const formatNotificationTimeAgo = (value) => {
           <LibraryWorkspaceSidebar
             librarySection={librarySection}
             isDarkLibraryTheme={isDarkLibraryTheme}
+            isCollabMode={isCollabMode}
             notesCount={notesCenterEntries.length}
             highlightsCount={highlightsCenterEntries.length}
+            inboxCount={inboxTotalCount}
             trashCount={trashedBooksCount}
             onSelectSection={handleSidebarSectionSelect}
             className={showReadingSnapshot ? "mt-4" : ""}
@@ -3468,83 +4716,80 @@ const formatNotificationTimeAgo = (value) => {
         <div className="w-full min-w-0">
         <LibraryWorkspaceMobileNav
           librarySection={librarySection}
+          isCollabMode={isCollabMode}
           onSelectSection={handleSidebarSectionSelect}
         />
-        <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10">
-          <div>
-            <div className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-500"}`}>
-              Workspace
-            </div>
-            <h1 className={`mt-1 text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-              {sectionHeader.title}
-            </h1>
-            <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-              {sectionHeader.subtitle}
-            </p>
-            <p className={`mt-1 text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-600"}`}>
-              {sectionHeader.summary}
-            </p>
+        <header
+          className={`mb-8 rounded-3xl border p-4 md:p-5 ${
+            isDarkLibraryTheme
+              ? "border-slate-700 bg-slate-900/35"
+              : "border-gray-200 bg-white/90 shadow-sm"
+          }`}
+        >
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0 flex-1">
+              <div className={`text-[10px] font-semibold uppercase tracking-[0.16em] ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-500"}`}>
+                Workspace
+              </div>
+              <div className="mt-1 flex flex-wrap items-end gap-x-3 gap-y-1">
+                <h1 className={`text-4xl font-extrabold tracking-tight ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
+                  {sectionHeader.title}
+                </h1>
+                <span className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-600"}`}>
+                  · {sectionHeader.summary}
+                </span>
+              </div>
+              <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                {sectionHeader.subtitle}
+              </p>
 
-            {shouldShowLibraryHomeContent && (
-              <>
-                <div
-                  data-testid="library-streak-badge"
-                  className={`mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${
-                    streakCount > 0
-                      ? 'border-orange-200 bg-orange-50 text-orange-700'
-                      : 'border-gray-200 bg-white text-gray-500'
-                  }`}
-                  title={streakCount > 0 && !readToday ? 'Read today to keep your streak alive.' : 'Daily reading streak'}
-                >
-                  <Flame size={14} className={streakCount > 0 ? 'text-orange-500' : 'text-gray-400'} />
-                  <span>{streakCount > 0 ? `${streakCount}-day streak` : 'No streak yet'}</span>
-                </div>
-
-                <div data-testid="library-quick-filters" className="mt-3 flex flex-wrap gap-2">
-                  {quickFilterStats.map((stat) => {
-                    const isQuickActive =
-                      stat.key === "favorites"
-                        ? isFlagFilterActive("favorites")
-                        : statusFilter === stat.key;
+              {isCollabMode && (
+                <div className={`mt-3 flex flex-wrap items-end gap-1 border-b ${
+                  isDarkLibraryTheme ? "border-slate-700/80" : "border-gray-200"
+                }`}>
+                  {[
+                    { key: "library", label: "My library", Icon: BookIcon },
+                    { key: "borrowed", label: "Borrowed", Icon: Clock },
+                    { key: "lent", label: "Lent", Icon: Send },
+                    { key: "history", label: "History", Icon: History },
+                    { key: "inbox", label: `Inbox (${inboxTotalCount})`, Icon: Mail }
+                  ].map((tab) => {
+                    const isActive = librarySection === tab.key;
+                    const TabIcon = tab.Icon;
                     return (
-                    <button
-                      key={stat.key}
-                      type="button"
-                      data-testid={`library-quick-filter-${stat.key}`}
-                      aria-pressed={isQuickActive}
-                      onClick={() => {
-                        if (stat.key === "favorites") {
-                          toggleFlagFilter("favorites");
-                          return;
-                        }
-                        setStatusFilter(stat.key);
-                      }}
-                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
-                        isQuickActive
-                          ? "border-blue-200 bg-blue-50 text-blue-700"
-                          : "border-gray-200 bg-white text-gray-600 hover:border-blue-200 hover:text-blue-700"
-                      }`}
-                      title={`Show ${stat.label.toLowerCase()} books`}
-                    >
-                      <span>{stat.label}</span>
-                      <span
-                        data-testid={`library-quick-filter-${stat.key}-count`}
-                        className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold ${
-                          isQuickActive ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
+                      <button
+                        key={tab.key}
+                        type="button"
+                        onClick={() => handleSidebarSectionSelect(tab.key)}
+                        className={`inline-flex items-center gap-1.5 rounded-t-xl border border-b-0 px-3 py-2 text-xs font-semibold transition ${
+                          isActive
+                            ? (isDarkLibraryTheme
+                                ? "border-slate-600 bg-slate-900 text-slate-100"
+                                : "border-gray-300 bg-white text-gray-900")
+                            : (isDarkLibraryTheme
+                                ? "border-transparent bg-slate-900/40 text-slate-400 hover:border-slate-700 hover:bg-slate-900/70 hover:text-slate-200"
+                                : "border-transparent bg-gray-100 text-gray-500 hover:border-gray-200 hover:bg-gray-50 hover:text-gray-700")
                         }`}
                       >
-                        {stat.count}
-                      </span>
-                    </button>
+                        <TabIcon size={13} />
+                        <span>{tab.label}</span>
+                      </button>
                     );
                   })}
                 </div>
-              </>
-            )}
-          </div>
+              )}
 
-          {!isAccountSection && (
-          <div className="relative flex w-full flex-wrap items-center gap-3 md:w-auto md:justify-end" ref={notificationsMenuRef}>
+            </div>
+
+            {!isAccountSection && (
+          <div className="relative flex w-full flex-wrap items-center gap-3 lg:w-auto lg:justify-end" ref={notificationsMenuRef}>
+            <div
+              className={`inline-flex items-center gap-2 rounded-full border px-2 py-1 ${
+                isDarkLibraryTheme
+                  ? "border-slate-600 bg-slate-900/70 shadow-[0_12px_24px_rgba(2,8,23,0.35)]"
+                  : "border-gray-200 bg-white shadow-sm"
+              }`}
+            >
             <button
               type="button"
               data-testid="library-notifications-toggle"
@@ -3552,7 +4797,7 @@ const formatNotificationTimeAgo = (value) => {
                 setActiveNotificationMenuId("");
                 setIsNotificationsOpen((open) => !open);
               }}
-              className={`relative inline-flex h-12 w-12 items-center justify-center rounded-full border transition ${
+              className={`relative inline-flex h-11 w-11 items-center justify-center rounded-full border transition ${
                 isDarkLibraryTheme
                   ? "border-slate-500 bg-slate-800 text-slate-100 hover:bg-slate-700"
                   : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
@@ -3565,7 +4810,7 @@ const formatNotificationTimeAgo = (value) => {
               {notificationCount > 0 && (
                 <span
                   data-testid="library-notifications-badge"
-                  className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center"
+                  className="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white"
                 >
                   {notificationCount}
                 </span>
@@ -3576,7 +4821,7 @@ const formatNotificationTimeAgo = (value) => {
               type="button"
               data-testid="library-theme-toggle"
               onClick={() => setLibraryTheme((current) => (current === "dark" ? "light" : "dark"))}
-              className={`inline-flex h-12 w-12 items-center justify-center rounded-full border transition ${
+              className={`inline-flex h-11 w-11 items-center justify-center rounded-full border transition ${
                 isDarkLibraryTheme
                   ? "border-slate-500 bg-slate-800 text-slate-100 hover:bg-slate-700"
                   : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
@@ -3594,7 +4839,7 @@ const formatNotificationTimeAgo = (value) => {
                 setIsNotificationsOpen(false);
                 setIsProfileMenuOpen((open) => !open);
               }}
-              className={`inline-flex h-12 w-12 items-center justify-center rounded-full border text-sm font-bold transition ${
+              className={`inline-flex h-11 w-11 items-center justify-center rounded-full border text-sm font-bold transition ${
                 isDarkLibraryTheme
                   ? "border-slate-500 bg-slate-800 text-slate-100 hover:bg-slate-700"
                   : "border-gray-200 bg-white text-[#1A1A2E] hover:border-blue-200 hover:text-blue-700"
@@ -3603,8 +4848,17 @@ const formatNotificationTimeAgo = (value) => {
               aria-label="Open profile menu"
               aria-expanded={isProfileMenuOpen}
             >
-              {profileInitials}
+              {profileAvatarUrl ? (
+                <img
+                  src={profileAvatarUrl}
+                  alt={profileLabel}
+                  className="h-full w-full rounded-full object-cover"
+                />
+              ) : (
+                profileInitials
+              )}
             </button>
+            </div>
 
             {isProfileMenuOpen && (
               <div
@@ -3820,7 +5074,7 @@ const formatNotificationTimeAgo = (value) => {
                               onClick={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
-                                handleNotificationReadState(item.id, !item.isRead);
+                                handleNotificationReadState(item, !item.isRead);
                                 setActiveNotificationMenuId("");
                               }}
                               className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-xs font-semibold ${
@@ -3838,7 +5092,7 @@ const formatNotificationTimeAgo = (value) => {
                               onClick={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
-                                handleNotificationArchive(item.id);
+                                handleNotificationArchive(item);
                               }}
                               className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-semibold ${
                                 isDarkLibraryTheme ? "text-slate-200 hover:bg-slate-800" : "text-[#1A1A2E] hover:bg-gray-50"
@@ -3853,7 +5107,7 @@ const formatNotificationTimeAgo = (value) => {
                               onClick={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
-                                handleNotificationDelete(item.id);
+                                handleNotificationDelete(item);
                               }}
                               className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-semibold ${
                                 isDarkLibraryTheme ? "text-rose-300 hover:bg-rose-900/20" : "text-rose-600 hover:bg-rose-50"
@@ -3872,6 +5126,7 @@ const formatNotificationTimeAgo = (value) => {
             )}
           </div>
           )}
+          </div>
         </header>
 
         {isAccountSection && (
@@ -3879,8 +5134,15 @@ const formatNotificationTimeAgo = (value) => {
             isDarkLibraryTheme={isDarkLibraryTheme}
             accountProfile={accountProfile}
             accountSaveMessage={accountSaveMessage}
+            isUploadingAvatar={isUploadingAvatar}
+            loanTemplate={isCollabMode ? loanTemplate : null}
+            isSavingLoanTemplate={isSavingLoanTemplate}
             onFieldChange={handleAccountFieldChange}
+            onLoanTemplateFieldChange={handleLoanTemplateFieldChange}
+            onLoanTemplatePermissionChange={handleLoanTemplatePermissionChange}
+            onAvatarUpload={handleAccountAvatarUpload}
             onSave={handleSaveAccountProfile}
+            onSaveLoanTemplate={handleSaveLoanTemplate}
           />
         )}
 
@@ -3888,28 +5150,58 @@ const formatNotificationTimeAgo = (value) => {
           <LibraryReadingStatisticsSection
             isDarkLibraryTheme={isDarkLibraryTheme}
             books={activeBooks}
+            borrowedLoans={borrowedLoans}
+            lentLoans={lentLoans}
+            notesCount={notesCenterEntries.length}
+            highlightsCount={highlightsCenterEntries.length}
             buildReaderPath={buildReaderPath}
             onOpenBook={handleOpenBook}
+            onBrowseLibrary={() => handleSidebarSectionSelect("library")}
           />
         )}
 
-        {!isAccountSection && !isStatisticsSection && (
+        {isFaqSection && (
+          <section
+            data-testid="library-faq-section"
+            className={`rounded-2xl border p-5 space-y-3 ${
+              isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "border-gray-200 bg-white"
+            }`}
+          >
+            {FAQ_ITEMS.map((item, index) => (
+              <article
+                key={`faq-${index}`}
+                className={`rounded-xl border p-4 ${
+                  isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/50"
+                }`}
+              >
+                <h3 className={`text-sm font-bold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
+                  {item.question}
+                </h3>
+                <p className={`mt-1 text-sm leading-relaxed ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}`}>
+                  {item.answer}
+                </p>
+              </article>
+            ))}
+          </section>
+        )}
+
+        {!isAccountSection && !isStatisticsSection && !isFaqSection && (
         <>
         {shouldShowContinueReading && (
           <section
             className={`mb-8 rounded-3xl border p-4 sm:p-5 ${
-              isDarkLibraryTheme ? "border-slate-700 bg-transparent" : "library-zone-continue-light"
+              isDarkLibraryTheme ? "border-slate-700 bg-slate-900/25" : "library-zone-continue-light"
             }`}
             data-testid="continue-reading-rail"
           >
             <div className="flex items-center justify-between gap-3 mb-4">
               <div>
-                <h2 className="text-lg font-bold text-gray-900">Continue Reading</h2>
+                <h2 className={`text-lg font-bold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Continue Reading</h2>
               </div>
               <button
                 type="button"
                 onClick={() => setStatusFilter("in-progress")}
-                className="text-xs font-bold text-blue-600 hover:text-blue-700"
+                className={`text-xs font-bold ${isDarkLibraryTheme ? "text-blue-300 hover:text-blue-200" : "text-blue-600 hover:text-blue-700"}`}
               >
                 View in-progress
               </button>
@@ -3918,6 +5210,7 @@ const formatNotificationTimeAgo = (value) => {
             <div className="grid [grid-template-columns:repeat(auto-fit,minmax(340px,1fr))] gap-x-4 gap-y-10 pb-3 pr-2">
               {continueReadingBooks.map((book) => {
                 const progress = Math.max(0, Math.min(100, normalizeNumber(book.progress)));
+                const loanBadge = getBookLoanBadge(book.id);
                 const estimatedRemainingSeconds = Number.isFinite(book?.__estimatedRemainingSeconds)
                   ? book.__estimatedRemainingSeconds
                   : getEstimatedRemainingSeconds(book);
@@ -3949,6 +5242,17 @@ const formatNotificationTimeAgo = (value) => {
                             : "bg-gray-200 shadow-[0_14px_26px_rgba(15,23,42,0.18)]"
                         }`}
                       >
+                        {loanBadge && (
+                          <span
+                            className={`absolute left-2 top-2 z-20 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                              loanBadge.tone === "amber"
+                                ? "bg-amber-500 text-white"
+                                : "bg-blue-600 text-white"
+                            }`}
+                          >
+                            {loanBadge.label}
+                          </span>
+                        )}
                         {book.cover ? (
                           <img src={book.cover} alt={book.title} className="h-full w-full object-cover" />
                         ) : (
@@ -4041,6 +5345,10 @@ const formatNotificationTimeAgo = (value) => {
             onClearSort={() => setSortBy("last-read-desc")}
             canShowResetFilters={canShowResetFilters}
             onResetFilters={resetLibraryFilters}
+            quickFilterCounts={quickFilterCounts}
+            isFavoritesQuickFilterActive={flagFilters.includes("favorites")}
+            onQuickStatusFilterSelect={setStatusFilter}
+            onQuickFavoritesToggle={() => toggleFlagFilter("favorites")}
           />
         )}
         {shouldShowLibraryHomeContent && sortedBooks.length > 0 && (
@@ -4055,11 +5363,18 @@ const formatNotificationTimeAgo = (value) => {
                 type="button"
                 data-testid="library-select-all"
                 onClick={handleToggleSelectAllLibrary}
-                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  isDarkLibraryTheme
+                    ? "border-slate-700 bg-slate-800 text-slate-200 hover:border-blue-500 hover:text-blue-300"
+                    : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                }`}
               >
                 {allVisibleLibrarySelected ? "Unselect all" : "Select all"}
               </button>
-              <span data-testid="library-selected-count" className="text-xs font-semibold text-gray-500">
+              <span
+                data-testid="library-selected-count"
+                className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}
+              >
                 {librarySelectedCount} selected
               </span>
               <button
@@ -4067,7 +5382,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="library-bulk-to-read"
                 onClick={handleBulkMarkToRead}
                 disabled={!librarySelectedCount}
-                className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 enabled:hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-amber-800/70 bg-amber-950/35 text-amber-200 enabled:hover:bg-amber-900/45"
+                    : "border-amber-200 bg-amber-50 text-amber-700 enabled:hover:bg-amber-100"
+                }`}
               >
                 Add to To Read
               </button>
@@ -4076,7 +5395,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="library-bulk-favorite"
                 onClick={handleBulkFavorite}
                 disabled={!librarySelectedCount}
-                className="inline-flex items-center rounded-full border border-pink-200 bg-pink-50 px-3 py-1.5 text-xs font-semibold text-pink-700 enabled:hover:bg-pink-100 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-fuchsia-800/70 bg-fuchsia-950/35 text-fuchsia-200 enabled:hover:bg-fuchsia-900/45"
+                    : "border-pink-200 bg-pink-50 text-pink-700 enabled:hover:bg-pink-100"
+                }`}
               >
                 Favorite selected
               </button>
@@ -4085,7 +5408,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="library-bulk-trash"
                 onClick={handleBulkMoveToTrash}
                 disabled={!librarySelectedCount}
-                className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 enabled:hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-rose-800/70 bg-rose-950/35 text-rose-200 enabled:hover:bg-rose-900/45"
+                    : "border-red-200 bg-red-50 text-red-700 enabled:hover:bg-red-100"
+                }`}
               >
                 Move to Trash
               </button>
@@ -4094,17 +5421,28 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="library-clear-selection"
                 onClick={handleClearLibrarySelection}
                 disabled={!librarySelectedCount}
-                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 enabled:hover:border-blue-200 enabled:hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors enabled:hover:border-blue-200 enabled:hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-slate-700 bg-slate-800 text-slate-200 enabled:hover:border-blue-500 enabled:hover:text-blue-300"
+                    : "border-gray-200 bg-white text-gray-700"
+                }`}
               >
                 Clear selection
               </button>
               <button
                 type="button"
                 data-testid="library-exit-select-mode"
-                onClick={handleExitLibrarySelectionMode}
-                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                onClick={() => {
+                  setSelectedLibraryBookIds([]);
+                  setIsLibrarySelectionMode(false);
+                }}
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  isDarkLibraryTheme
+                    ? "border-slate-700 bg-slate-800 text-slate-200 hover:border-blue-500 hover:text-blue-300"
+                    : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                }`}
               >
-                Done
+                Exit
               </button>
             </div>
           ) : (
@@ -4116,7 +5454,11 @@ const formatNotificationTimeAgo = (value) => {
                 type="button"
                 data-testid="library-enter-select-mode"
                 onClick={handleEnterLibrarySelectionMode}
-                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  isDarkLibraryTheme
+                    ? "border-slate-700 bg-slate-800 text-slate-200 hover:border-blue-500 hover:text-blue-300"
+                    : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                }`}
               >
                 Select
               </button>
@@ -4127,35 +5469,51 @@ const formatNotificationTimeAgo = (value) => {
           <>
             <div
               data-testid="trash-retention-note"
-              className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800"
+              className={`mb-3 rounded-xl border px-3 py-2 text-xs font-semibold ${
+                isDarkLibraryTheme
+                  ? "border-amber-800/70 bg-amber-950/35 text-amber-200"
+                  : "border-amber-200 bg-amber-50 text-amber-800"
+              }`}
             >
               Books in Trash are permanently deleted after {TRASH_RETENTION_DAYS} days.
             </div>
 
             <div
               data-testid="trash-toolbar"
-              className="sticky top-3 z-20 mb-3 rounded-2xl bg-gray-50/95 pb-2 backdrop-blur supports-[backdrop-filter]:bg-gray-50/80"
+              className={`sticky top-3 z-20 mb-3 rounded-2xl pb-2 backdrop-blur ${
+                isDarkLibraryTheme
+                  ? "bg-slate-900/75"
+                  : "bg-gray-50/95 supports-[backdrop-filter]:bg-gray-50/80"
+              }`}
             >
               <div className="grid grid-cols-1 items-stretch gap-3 md:grid-cols-[minmax(0,1fr)_320px_auto]">
                 <div className="relative flex-1">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                  <Search className={`absolute left-4 top-1/2 -translate-y-1/2 ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}`} size={20} />
                   <input
                     type="text"
                     placeholder="Search deleted books..."
                     data-testid="trash-search"
-                    className="h-[52px] w-full rounded-2xl border border-gray-200 bg-white pl-12 pr-4 text-base focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+                    className={`h-[52px] w-full rounded-2xl border pl-12 pr-4 text-base focus:ring-2 focus:ring-blue-500 outline-none transition-all ${
+                      isDarkLibraryTheme
+                        ? "border-slate-700 bg-slate-800 text-slate-100 shadow-[0_10px_24px_rgba(2,8,23,0.32)] placeholder:text-slate-500"
+                        : "border-gray-200 bg-white shadow-sm"
+                    }`}
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                   />
                 </div>
 
                 <div className="relative">
-                  <ArrowUpDown className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                  <ArrowUpDown className={`absolute left-4 top-1/2 -translate-y-1/2 ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}`} size={18} />
                   <select
                     data-testid="trash-sort"
                     value={trashSortBy}
                     onChange={(e) => setTrashSortBy(e.target.value)}
-                    className="h-[52px] w-full rounded-2xl border border-gray-200 bg-white pl-11 pr-4 text-sm font-semibold text-gray-700 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+                    className={`h-[52px] w-full rounded-2xl border pl-11 pr-4 text-sm font-semibold focus:ring-2 focus:ring-blue-500 outline-none transition-all ${
+                      isDarkLibraryTheme
+                        ? "border-slate-700 bg-slate-800 text-slate-100 shadow-[0_10px_24px_rgba(2,8,23,0.32)]"
+                        : "border-gray-200 bg-white text-gray-700 shadow-sm"
+                    }`}
                   >
                     {trashSortOptions.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -4166,7 +5524,11 @@ const formatNotificationTimeAgo = (value) => {
                 </div>
 
                 <div
-                  className="flex h-[52px] w-[108px] items-center rounded-2xl border border-gray-200 bg-white p-1 shadow-sm"
+                  className={`flex h-[52px] w-[108px] items-center rounded-2xl border p-1 ${
+                    isDarkLibraryTheme
+                      ? "border-slate-700 bg-slate-800 shadow-[0_8px_20px_rgba(2,8,23,0.28)]"
+                      : "border-gray-200 bg-white shadow-sm"
+                  }`}
                   data-testid="library-view-toggle"
                 >
                   <button
@@ -4175,7 +5537,11 @@ const formatNotificationTimeAgo = (value) => {
                     aria-pressed={viewMode === "grid"}
                     onClick={() => setViewMode("grid")}
                     className={`flex h-full flex-1 items-center justify-center rounded-xl transition-colors ${
-                      viewMode === "grid" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
+                      viewMode === "grid"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : isDarkLibraryTheme
+                          ? "text-slate-400 hover:text-slate-100"
+                          : "text-gray-500 hover:text-gray-900"
                     }`}
                     title="Grid view"
                   >
@@ -4187,7 +5553,11 @@ const formatNotificationTimeAgo = (value) => {
                     aria-pressed={viewMode === "list"}
                     onClick={() => setViewMode("list")}
                     className={`flex h-full flex-1 items-center justify-center rounded-xl transition-colors ${
-                      viewMode === "list" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
+                      viewMode === "list"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : isDarkLibraryTheme
+                          ? "text-slate-400 hover:text-slate-100"
+                          : "text-gray-500 hover:text-gray-900"
                     }`}
                     title="List view"
                   >
@@ -4202,11 +5572,15 @@ const formatNotificationTimeAgo = (value) => {
                 type="button"
                 data-testid="trash-select-all"
                 onClick={handleToggleSelectAllTrash}
-                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  isDarkLibraryTheme
+                    ? "border-slate-700 bg-slate-800 text-slate-200 hover:border-blue-500 hover:text-blue-300"
+                    : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                }`}
               >
                 {allVisibleTrashSelected ? "Unselect all" : "Select all"}
               </button>
-              <span className="text-xs font-semibold text-gray-500">
+              <span className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
                 {trashSelectedCount} selected
               </span>
               <button
@@ -4214,7 +5588,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="trash-restore-selected"
                 onClick={handleRestoreSelectedTrash}
                 disabled={!trashSelectedCount}
-                className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 enabled:hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-emerald-800/70 bg-emerald-950/35 text-emerald-200 enabled:hover:bg-emerald-900/45"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-700 enabled:hover:bg-emerald-100"
+                }`}
               >
                 Restore selected
               </button>
@@ -4223,7 +5601,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="trash-delete-selected"
                 onClick={handleDeleteSelectedTrash}
                 disabled={!trashSelectedCount}
-                className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 enabled:hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-rose-800/70 bg-rose-950/35 text-rose-200 enabled:hover:bg-rose-900/45"
+                    : "border-red-200 bg-red-50 text-red-700 enabled:hover:bg-red-100"
+                }`}
               >
                 Delete selected
               </button>
@@ -4232,7 +5614,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="trash-restore-all"
                 onClick={handleRestoreAllTrash}
                 disabled={!trashedBooks.length}
-                className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 enabled:hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-emerald-800/70 bg-emerald-950/35 text-emerald-200 enabled:hover:bg-emerald-900/45"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-700 enabled:hover:bg-emerald-100"
+                }`}
               >
                 Restore all
               </button>
@@ -4241,7 +5627,11 @@ const formatNotificationTimeAgo = (value) => {
                 data-testid="trash-delete-all"
                 onClick={handleDeleteAllTrash}
                 disabled={!trashedBooks.length}
-                className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 enabled:hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDarkLibraryTheme
+                    ? "border-rose-800/70 bg-rose-950/35 text-rose-200 enabled:hover:bg-rose-900/45"
+                    : "border-red-200 bg-red-50 text-red-700 enabled:hover:bg-red-100"
+                }`}
               >
                 Delete all
               </button>
@@ -4288,8 +5678,474 @@ const formatNotificationTimeAgo = (value) => {
             onOpenReader={handleOpenHighlightInReader}
           />
         )}
+        {isInboxSection && !isTrashSection && (
+          <div className="space-y-4">
+            <LibraryShareInboxPanel
+              isDarkLibraryTheme={isDarkLibraryTheme}
+              onAccepted={async () => {
+                await loadLibrary();
+                await refreshCollabPanels();
+              }}
+            />
+            <section
+              className={`rounded-2xl border p-5 ${
+                isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "border-gray-200 bg-white"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h2 className={`text-lg font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Loan Inbox</h2>
+                <button
+                  type="button"
+                  className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-blue-300 hover:text-blue-200" : "text-blue-700"}`}
+                  onClick={refreshCollabPanels}
+                >
+                  Refresh
+                </button>
+              </div>
+              {!loanInbox.length ? (
+                renderLoanEmptyState({
+                  icon: Mail,
+                  title: "No pending loan requests",
+                  description: "Loan invitations you receive will appear here.",
+                  actionLabel: "Refresh",
+                  onAction: refreshCollabPanels
+                })
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {loanInbox.map((loan) => (
+                    <article
+                      key={loan.id}
+                      className={`rounded-xl border p-3 transition-all duration-200 hover:-translate-y-0.5 ${
+                        isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45 hover:border-slate-600" : "border-gray-200 hover:border-gray-300"
+                      }`}
+                    >
+                      {(() => {
+                        const statusMeta = getLoanStatusMeta(loan, loanReminderDays);
+                        return (
+                          <>
+                      <div className="flex items-start gap-3">
+                        <div className={`h-20 w-14 shrink-0 overflow-hidden rounded-md border ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800" : "border-gray-200 bg-gray-100"}`}>
+                          {loan.book?.cover ? (
+                            <img src={loan.book.cover} alt={loan.book?.title || "Book cover"} className="h-full w-full object-cover" />
+                          ) : (
+                            <div className={`flex h-full w-full items-center justify-center text-[10px] ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}`}>No cover</div>
+                          )}
+                        </div>
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{loan.book?.title || "Book"}</p>
+                            <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${getLoanStatusChipClass(statusMeta.key)}`}>
+                              {statusMeta.label}
+                            </span>
+                          </div>
+                          <p className={`mt-1 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-600"}`}>
+                            from {loan.lender?.displayName || loan.lender?.email} · {loan.durationDays}d + {loan.graceDays}d grace
+                          </p>
+                        </div>
+                      </div>
+                      {loan.message ? (
+                        <p className={`mt-2 text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}`}>"{loan.message}"</p>
+                      ) : null}
+                      <div className={`mt-2 flex flex-wrap gap-1 text-[11px] ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>
+                        <span className={`rounded-full px-2 py-0.5 ${isDarkLibraryTheme ? "bg-slate-800" : "bg-gray-100"}`}>Notes: {loan.permissions?.canAddNotes ? "add" : "off"}</span>
+                        <span className={`rounded-full px-2 py-0.5 ${isDarkLibraryTheme ? "bg-slate-800" : "bg-gray-100"}`}>Highlights: {loan.permissions?.canAddHighlights ? "add" : "off"}</span>
+                        <span className={`rounded-full px-2 py-0.5 ${isDarkLibraryTheme ? "bg-slate-800" : "bg-gray-100"}`}>Visibility: {loan.permissions?.annotationVisibility === "SHARED_WITH_LENDER" ? "shared" : "private"}</span>
+                        <span className={`rounded-full px-2 py-0.5 ${isDarkLibraryTheme ? "bg-slate-800" : "bg-gray-100"}`}>Lender notes: {loan.permissions?.shareLenderAnnotations ? "visible" : "hidden"}</span>
+                      </div>
+                      <div className="mt-3 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenAcceptLoanPreview(loan)}
+                          disabled={isLoanActionBusyId === `accept-${loan.id}`}
+                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${
+                            isDarkLibraryTheme ? "bg-emerald-700 text-emerald-50 hover:bg-emerald-600" : "bg-emerald-600 text-white"
+                          }`}
+                        >
+                          {isLoanActionBusyId === `accept-${loan.id}` ? "Accepting..." : "Review & accept"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRejectLoanRequest(loan.id)}
+                          disabled={isLoanActionBusyId === `reject-${loan.id}`}
+                          className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${
+                            isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700"
+                          }`}
+                        >
+                          {isLoanActionBusyId === `reject-${loan.id}` ? "Rejecting..." : "Reject"}
+                        </button>
+                      </div>
+                          </>
+                        );
+                      })()}
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+            <section
+              className={`rounded-2xl border p-5 ${
+                isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "border-gray-200 bg-white"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h2 className={`text-lg font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Borrow Reminders</h2>
+                <button
+                  type="button"
+                  className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-blue-300 hover:text-blue-200" : "text-blue-700"}`}
+                  onClick={() => handleSidebarSectionSelect("borrowed")}
+                >
+                  Open borrowed
+                </button>
+              </div>
+              {!loanReminderInboxItems.length ? (
+                renderLoanEmptyState({
+                  icon: Clock,
+                  title: "No due reminders right now",
+                  description: "Upcoming due dates and overdue borrowed books appear here."
+                })
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {loanReminderInboxItems.map((item) => {
+                    const loan = item.loan;
+                    const isOverdue = item.kind === "overdue";
+                    return (
+                      <article
+                        key={item.id}
+                        className={`rounded-xl border p-3 ${
+                          isOverdue
+                            ? (isDarkLibraryTheme ? "border-rose-700/70 bg-rose-950/30 hover:border-rose-600" : "border-rose-200 bg-rose-50 hover:border-rose-300")
+                            : (isDarkLibraryTheme ? "border-amber-700/60 bg-amber-950/20 hover:border-amber-600" : "border-amber-200 bg-amber-50 hover:border-amber-300")
+                        }`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className={`h-20 w-14 shrink-0 overflow-hidden rounded-md border ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800" : "border-gray-200 bg-gray-100"}`}>
+                            {loan.book?.cover ? (
+                              <img src={loan.book.cover} alt={loan.book?.title || "Book cover"} className="h-full w-full object-cover" />
+                            ) : (
+                              <div className={`flex h-full w-full items-center justify-center text-[10px] ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}`}>No cover</div>
+                            )}
+                          </div>
+                          <div className="flex-1">
+                            <p className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{loan.book?.title || "Book"}</p>
+                            <p className={`mt-1 text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}`}>
+                              {isOverdue
+                                ? `Overdue since ${formatLoanDate(getLoanDeadline(loan))}`
+                                : `Due in ${item.diffDays} day${item.diffDays === 1 ? "" : "s"} (${formatLoanDate(getLoanDeadline(loan))})`}
+                            </p>
+                            <p className={`mt-1 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-600"}`}>
+                              Lender: {loan.lender?.displayName || loan.lender?.email || "Unknown"}
+                            </p>
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </div>
+        )}
+        {isBorrowedSection && !isTrashSection && (
+          <section className={`rounded-2xl border p-5 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "border-gray-200 bg-white"}`}>
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className={`text-lg font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Borrowed Books</h2>
+              <div className="flex items-center gap-2">
+                <div className={`flex h-[38px] w-[132px] items-center rounded-xl border p-1 ${
+                  isDarkLibraryTheme ? "border-slate-700 bg-slate-800" : "border-gray-200 bg-gray-50"
+                }`}>
+                  <button type="button" onClick={() => { setLoanViewMode("grid"); setLoanDensityMode("comfortable"); }} className={`flex-1 rounded-lg px-1 py-1 text-xs font-semibold ${loanViewMode === "grid" && loanDensityMode !== "compact" ? "bg-blue-600 text-white" : (isDarkLibraryTheme ? "text-slate-300" : "text-gray-600")}`}>Grid</button>
+                  <button type="button" onClick={() => { setLoanViewMode("grid"); setLoanDensityMode("compact"); }} className={`flex-1 rounded-lg px-1 py-1 text-xs font-semibold ${loanViewMode === "grid" && loanDensityMode === "compact" ? "bg-blue-600 text-white" : (isDarkLibraryTheme ? "text-slate-300" : "text-gray-600")}`}>Compact</button>
+                  <button type="button" onClick={() => setLoanViewMode("list")} className={`flex-1 rounded-lg px-1 py-1 text-xs font-semibold ${loanViewMode === "list" ? "bg-blue-600 text-white" : (isDarkLibraryTheme ? "text-slate-300" : "text-gray-600")}`}>List</button>
+                </div>
+                <button type="button" onClick={loadLoansData} className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-blue-300 hover:text-blue-200" : "text-blue-700"}`}>Refresh</button>
+              </div>
+            </div>
+            {!borrowedLoans.length ? (
+              renderLoanEmptyState({
+                icon: BookIcon,
+                title: "No borrowed books",
+                description: "Accept a loan request from Inbox to see borrowed books here.",
+                actionLabel: "Open Inbox",
+                onAction: () => handleSidebarSectionSelect("inbox")
+              })
+            ) : (
+              <div className={loanViewMode === "list" ? "space-y-3" : `grid gap-3 ${loanDensityMode === "compact" ? "grid-cols-2 md:grid-cols-3 xl:grid-cols-4" : "grid-cols-1 md:grid-cols-2 xl:grid-cols-3"}`}>
+                {borrowedLoans.map((loan) => {
+                  const pendingRenewals = pendingRenewalsByLoanId.get(loan.id) || [];
+                  const statusMeta = getLoanStatusMeta(loan, loanReminderDays);
+                  return (
+                  <article key={loan.id} className={`rounded-xl border p-4 transition-all duration-200 hover:-translate-y-0.5 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45 hover:border-slate-600" : "border-gray-200 hover:border-gray-300"} ${loanViewMode === "list" ? "" : "h-full"}`}>
+                    <div className="flex items-start gap-3">
+                      <div className={`h-20 w-14 shrink-0 overflow-hidden rounded-md border ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800" : "border-gray-200 bg-gray-100"}`}>
+                        {loan.book?.cover ? (
+                          <img
+                            src={loan.book.cover}
+                            alt={loan.book?.title || "Book cover"}
+                            className={`h-full w-full object-cover ${loan.status === "ACTIVE" ? "" : "grayscale opacity-60"}`}
+                          />
+                        ) : (
+                          <div className={`flex h-full w-full items-center justify-center text-[10px] ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}`}>No cover</div>
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <p className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{loan.book?.title || "Book"}</p>
+                        <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-600"}`}>
+                          from {loan.lender?.displayName || loan.lender?.email} · due {formatLoanDate(getLoanDeadline(loan))}
+                        </p>
+                        {loan.status !== "ACTIVE" && (
+                          <p className={`mt-1 text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-600"}`}>
+                            Access removed. Export annotations only.
+                          </p>
+                        )}
+                      </div>
+                      <span className={`rounded-full px-2 py-1 text-[11px] font-semibold transition-colors ${getLoanStatusChipClass(statusMeta.key)}`}>
+                        {formatLoanStatusLine(loan, loanReminderDays)}
+                      </span>
+                    </div>
+                    <div className={`mt-2 flex flex-wrap gap-1.5 text-[11px] ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>
+                      {getLoanPermissionChips(loan, "borrowed").map((chip) => (
+                        <span key={`${loan.id}-${chip}`} className={`rounded-full px-2 py-0.5 ${isDarkLibraryTheme ? "bg-slate-800" : "bg-gray-100"}`}>
+                          {chip}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {loan.status === "ACTIVE" && (
+                        <button type="button" onClick={() => handleReturnBorrowedLoan(loan.id)} disabled={isLoanActionBusyId === `return-${loan.id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700"}`}>
+                          {isLoanActionBusyId === `return-${loan.id}` ? "Returning..." : "Return"}
+                        </button>
+                      )}
+                      {loan.status === "ACTIVE" && (
+                        <button type="button" onClick={() => handleRequestLoanRenewal(loan)} disabled={isLoanActionBusyId === `renew-request-${loan.id}` || pendingRenewals.length > 0} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "border-blue-600/70 text-blue-200 hover:bg-blue-900/35" : "border-blue-200 text-blue-700 hover:bg-blue-50"}`}>
+                          {pendingRenewals.length > 0 ? "Renewal pending" : (isLoanActionBusyId === `renew-request-${loan.id}` ? "Requesting..." : "Request renewal")}
+                        </button>
+                      )}
+                      {["REVOKED", "EXPIRED", "RETURNED"].includes(loan.status) && (
+                        <>
+                          <button type="button" onClick={() => handleExportLoanData(loan.id, "json")} disabled={isLoanActionBusyId === `export-${loan.id}-json`} className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "bg-blue-700 text-white hover:bg-blue-600" : "bg-blue-600 text-white"}`}>
+                            {isLoanActionBusyId === `export-${loan.id}-json` ? "Exporting..." : "Export JSON"}
+                          </button>
+                          <button type="button" onClick={() => handleExportLoanData(loan.id, "pdf")} disabled={isLoanActionBusyId === `export-${loan.id}-pdf`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "border-slate-600 text-slate-100 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>
+                            {isLoanActionBusyId === `export-${loan.id}-pdf` ? "Exporting..." : "Export PDF"}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {pendingRenewals.length > 0 && (
+                      <div className={`mt-2 text-[11px] ${isDarkLibraryTheme ? "text-blue-300" : "text-blue-700"}`}>
+                        Renewal requested: +{pendingRenewals[0]?.requestedExtraDays || 0} day(s), proposed due {formatLoanDate(pendingRenewals[0]?.proposedDueAt)}
+                      </div>
+                    )}
+                  </article>
+                )})}
+              </div>
+            )}
+          </section>
+        )}
+        {isLentSection && !isTrashSection && (
+          <section className={`rounded-2xl border p-5 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "border-gray-200 bg-white"}`}>
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className={`text-lg font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>Lent Books</h2>
+              <div className="flex items-center gap-2">
+                <div className={`flex h-[38px] w-[132px] items-center rounded-xl border p-1 ${
+                  isDarkLibraryTheme ? "border-slate-700 bg-slate-800" : "border-gray-200 bg-gray-50"
+                }`}>
+                  <button type="button" onClick={() => { setLoanViewMode("grid"); setLoanDensityMode("comfortable"); }} className={`flex-1 rounded-lg px-1 py-1 text-xs font-semibold ${loanViewMode === "grid" && loanDensityMode !== "compact" ? "bg-blue-600 text-white" : (isDarkLibraryTheme ? "text-slate-300" : "text-gray-600")}`}>Grid</button>
+                  <button type="button" onClick={() => { setLoanViewMode("grid"); setLoanDensityMode("compact"); }} className={`flex-1 rounded-lg px-1 py-1 text-xs font-semibold ${loanViewMode === "grid" && loanDensityMode === "compact" ? "bg-blue-600 text-white" : (isDarkLibraryTheme ? "text-slate-300" : "text-gray-600")}`}>Compact</button>
+                  <button type="button" onClick={() => setLoanViewMode("list")} className={`flex-1 rounded-lg px-1 py-1 text-xs font-semibold ${loanViewMode === "list" ? "bg-blue-600 text-white" : (isDarkLibraryTheme ? "text-slate-300" : "text-gray-600")}`}>List</button>
+                </div>
+                <button type="button" onClick={loadLoansData} className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-blue-300 hover:text-blue-200" : "text-blue-700"}`}>Refresh</button>
+              </div>
+            </div>
+            {!lentLoans.length ? (
+              renderLoanEmptyState({
+                icon: Send,
+                title: "No lent books",
+                description: "Lend a book from your library to track active and completed loans.",
+                actionLabel: "Go to My library",
+                onAction: () => handleSidebarSectionSelect("library")
+              })
+            ) : (
+              <div className={loanViewMode === "list" ? "space-y-3" : `grid gap-3 ${loanDensityMode === "compact" ? "grid-cols-2 md:grid-cols-3 xl:grid-cols-4" : "grid-cols-1 md:grid-cols-2 xl:grid-cols-3"}`}>
+                {lentLoans.map((loan) => {
+                  const pendingRenewals = pendingRenewalsByLoanId.get(loan.id) || [];
+                  const statusMeta = getLoanStatusMeta(loan, loanReminderDays);
+                  return (
+                  <article key={loan.id} className={`rounded-xl border p-4 transition-all duration-200 hover:-translate-y-0.5 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45 hover:border-slate-600" : "border-gray-200 hover:border-gray-300"} ${loanViewMode === "list" ? "" : "h-full"}`}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-start gap-3">
+                        <div className={`h-20 w-14 shrink-0 overflow-hidden rounded-md border ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800" : "border-gray-200 bg-gray-100"}`}>
+                          {loan.book?.cover ? (
+                            <img
+                              src={loan.book.cover}
+                              alt={loan.book?.title || "Book cover"}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <div className={`flex h-full w-full items-center justify-center text-[10px] ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}`}>No cover</div>
+                          )}
+                        </div>
+                        <div>
+                        <p className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{loan.book?.title || "Book"}</p>
+                        <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-600"}`}>
+                          to {loan.borrower?.displayName || loan.borrower?.email} · due {formatLoanDate(getLoanDeadline(loan))}
+                        </p>
+                        </div>
+                      </div>
+                      <span className={`rounded-full px-2 py-1 text-[11px] font-semibold transition-colors ${getLoanStatusChipClass(statusMeta.key)}`}>
+                        {formatLoanStatusLine(loan, loanReminderDays)}
+                      </span>
+                    </div>
+                    <div className={`mt-2 flex flex-wrap gap-1.5 text-[11px] ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>
+                      {getLoanPermissionChips(loan, "lent").map((chip) => (
+                        <span key={`${loan.id}-${chip}`} className={`rounded-full px-2 py-0.5 ${isDarkLibraryTheme ? "bg-slate-800" : "bg-gray-100"}`}>
+                          {chip}
+                        </span>
+                      ))}
+                    </div>
+                    {loan.status === "ACTIVE" && (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button type="button" onClick={() => handleRevokeLentLoan(loan.id)} disabled={isLoanActionBusyId === `revoke-${loan.id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "border-rose-700/70 bg-rose-950/35 text-rose-200 hover:bg-rose-900/40" : "border-rose-200 bg-rose-50 text-rose-700"}`}>
+                          {isLoanActionBusyId === `revoke-${loan.id}` ? "Revoking..." : "Revoke"}
+                        </button>
+                        {pendingRenewals[0] && (
+                          <>
+                            <button type="button" onClick={() => handleApproveLoanRenewal(pendingRenewals[0].id)} disabled={isLoanActionBusyId === `renew-approve-${pendingRenewals[0].id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "border-emerald-700/70 bg-emerald-950/35 text-emerald-200 hover:bg-emerald-900/40" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
+                              {isLoanActionBusyId === `renew-approve-${pendingRenewals[0].id}` ? "Approving..." : `Approve +${pendingRenewals[0].requestedExtraDays}d`}
+                            </button>
+                            <button type="button" onClick={() => handleDenyLoanRenewal(pendingRenewals[0].id)} disabled={isLoanActionBusyId === `renew-deny-${pendingRenewals[0].id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "border-slate-600 text-slate-100 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>
+                              {isLoanActionBusyId === `renew-deny-${pendingRenewals[0].id}` ? "Denying..." : "Deny renewal"}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                    {pendingRenewals[0] && (
+                      <p className={`mt-2 text-[11px] ${isDarkLibraryTheme ? "text-blue-300" : "text-blue-700"}`}>
+                        Pending renewal request: +{pendingRenewals[0].requestedExtraDays} day(s), proposed due {formatLoanDate(pendingRenewals[0].proposedDueAt)}
+                      </p>
+                    )}
+                  </article>
+                )})}
+              </div>
+            )}
+          </section>
+        )}
+        {isLoanAuditSection && !isTrashSection && (
+          <section className={`rounded-2xl border p-5 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "border-gray-200 bg-white"}`}>
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className={`text-lg font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>History</h2>
+              <button type="button" onClick={loadLoansData} className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-blue-300 hover:text-blue-200" : "text-blue-700"}`}>Refresh</button>
+            </div>
+            {!loanAuditEvents.length ? (
+              renderLoanEmptyState({
+                icon: History,
+                title: "No history yet",
+                description: "Loan actions like lend, borrow, revoke, return, and renewal will appear here."
+              })
+            ) : (
+              <div className="space-y-4">
+                {Object.values(
+                  loanAuditEvents.reduce((acc, event) => {
+                    const key = event?.loan?.book?.id || `unknown-${event.id}`;
+                    if (!acc[key]) {
+                      acc[key] = {
+                        key,
+                        book: event?.loan?.book || null,
+                        events: []
+                      };
+                    }
+                    acc[key].events.push(event);
+                    return acc;
+                  }, {})
+                )
+                  .map((group) => ({
+                    ...group,
+                    events: [...group.events].sort((a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime())
+                  }))
+                  .sort((a, b) => {
+                    const aTime = new Date(a.events[0]?.createdAt || 0).getTime();
+                    const bTime = new Date(b.events[0]?.createdAt || 0).getTime();
+                    return bTime - aTime;
+                  })
+                  .map((group) => {
+                    const latestEvent = group.events[0];
+                    const latestStatusMeta = getLoanStatusMeta(latestEvent?.loan, loanReminderDays);
+                    return (
+                      <article key={group.key} className={`rounded-xl border p-4 transition-all duration-200 hover:-translate-y-0.5 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45 hover:border-slate-600" : "border-gray-200 hover:border-gray-300"}`}>
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <div className={`h-16 w-12 overflow-hidden rounded-md border ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800" : "border-gray-200 bg-gray-100"}`}>
+                              {group.book?.cover ? (
+                                <img src={group.book.cover} alt={group.book?.title || "Book cover"} className="h-full w-full object-cover" />
+                              ) : (
+                                <div className={`flex h-full w-full items-center justify-center text-[10px] ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}`}>No cover</div>
+                              )}
+                            </div>
+                            <div>
+                              <p className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{group.book?.title || "Book"}</p>
+                              <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-600"}`}>
+                                {group.events.length} event{group.events.length === 1 ? "" : "s"} · latest {formatLoanDate(latestEvent?.createdAt)}
+                              </p>
+                              {latestEvent?.loan ? (
+                                <p className={`mt-0.5 text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-600"}`}>
+                                  {formatLoanStatusLine(latestEvent.loan, loanReminderDays)}
+                                </p>
+                              ) : null}
+                            </div>
+                          </div>
+                          <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${getLoanStatusChipClass(latestStatusMeta.key)}`}>
+                            {latestStatusMeta.label}
+                          </span>
+                        </div>
+                        <div className={`relative pl-5 ${isDarkLibraryTheme ? "before:bg-slate-700" : "before:bg-gray-200"} before:absolute before:left-2 before:top-1 before:h-[calc(100%-8px)] before:w-px before:content-['']`}>
+                          <div className="space-y-2">
+                            {group.events.map((event) => {
+                              const statusMeta = getLoanStatusMeta(event.loan, loanReminderDays);
+                              return (
+                                <div key={event.id} className={`relative rounded-lg border px-3 py-2 transition-colors ${isDarkLibraryTheme ? "border-slate-700/80 bg-slate-900/40 hover:border-slate-600" : "border-gray-200 bg-gray-50 hover:border-gray-300"}`}>
+                                  <span className={`absolute -left-[18px] top-4 h-2.5 w-2.5 rounded-full ${isDarkLibraryTheme ? "bg-slate-400" : "bg-gray-400"}`} />
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2">
+                                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${getLoanActionToneClass(event.action)}`}>
+                                        {formatLoanActionLabel(event.action)}
+                                      </span>
+                                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${getLoanStatusChipClass(statusMeta.key)}`}>
+                                        {statusMeta.label}
+                                      </span>
+                                    </div>
+                                    <p className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>{formatLoanDate(event.createdAt)}</p>
+                                  </div>
+                                  <div className="mt-1 flex items-center gap-2 text-xs">
+                                    <span className="inline-flex items-center gap-1">
+                                      <span className={`inline-flex h-5 w-5 items-center justify-center overflow-hidden rounded-full ${isDarkLibraryTheme ? "bg-slate-700 text-slate-200" : "bg-gray-200 text-gray-700"}`}>
+                                        {event.actorUser?.avatarUrl ? <img src={event.actorUser.avatarUrl} alt="" className="h-full w-full object-cover" /> : <span>{(event.actorUser?.displayName || event.actorUser?.email || "S").charAt(0).toUpperCase()}</span>}
+                                      </span>
+                                      <span className={isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}>{event.actorUser?.displayName || event.actorUser?.email || "System"}</span>
+                                    </span>
+                                    <span className={isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}>{"->"}</span>
+                                    <span className="inline-flex items-center gap-1">
+                                      <span className={`inline-flex h-5 w-5 items-center justify-center overflow-hidden rounded-full ${isDarkLibraryTheme ? "bg-slate-700 text-slate-200" : "bg-gray-200 text-gray-700"}`}>
+                                        {event.targetUser?.avatarUrl ? <img src={event.targetUser.avatarUrl} alt="" className="h-full w-full object-cover" /> : <span>{(event.targetUser?.displayName || event.targetUser?.email || "N").charAt(0).toUpperCase()}</span>}
+                                      </span>
+                                      <span className={isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}>{event.targetUser?.displayName || event.targetUser?.email || "N/A"}</span>
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+              </div>
+            )}
+          </section>
+        )}
         {isCollectionsPage && !isTrashSection && (
           <LibraryCollectionsBoard
+            isDarkLibraryTheme={isDarkLibraryTheme}
             collections={collections}
             books={books}
             collectionError={collectionError}
@@ -4332,9 +6188,11 @@ const formatNotificationTimeAgo = (value) => {
           />
         )}
         {(shouldShowLibraryHomeContent || isTrashSection) && (!showGlobalSearchBooksColumn || isTrashSection) && ((isTrashSection ? sortedTrashBooks.length : sortedBooks.length) === 0 ? (
-          <div className="bg-white border-2 border-dashed border-gray-200 rounded-3xl p-20 text-center shadow-sm">
-            <BookIcon size={48} className="mx-auto text-gray-300 mb-4" />
-            <p className="text-gray-500 text-lg">
+          <div className={`border-2 border-dashed rounded-3xl p-20 text-center shadow-sm ${
+            isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "bg-white border-gray-200"
+          }`}>
+            <BookIcon size={48} className={`mx-auto mb-4 ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-300"}`} />
+            <p className={`text-lg ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-500"}`}>
               {isTrashSection ? "Trash is empty." : "No books found matching your criteria."}
             </p>
             {!isTrashSection && canShowResetFilters && (
@@ -4357,7 +6215,7 @@ const formatNotificationTimeAgo = (value) => {
                 ? "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"
                 : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8"
             } ${
-              isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "library-zone-catalog-light"
+              isDarkLibraryTheme ? "border-slate-700 bg-slate-900/25" : "library-zone-catalog-light"
             }`}
             data-testid="library-books-grid"
             data-density={densityMode}
@@ -4365,6 +6223,9 @@ const formatNotificationTimeAgo = (value) => {
             {renderedBooks.map((book) => {
               const inTrash = Boolean(book.isDeleted);
               const isRecent = book.id === recentlyAddedBookId;
+              const borrowedLoan = activeBorrowedLoanByBookId.get(book.id);
+              const lentLoan = activeLentLoanByBookId.get(book.id);
+              const loanBadge = getBookLoanBadge(book.id);
               return (
                 <Link 
                   to={inTrash ? "#" : buildReaderPath(book.id)} 
@@ -4376,12 +6237,14 @@ const formatNotificationTimeAgo = (value) => {
                     }
                     handleOpenBook(book.id);
                   }}
-                  className={`group workspace-interactive-card workspace-interactive-card-light rounded-2xl overflow-hidden flex flex-col relative ${
+                  className={`group workspace-interactive-card rounded-2xl overflow-hidden flex flex-col relative ${
+                    isDarkLibraryTheme ? "workspace-interactive-card-dark" : "workspace-interactive-card-light"
+                  } ${
                     isRecent ? "ring-2 ring-amber-400 ring-offset-2 ring-offset-white shadow-[0_0_0_3px_rgba(251,191,36,0.2)]" : ""
                   }`}
                   style={VIRTUAL_GRID_CARD_STYLE}
                 >
-                  <div className={`${densityMode === "compact" ? "aspect-[5/6]" : "aspect-[3/4]"} bg-gray-200 overflow-hidden relative`}>
+                  <div className={`${densityMode === "compact" ? "aspect-[5/6]" : "aspect-[3/4]"} ${isDarkLibraryTheme ? "bg-slate-800" : "bg-gray-200"} overflow-hidden relative`}>
                     {book.cover ? (
                       <img src={book.cover} alt={book.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
                     ) : (
@@ -4389,6 +6252,17 @@ const formatNotificationTimeAgo = (value) => {
                         <BookIcon size={40} className="mb-2 opacity-20" />
                         <span className="text-xs font-medium uppercase tracking-widest">{book.title}</span>
                       </div>
+                    )}
+                    {loanBadge && !inTrash && (
+                      <span
+                        className={`absolute left-3 top-3 z-10 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                          loanBadge.tone === "amber"
+                            ? "bg-amber-500 text-white"
+                            : "bg-blue-600 text-white"
+                        }`}
+                      >
+                        {loanBadge.label}
+                      </span>
                     )}
 
                     <div
@@ -4457,6 +6331,16 @@ const formatNotificationTimeAgo = (value) => {
                           >
                             <Heart size={16} fill={book.isFavorite ? "currentColor" : "none"} />
                           </button>
+                          {isCollabMode && (
+                            <button
+                              type="button"
+                              onClick={(e) => openShareDialog(e, book)}
+                              className="p-2 bg-white text-gray-400 hover:text-blue-600 rounded-xl shadow-md transition-transform active:scale-95"
+                              title="Share book"
+                            >
+                              <Send size={16} />
+                            </button>
+                          )}
                           <button
                             type="button"
                             data-testid="book-info"
@@ -4534,7 +6418,13 @@ const formatNotificationTimeAgo = (value) => {
                     )}
                     
                     {densityMode !== "compact" ? (
-                      <div className="absolute bottom-3 right-3 bg-black/60 backdrop-blur-md text-white text-xs font-bold px-2 py-1 rounded-lg">
+                      <div
+                        className={`absolute bottom-3 right-3 text-xs font-bold px-2 py-1 rounded-lg backdrop-blur-md ${
+                          isDarkLibraryTheme
+                            ? "bg-slate-900/65 text-slate-100 border border-slate-600/60"
+                            : "bg-black/60 text-white"
+                        }`}
+                      >
                         {book.progress}%
                       </div>
                     ) : null}
@@ -4600,16 +6490,36 @@ const formatNotificationTimeAgo = (value) => {
                   </div>
 
                   <div className={`${densityMode === "compact" ? "p-3" : "p-5"} flex-1 flex flex-col`}>
-                    <h3 className={`font-semibold text-[#1A1A2E] leading-[1.12] mb-2 line-clamp-2 group-hover:text-blue-600 transition-colors ${
+                    <h3 className={`font-semibold leading-[1.12] mb-2 line-clamp-2 transition-colors ${
+                      isDarkLibraryTheme ? "text-slate-100 group-hover:text-blue-300" : "text-[#1A1A2E] group-hover:text-blue-600"
+                    } ${
                       densityMode === "compact" ? "text-[17px]" : "text-[22px]"
                     }`}>
                       {book.title}
                     </h3>
                     
-                    <div className={`flex items-center gap-2 text-[#666666] mb-1 ${densityMode === "compact" ? "text-[14px]" : "text-[15px]"}`}>
+                    <div className={`flex items-center gap-2 mb-1 ${isDarkLibraryTheme ? "text-slate-300" : "text-[#666666]"} ${densityMode === "compact" ? "text-[14px]" : "text-[15px]"}`}>
                       <User size={14} />
                       <span className="truncate">{book.author}</span>
                     </div>
+                    {borrowedLoan && (
+                      <div className={`mb-1 inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
+                        isDarkLibraryTheme
+                          ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                          : "border-amber-300 bg-amber-50 text-amber-700"
+                      }`}>
+                        Borrowed · {formatLoanStatusLine(borrowedLoan, loanReminderDays)}
+                      </div>
+                    )}
+                    {!borrowedLoan && lentLoan && (
+                      <div className={`mb-1 inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
+                        isDarkLibraryTheme
+                          ? "border-blue-500/40 bg-blue-500/10 text-blue-300"
+                          : "border-blue-300 bg-blue-50 text-blue-700"
+                      }`}>
+                        Lent · {formatLoanStatusLine(lentLoan, loanReminderDays)}
+                      </div>
+                    )}
 
                     {densityMode !== "compact" ? (
                       <>
@@ -4635,7 +6545,7 @@ const formatNotificationTimeAgo = (value) => {
         ) : (
           <div
             className={`space-y-4 animate-in fade-in duration-500 rounded-3xl border p-4 ${
-              isDarkLibraryTheme ? "border-slate-700 bg-slate-900/35" : "library-zone-catalog-light"
+              isDarkLibraryTheme ? "border-slate-700 bg-slate-900/25" : "library-zone-catalog-light"
             }`}
             data-testid="library-books-list"
             data-density="comfortable"
@@ -4643,6 +6553,9 @@ const formatNotificationTimeAgo = (value) => {
             {renderedBooks.map((book) => {
               const inTrash = Boolean(book.isDeleted);
               const isRecent = book.id === recentlyAddedBookId;
+              const borrowedLoan = activeBorrowedLoanByBookId.get(book.id);
+              const lentLoan = activeLentLoanByBookId.get(book.id);
+              const loanBadge = getBookLoanBadge(book.id);
               return (
                 <Link
                   to={inTrash ? "#" : buildReaderPath(book.id)}
@@ -4654,12 +6567,14 @@ const formatNotificationTimeAgo = (value) => {
                     }
                     handleOpenBook(book.id);
                   }}
-                  className={`group workspace-interactive-card workspace-interactive-card-light rounded-2xl overflow-hidden flex ${
+                  className={`group workspace-interactive-card rounded-2xl overflow-hidden flex ${
+                    isDarkLibraryTheme ? "workspace-interactive-card-dark" : "workspace-interactive-card-light"
+                  } ${
                     isRecent ? "ring-2 ring-amber-400 ring-offset-2 ring-offset-white shadow-[0_0_0_3px_rgba(251,191,36,0.2)]" : ""
                   }`}
                   style={VIRTUAL_LIST_CARD_STYLE}
                 >
-                  <div className="w-24 sm:w-28 md:w-32 bg-gray-200 overflow-hidden relative shrink-0">
+                  <div className={`w-24 sm:w-28 md:w-32 ${isDarkLibraryTheme ? "bg-slate-800" : "bg-gray-200"} overflow-hidden relative shrink-0`}>
                     {book.cover ? (
                       <img src={book.cover} alt={book.title} className="w-full h-full object-cover" />
                     ) : (
@@ -4668,21 +6583,58 @@ const formatNotificationTimeAgo = (value) => {
                         <span className="text-[10px] font-medium uppercase tracking-widest line-clamp-2">{book.title}</span>
                       </div>
                     )}
-                    <div className="absolute bottom-2 right-2 bg-black/60 text-white text-[10px] font-bold px-2 py-1 rounded-lg">
+                    {loanBadge && !inTrash && (
+                      <span
+                        className={`absolute left-2 top-2 z-10 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                          loanBadge.tone === "amber"
+                            ? "bg-amber-500 text-white"
+                            : "bg-blue-600 text-white"
+                        }`}
+                      >
+                        {loanBadge.label}
+                      </span>
+                    )}
+                    <div
+                      className={`absolute bottom-2 right-2 text-[10px] font-bold px-2 py-1 rounded-lg ${
+                        isDarkLibraryTheme
+                          ? "bg-slate-900/65 text-slate-100 border border-slate-600/60"
+                          : "bg-black/60 text-white"
+                      }`}
+                    >
                       {book.progress}%
                     </div>
                   </div>
 
                   <div className="flex-1 p-4 flex flex-col md:flex-row md:items-center gap-4 min-w-0">
                     <div className="flex-1 min-w-0">
-                      <h3 className="font-semibold text-[#1A1A2E] text-[22px] leading-[1.12] line-clamp-1 group-hover:text-blue-600 transition-colors">
+                      <h3 className={`font-semibold text-[22px] leading-[1.12] line-clamp-1 transition-colors ${
+                        isDarkLibraryTheme ? "text-slate-100 group-hover:text-blue-300" : "text-[#1A1A2E] group-hover:text-blue-600"
+                      }`}>
                         {book.title}
                       </h3>
 
-                      <div className="mt-1 flex items-center gap-2 text-[#666666] text-[15px]">
+                      <div className={`mt-1 flex items-center gap-2 text-[15px] ${isDarkLibraryTheme ? "text-slate-300" : "text-[#666666]"}`}>
                         <User size={14} />
                         <span className="truncate">{book.author}</span>
                       </div>
+                      {borrowedLoan && (
+                        <div className={`mt-1 inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
+                          isDarkLibraryTheme
+                            ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                            : "border-amber-300 bg-amber-50 text-amber-700"
+                        }`}>
+                          Borrowed · {formatLoanStatusLine(borrowedLoan, loanReminderDays)}
+                        </div>
+                      )}
+                      {!borrowedLoan && lentLoan && (
+                        <div className={`mt-1 inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
+                          isDarkLibraryTheme
+                            ? "border-blue-500/40 bg-blue-500/10 text-blue-300"
+                            : "border-blue-300 bg-blue-50 text-blue-700"
+                        }`}>
+                          Lent · {formatLoanStatusLine(lentLoan, loanReminderDays)}
+                        </div>
+                      )}
 
                       {renderMetadataBadges(book)}
                       {renderCollectionChips(book)}
@@ -4800,6 +6752,16 @@ const formatNotificationTimeAgo = (value) => {
                             >
                               <Heart size={16} fill={book.isFavorite ? "currentColor" : "none"} />
                             </button>
+                            {isCollabMode && (
+                              <button
+                                type="button"
+                                onClick={(e) => openShareDialog(e, book)}
+                                className="p-2 bg-white border border-gray-200 text-gray-400 hover:text-blue-600 rounded-xl shadow-sm transition-transform active:scale-95"
+                                title="Share book"
+                              >
+                                <Send size={16} />
+                              </button>
+                            )}
                             <button
                               data-testid="book-move-trash"
                               onClick={(e) => handleDeleteBook(e, book.id)}
@@ -4925,6 +6887,178 @@ const formatNotificationTimeAgo = (value) => {
             <Plus size={28} />
             <input type="file" accept=".epub" multiple className="hidden" onChange={handleFileUpload} />
           </label>
+        )}
+        {shareDialogBook && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/30" onClick={closeShareDialog} />
+            <div className="relative w-full max-w-md rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl">
+              <h3 className="text-lg font-semibold text-gray-900">{shareDialogMode === "loan" ? "Lend Book" : "Recommend Book"}</h3>
+              <p className="mt-1 text-sm text-gray-600">
+                {shareDialogMode === "loan"
+                  ? <>Lend <span className="font-semibold text-gray-900">{shareDialogBook.title}</span> directly to another user.</>
+                  : <>Send <span className="font-semibold text-gray-900">{shareDialogBook.title}</span> as a recommendation. The recipient can choose whether to borrow it.</>}
+              </p>
+              <div className="mt-3 inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
+                <button
+                  type="button"
+                  onClick={() => setShareDialogMode("share")}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+                    shareDialogMode === "share" ? "bg-blue-600 text-white" : "text-gray-700"
+                  }`}
+                >
+                  Recommend
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShareDialogMode("loan")}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+                    shareDialogMode === "loan" ? "bg-blue-600 text-white" : "text-gray-700"
+                  }`}
+                >
+                  Borrow/Lend
+                </button>
+              </div>
+              <div className="mt-4 space-y-3">
+                <input
+                  type="email"
+                  value={shareRecipientEmail}
+                  onChange={(e) => setShareRecipientEmail(e.target.value)}
+                  placeholder="Recipient email"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+                <textarea
+                  value={shareMessage}
+                  onChange={(e) => setShareMessage(e.target.value)}
+                  placeholder="Message (optional)"
+                  className="min-h-[90px] w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+                {shareDialogMode === "loan" && (
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700">
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="space-y-1">
+                        <span className="block font-semibold text-gray-600">Duration (days)</span>
+                        <input
+                          type="number"
+                          min={1}
+                          value={loanDurationDays}
+                          onChange={(e) => setLoanDurationDays(Math.max(1, Number(e.target.value) || 1))}
+                          className="w-full rounded-md border border-gray-300 bg-white px-2 py-1"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="block font-semibold text-gray-600">Grace (days)</span>
+                        <input
+                          type="number"
+                          min={0}
+                          value={loanGraceDays}
+                          onChange={(e) => setLoanGraceDays(Math.max(0, Number(e.target.value) || 0))}
+                          className="w-full rounded-md border border-gray-300 bg-white px-2 py-1"
+                        />
+                      </label>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <label className="inline-flex items-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          checked={loanPermissions.canAddNotes}
+                          onChange={(e) => setLoanPermissions((current) => ({ ...current, canAddNotes: e.target.checked }))}
+                        />
+                        <span>Add notes</span>
+                      </label>
+                      <label className="inline-flex items-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          checked={loanPermissions.canEditNotes}
+                          onChange={(e) => setLoanPermissions((current) => ({ ...current, canEditNotes: e.target.checked }))}
+                        />
+                        <span>Edit notes</span>
+                      </label>
+                      <label className="inline-flex items-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          checked={loanPermissions.canAddHighlights}
+                          onChange={(e) => setLoanPermissions((current) => ({ ...current, canAddHighlights: e.target.checked }))}
+                        />
+                        <span>Add highlights</span>
+                      </label>
+                      <label className="inline-flex items-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          checked={loanPermissions.canEditHighlights}
+                          onChange={(e) => setLoanPermissions((current) => ({ ...current, canEditHighlights: e.target.checked }))}
+                        />
+                        <span>Edit highlights</span>
+                      </label>
+                    </div>
+                    <label className="mt-3 block space-y-1">
+                      <span className="block font-semibold text-gray-600">Annotations visibility</span>
+                      <select
+                        value={loanPermissions.annotationVisibility}
+                        onChange={(e) => setLoanPermissions((current) => ({ ...current, annotationVisibility: e.target.value }))}
+                        className="w-full rounded-md border border-gray-300 bg-white px-2 py-1"
+                      >
+                        <option value="PRIVATE">Borrower private</option>
+                        <option value="SHARED_WITH_LENDER">Shared with lender</option>
+                      </select>
+                    </label>
+                    <label className="mt-3 inline-flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={loanPermissions.shareLenderAnnotations}
+                        onChange={(e) => setLoanPermissions((current) => ({ ...current, shareLenderAnnotations: e.target.checked }))}
+                      />
+                      <span>Share my existing annotations with borrower</span>
+                    </label>
+                  </div>
+                )}
+                {shareError && <p className="text-xs text-rose-600">{shareError}</p>}
+              </div>
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeShareDialog}
+                  className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleShareBook}
+                  disabled={!shareRecipientEmail.trim() || isSharingBook}
+                  className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {isSharingBook ? "Sending..." : shareDialogMode === "loan" ? "Send loan request" : "Send recommendation"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {acceptLoanPreview && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/40" onClick={() => setAcceptLoanPreview(null)} />
+            <div className={`relative w-full max-w-xl rounded-2xl border p-5 shadow-2xl ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900 text-slate-100" : "border-gray-200 bg-white text-gray-900"}`}>
+              <h3 className="text-lg font-semibold">Accept loan</h3>
+              <p className={`mt-1 text-sm ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>
+                You are about to borrow <span className="font-semibold">{acceptLoanPreview?.book?.title || "this book"}</span>.
+              </p>
+              <div className={`mt-4 rounded-xl border p-3 text-sm ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800/60" : "border-gray-200 bg-gray-50"}`}>
+                <div className="font-semibold">Permission summary</div>
+                <ul className={`mt-2 space-y-1 text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}`}>
+                  <li>Notes: {acceptLoanPreview?.permissions?.canAddNotes ? "can add" : "cannot add"} / {acceptLoanPreview?.permissions?.canEditNotes ? "can edit/delete own" : "cannot edit/delete own"}</li>
+                  <li>Highlights: {acceptLoanPreview?.permissions?.canAddHighlights ? "can add" : "cannot add"} / {acceptLoanPreview?.permissions?.canEditHighlights ? "can edit/delete own" : "cannot edit/delete own"}</li>
+                  <li>Borrower annotations visibility: {acceptLoanPreview?.permissions?.annotationVisibility === "SHARED_WITH_LENDER" ? "shared with lender" : "private to borrower"}</li>
+                  <li>Lender existing annotations: {acceptLoanPreview?.permissions?.shareLenderAnnotations ? "visible to you" : "hidden from you"}</li>
+                  <li>Access ends at loan end/revocation/expiry. After end, reading is blocked and only export remains until deadline.</li>
+                </ul>
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button type="button" onClick={() => setAcceptLoanPreview(null)} className={`rounded-lg border px-3 py-2 text-sm font-semibold ${isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>Cancel</button>
+                <button type="button" onClick={handleConfirmAcceptLoan} disabled={isLoanActionBusyId === `accept-${acceptLoanPreview?.id}`} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">
+                  {isLoanActionBusyId === `accept-${acceptLoanPreview?.id}` ? "Accepting..." : "Accept loan"}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
         {uploadStage === "reading" && (
           <div

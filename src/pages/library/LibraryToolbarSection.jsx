@@ -30,18 +30,92 @@ export default function LibraryToolbarSection({
   onClearCollectionFilter,
   onClearSort,
   canShowResetFilters,
-  onResetFilters
+  onResetFilters,
+  quickFilterCounts = {
+    toRead: 0,
+    inProgress: 0,
+    finished: 0,
+    favorites: 0
+  },
+  isFavoritesQuickFilterActive = false,
+  onQuickStatusFilterSelect,
+  onQuickFavoritesToggle
 }) {
   const sortLabel = sortOptions.find((s) => s.value === sortBy)?.label || "Last read (newest)";
 
-  const chipClass =
-    "inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100";
+  const chipClass = `inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors ${
+    isDarkLibraryTheme
+      ? "border-blue-800/70 bg-blue-950/45 text-blue-200 hover:bg-blue-900/55"
+      : "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+  }`;
 
   return (
     <>
       <div
+        data-testid="library-quick-filters"
+        className="mb-4 flex flex-wrap items-center gap-2"
+      >
+        <button
+          type="button"
+          data-testid="library-quick-filter-to-read"
+          onClick={() => onQuickStatusFilterSelect?.("to-read")}
+          aria-pressed={statusFilter === "to-read"}
+          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+            statusFilter === "to-read"
+              ? (isDarkLibraryTheme ? "border-blue-500 bg-blue-950/55 text-blue-200" : "border-blue-200 bg-blue-50 text-blue-700")
+              : (isDarkLibraryTheme ? "border-slate-700 bg-slate-800 text-slate-300 hover:border-blue-500" : "border-gray-200 bg-white text-gray-700 hover:border-blue-200")
+          }`}
+        >
+          <span>To read</span>
+          <span data-testid="library-quick-filter-to-read-count">{quickFilterCounts.toRead}</span>
+        </button>
+        <button
+          type="button"
+          data-testid="library-quick-filter-in-progress"
+          onClick={() => onQuickStatusFilterSelect?.("in-progress")}
+          aria-pressed={statusFilter === "in-progress"}
+          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+            statusFilter === "in-progress"
+              ? (isDarkLibraryTheme ? "border-blue-500 bg-blue-950/55 text-blue-200" : "border-blue-200 bg-blue-50 text-blue-700")
+              : (isDarkLibraryTheme ? "border-slate-700 bg-slate-800 text-slate-300 hover:border-blue-500" : "border-gray-200 bg-white text-gray-700 hover:border-blue-200")
+          }`}
+        >
+          <span>In progress</span>
+          <span data-testid="library-quick-filter-in-progress-count">{quickFilterCounts.inProgress}</span>
+        </button>
+        <button
+          type="button"
+          data-testid="library-quick-filter-finished"
+          onClick={() => onQuickStatusFilterSelect?.("finished")}
+          aria-pressed={statusFilter === "finished"}
+          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+            statusFilter === "finished"
+              ? (isDarkLibraryTheme ? "border-blue-500 bg-blue-950/55 text-blue-200" : "border-blue-200 bg-blue-50 text-blue-700")
+              : (isDarkLibraryTheme ? "border-slate-700 bg-slate-800 text-slate-300 hover:border-blue-500" : "border-gray-200 bg-white text-gray-700 hover:border-blue-200")
+          }`}
+        >
+          <span>Finished</span>
+          <span data-testid="library-quick-filter-finished-count">{quickFilterCounts.finished}</span>
+        </button>
+        <button
+          type="button"
+          data-testid="library-quick-filter-favorites"
+          onClick={() => onQuickFavoritesToggle?.()}
+          aria-pressed={isFavoritesQuickFilterActive}
+          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+            isFavoritesQuickFilterActive
+              ? (isDarkLibraryTheme ? "border-blue-500 bg-blue-950/55 text-blue-200" : "border-blue-200 bg-blue-50 text-blue-700")
+              : (isDarkLibraryTheme ? "border-slate-700 bg-slate-800 text-slate-300 hover:border-blue-500" : "border-gray-200 bg-white text-gray-700 hover:border-blue-200")
+          }`}
+        >
+          <span>Favorites</span>
+          <span data-testid="library-quick-filter-favorites-count">{quickFilterCounts.favorites}</span>
+        </button>
+      </div>
+
+      <div
         data-testid="library-toolbar-sticky"
-        className={`sticky top-3 z-20 mb-3 rounded-2xl pb-2 backdrop-blur ${
+        className={`sticky top-3 z-20 mb-4 rounded-2xl pb-2 backdrop-blur ${
           isDarkLibraryTheme
             ? "bg-slate-900/80"
             : "bg-gray-50/95 supports-[backdrop-filter]:bg-gray-50/80"
@@ -49,24 +123,38 @@ export default function LibraryToolbarSection({
       >
         <div className="grid grid-cols-1 items-stretch gap-3 md:grid-cols-[minmax(0,1fr)_220px_280px]">
           <div className="relative flex-1">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+            <Search
+              className={`absolute left-4 top-1/2 -translate-y-1/2 ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}`}
+              size={20}
+            />
             <input
               type="text"
               placeholder={searchPlaceholder}
               data-testid="library-search"
-              className="h-[52px] w-full rounded-2xl border border-gray-200 bg-white pl-12 pr-4 text-base focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+              className={`h-[52px] w-full rounded-2xl border pl-12 pr-4 text-base focus:ring-2 focus:ring-blue-500 outline-none transition-all ${
+                isDarkLibraryTheme
+                  ? "border-slate-700 bg-slate-800 text-slate-100 shadow-[0_10px_24px_rgba(2,8,23,0.32)] placeholder:text-slate-500"
+                  : "border-gray-200 bg-white shadow-sm"
+              }`}
               value={searchQuery}
               onChange={(e) => onSearchChange(e.target.value)}
             />
           </div>
 
           <div className="relative">
-            <Filter className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+            <Filter
+              className={`absolute left-4 top-1/2 -translate-y-1/2 ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}`}
+              size={18}
+            />
             <select
               data-testid="library-filter"
               value={statusFilter}
               onChange={(e) => onStatusFilterChange(e.target.value)}
-              className="h-[52px] w-full rounded-2xl border border-gray-200 bg-white pl-11 pr-4 text-sm font-semibold text-gray-700 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+              className={`h-[52px] w-full rounded-2xl border pl-11 pr-4 text-sm font-semibold focus:ring-2 focus:ring-blue-500 outline-none transition-all ${
+                isDarkLibraryTheme
+                  ? "border-slate-700 bg-slate-800 text-slate-100 shadow-[0_10px_24px_rgba(2,8,23,0.32)]"
+                  : "border-gray-200 bg-white text-gray-700 shadow-sm"
+              }`}
             >
               {statusFilterOptions.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -77,12 +165,19 @@ export default function LibraryToolbarSection({
           </div>
 
           <div className="relative">
-            <ArrowUpDown className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+            <ArrowUpDown
+              className={`absolute left-4 top-1/2 -translate-y-1/2 ${isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"}`}
+              size={18}
+            />
             <select
               data-testid="library-sort"
               value={sortBy}
               onChange={(e) => onSortChange(e.target.value)}
-              className="h-[52px] w-full rounded-2xl border border-gray-200 bg-white pl-11 pr-4 text-sm font-semibold text-gray-700 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
+              className={`h-[52px] w-full rounded-2xl border pl-11 pr-4 text-sm font-semibold focus:ring-2 focus:ring-blue-500 outline-none transition-all ${
+                isDarkLibraryTheme
+                  ? "border-slate-700 bg-slate-800 text-slate-100 shadow-[0_10px_24px_rgba(2,8,23,0.32)]"
+                  : "border-gray-200 bg-white text-gray-700 shadow-sm"
+              }`}
             >
               {sortOptions.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -94,9 +189,12 @@ export default function LibraryToolbarSection({
         </div>
       </div>
 
-      <div className="mb-8 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="text-xs text-gray-500 flex flex-wrap items-center gap-2">
-          <span data-testid="library-active-filters-label" className="font-semibold text-gray-600">
+      <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className={`text-xs flex flex-wrap items-center gap-2 ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+          <span
+            data-testid="library-active-filters-label"
+            className={`font-semibold ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}
+          >
             Active: {activeFilterCount}
           </span>
           {searchQuery.trim() ? (
@@ -164,7 +262,11 @@ export default function LibraryToolbarSection({
             </button>
           ) : null}
           {activeFilterCount === 0 ? (
-            <span className="px-2 py-1 rounded-full bg-gray-100 border border-gray-200 text-gray-500">
+            <span
+              className={`px-2 py-1 rounded-full border ${
+                isDarkLibraryTheme ? "border-slate-700 bg-slate-800 text-slate-400" : "bg-gray-100 border-gray-200 text-gray-500"
+              }`}
+            >
               No active filters
             </span>
           ) : null}
@@ -173,7 +275,11 @@ export default function LibraryToolbarSection({
               type="button"
               data-testid="library-clear-all-inline"
               onClick={onResetFilters}
-              className="px-2.5 py-1 rounded-full border border-gray-200 bg-white text-gray-600 hover:border-blue-200 hover:text-blue-700 font-semibold"
+              className={`px-2.5 py-1 rounded-full border font-semibold transition-colors ${
+                isDarkLibraryTheme
+                  ? "border-slate-700 bg-slate-800 text-slate-300 hover:border-blue-500 hover:text-blue-300"
+                  : "border-gray-200 bg-white text-gray-600 hover:border-blue-200 hover:text-blue-700"
+              }`}
               title="Clear all active filters"
             >
               Clear all
@@ -183,7 +289,11 @@ export default function LibraryToolbarSection({
 
         <div className="flex flex-wrap items-center justify-start gap-2 lg:justify-end">
           <div
-            className="flex h-[42px] w-[160px] items-center rounded-2xl border border-gray-200 bg-white p-1 shadow-sm"
+            className={`flex h-[42px] w-[160px] items-center rounded-2xl border p-1 ${
+              isDarkLibraryTheme
+                ? "border-slate-700 bg-slate-800 shadow-[0_8px_20px_rgba(2,8,23,0.28)]"
+                : "border-gray-200 bg-white shadow-sm"
+            }`}
             data-testid="library-view-toggle"
           >
             <button
@@ -195,7 +305,11 @@ export default function LibraryToolbarSection({
                 onViewModeChange("grid");
               }}
               className={`flex h-full flex-1 items-center justify-center rounded-xl transition-colors ${
-                viewMode === "grid" && densityMode !== "compact" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
+                viewMode === "grid" && densityMode !== "compact"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : isDarkLibraryTheme
+                    ? "text-slate-400 hover:text-slate-100"
+                    : "text-gray-500 hover:text-gray-900"
               }`}
               title="Grid view"
             >
@@ -210,7 +324,11 @@ export default function LibraryToolbarSection({
                 onViewModeChange("grid");
               }}
               className={`flex h-full flex-1 items-center justify-center rounded-xl transition-colors ${
-                viewMode === "grid" && densityMode === "compact" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
+                viewMode === "grid" && densityMode === "compact"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : isDarkLibraryTheme
+                    ? "text-slate-400 hover:text-slate-100"
+                    : "text-gray-500 hover:text-gray-900"
               }`}
               title="Compact grid view"
             >
@@ -222,7 +340,11 @@ export default function LibraryToolbarSection({
               aria-pressed={viewMode === "list"}
               onClick={() => onViewModeChange("list")}
               className={`flex h-full flex-1 items-center justify-center rounded-xl transition-colors ${
-                viewMode === "list" ? "bg-blue-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-900"
+                viewMode === "list"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : isDarkLibraryTheme
+                    ? "text-slate-400 hover:text-slate-100"
+                    : "text-gray-500 hover:text-gray-900"
               }`}
               title="List view"
             >
