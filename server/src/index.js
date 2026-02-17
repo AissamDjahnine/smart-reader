@@ -48,6 +48,110 @@ const includeShareGraph = {
   toUser: { select: { id: true, email: true, displayName: true, avatarUrl: true } }
 };
 
+const includeLoanGraph = {
+  book: true,
+  lender: { select: { id: true, email: true, displayName: true, avatarUrl: true } },
+  borrower: { select: { id: true, email: true, displayName: true, avatarUrl: true } }
+};
+
+const toLoanResponse = (loan) => ({
+  id: loan.id,
+  status: loan.status,
+  message: loan.message || null,
+  durationDays: loan.durationDays,
+  graceDays: loan.graceDays,
+  requestedAt: loan.requestedAt,
+  acceptedAt: loan.acceptedAt || null,
+  dueAt: loan.dueAt || null,
+  returnedAt: loan.returnedAt || null,
+  revokedAt: loan.revokedAt || null,
+  expiredAt: loan.expiredAt || null,
+  exportAvailableUntil: loan.exportAvailableUntil || null,
+  createdUserBookOnAccept: Boolean(loan.createdUserBookOnAccept),
+  permissions: {
+    canAddHighlights: loan.canAddHighlights,
+    canEditHighlights: loan.canEditHighlights,
+    canAddNotes: loan.canAddNotes,
+    canEditNotes: loan.canEditNotes,
+    annotationVisibility: loan.annotationVisibility
+  },
+  book: loan.book ? toBookResponse({ ...loan.book, userBooks: [] }, null, '') : null,
+  lender: loan.lender ? toUserResponse(loan.lender) : null,
+  borrower: loan.borrower ? toUserResponse(loan.borrower) : null
+});
+
+const buildLoanAuditDetails = (value = null) => {
+  if (!value) return null;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
+};
+
+const addLoanAuditEvent = async (tx, payload) => {
+  const {
+    loanId,
+    actorUserId = null,
+    targetUserId = null,
+    action,
+    details = null
+  } = payload;
+  await tx.loanAuditEvent.create({
+    data: {
+      loanId,
+      actorUserId,
+      targetUserId,
+      action,
+      detailsJson: buildLoanAuditDetails(details)
+    }
+  });
+};
+
+const expireLoanIfNeeded = async (loan, userIdForAccess = null) => {
+  if (!loan || loan.status !== 'ACTIVE' || !loan.dueAt) return loan;
+  const dueMs = new Date(loan.dueAt).getTime();
+  if (!Number.isFinite(dueMs)) return loan;
+  const graceDays = Math.max(0, Number(loan.graceDays) || 0);
+  const effectiveEndMs = dueMs + graceDays * 24 * 60 * 60 * 1000;
+  if (Date.now() <= effectiveEndMs) return loan;
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const next = await tx.bookLoan.update({
+      where: { id: loan.id },
+      data: {
+        status: 'EXPIRED',
+        expiredAt: new Date(),
+        exportAvailableUntil: null
+      },
+      include: includeLoanGraph
+    });
+
+    if (loan.createdUserBookOnAccept && userIdForAccess) {
+      await tx.userBook.deleteMany({
+        where: {
+          userId: userIdForAccess,
+          bookId: loan.bookId
+        }
+      });
+    }
+
+    await addLoanAuditEvent(tx, {
+      loanId: loan.id,
+      actorUserId: null,
+      targetUserId: loan.borrowerId,
+      action: 'LOAN_EXPIRED',
+      details: {
+        dueAt: loan.dueAt,
+        graceDays: loan.graceDays
+      }
+    });
+
+    return next;
+  });
+  return updated;
+};
+
 const toUserResponse = (user) => ({
   id: user.id,
   email: user.email,
@@ -608,6 +712,468 @@ app.post('/shares/:shareId/reject', requireAuth, async (req, res) => {
   });
 
   return res.json({ share: updated });
+});
+
+app.post('/loans/books', requireAuth, async (req, res) => {
+  const schema = z.object({
+    bookId: z.string().optional(),
+    epubHash: z.string().optional(),
+    toEmail: z.string().email(),
+    message: z.string().max(2000).optional(),
+    durationDays: z.number().int().min(1).max(365).default(14),
+    graceDays: z.number().int().min(0).max(30).default(0),
+    permissions: z.object({
+      canAddHighlights: z.boolean().default(true),
+      canEditHighlights: z.boolean().default(true),
+      canAddNotes: z.boolean().default(true),
+      canEditNotes: z.boolean().default(true),
+      annotationVisibility: z.enum(['PRIVATE', 'SHARED_WITH_LENDER']).default('PRIVATE')
+    }).default({
+      canAddHighlights: true,
+      canEditHighlights: true,
+      canAddNotes: true,
+      canEditNotes: true,
+      annotationVisibility: 'PRIVATE'
+    })
+  }).refine((v) => !!v.bookId || !!v.epubHash, {
+    message: 'bookId or epubHash is required'
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', details: parsed.error.flatten() });
+
+  let book = null;
+  if (parsed.data.bookId) book = await prisma.book.findUnique({ where: { id: parsed.data.bookId } });
+  if (!book && parsed.data.epubHash) book = await prisma.book.findUnique({ where: { epubHash: parsed.data.epubHash } });
+  if (!book) return res.status(404).json({ error: 'Book not found' });
+
+  const lenderAccess = await prisma.userBook.findUnique({
+    where: { userId_bookId: { userId: req.auth.userId, bookId: book.id } }
+  });
+  if (!lenderAccess) return res.status(403).json({ error: 'No access to this book' });
+
+  const toEmail = parsed.data.toEmail.toLowerCase().trim();
+  const borrower = await prisma.user.findUnique({ where: { email: toEmail } });
+  if (!borrower) return res.status(404).json({ error: 'Recipient not found' });
+  if (borrower.id === req.auth.userId) return res.status(400).json({ error: 'Cannot lend to yourself' });
+
+  const existingPending = await prisma.bookLoan.findFirst({
+    where: {
+      bookId: book.id,
+      lenderId: req.auth.userId,
+      borrowerId: borrower.id,
+      status: 'PENDING'
+    }
+  });
+
+  const loan = existingPending
+    ? await prisma.bookLoan.update({
+        where: { id: existingPending.id },
+        data: {
+          message: parsed.data.message || null,
+          durationDays: parsed.data.durationDays,
+          graceDays: parsed.data.graceDays,
+          canAddHighlights: parsed.data.permissions.canAddHighlights,
+          canEditHighlights: parsed.data.permissions.canEditHighlights,
+          canAddNotes: parsed.data.permissions.canAddNotes,
+          canEditNotes: parsed.data.permissions.canEditNotes,
+          annotationVisibility: parsed.data.permissions.annotationVisibility
+        },
+        include: includeLoanGraph
+      })
+    : await prisma.bookLoan.create({
+        data: {
+          bookId: book.id,
+          lenderId: req.auth.userId,
+          borrowerId: borrower.id,
+          message: parsed.data.message || null,
+          durationDays: parsed.data.durationDays,
+          graceDays: parsed.data.graceDays,
+          canAddHighlights: parsed.data.permissions.canAddHighlights,
+          canEditHighlights: parsed.data.permissions.canEditHighlights,
+          canAddNotes: parsed.data.permissions.canAddNotes,
+          canEditNotes: parsed.data.permissions.canEditNotes,
+          annotationVisibility: parsed.data.permissions.annotationVisibility
+        },
+        include: includeLoanGraph
+      });
+
+  await addLoanAuditEvent(prisma, {
+    loanId: loan.id,
+    actorUserId: req.auth.userId,
+    targetUserId: borrower.id,
+    action: 'LOAN_REQUESTED',
+    details: {
+      durationDays: loan.durationDays,
+      graceDays: loan.graceDays
+    }
+  });
+
+  return res.status(201).json({ loan: toLoanResponse(loan) });
+});
+
+app.get('/loans/inbox', requireAuth, async (req, res) => {
+  const loans = await prisma.bookLoan.findMany({
+    where: {
+      borrowerId: req.auth.userId,
+      status: 'PENDING'
+    },
+    include: includeLoanGraph,
+    orderBy: { requestedAt: 'desc' }
+  });
+  return res.json({ loans: loans.map(toLoanResponse) });
+});
+
+app.post('/loans/:loanId/accept', requireAuth, async (req, res) => {
+  const schema = z.object({
+    borrowAnyway: z.boolean().default(false)
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const loan = await prisma.bookLoan.findUnique({
+    where: { id: req.params.loanId },
+    include: includeLoanGraph
+  });
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (loan.borrowerId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (loan.status !== 'PENDING') return res.status(400).json({ error: 'Loan is not pending' });
+
+  const existingAccess = await prisma.userBook.findUnique({
+    where: {
+      userId_bookId: {
+        userId: req.auth.userId,
+        bookId: loan.bookId
+      }
+    }
+  });
+
+  if (existingAccess && !parsed.data.borrowAnyway) {
+    return res.status(409).json({
+      error: 'You already have this book',
+      code: 'ALREADY_HAVE_BOOK',
+      warning: 'Borrow anyway creates a separate loan relationship but keeps your existing library copy.'
+    });
+  }
+
+  const acceptedAt = new Date();
+  const dueAt = new Date(acceptedAt.getTime() + loan.durationDays * 24 * 60 * 60 * 1000);
+  const accepted = await prisma.$transaction(async (tx) => {
+    let createdAccess = false;
+    if (!existingAccess) {
+      await tx.userBook.create({
+        data: {
+          userId: req.auth.userId,
+          bookId: loan.bookId,
+          status: 'TO_READ',
+          progressPercent: 0,
+          progressCfi: null,
+          lastOpenedAt: null
+        }
+      });
+      createdAccess = true;
+    }
+
+    const updated = await tx.bookLoan.update({
+      where: { id: loan.id },
+      data: {
+        status: 'ACTIVE',
+        acceptedAt,
+        dueAt,
+        createdUserBookOnAccept: createdAccess
+      },
+      include: includeLoanGraph
+    });
+
+    await addLoanAuditEvent(tx, {
+      loanId: loan.id,
+      actorUserId: req.auth.userId,
+      targetUserId: loan.lenderId,
+      action: 'LOAN_ACCEPTED',
+      details: {
+        dueAt,
+        borrowAnyway: Boolean(existingAccess)
+      }
+    });
+
+    return updated;
+  });
+
+  return res.json({ loan: toLoanResponse(accepted) });
+});
+
+app.post('/loans/:loanId/reject', requireAuth, async (req, res) => {
+  const loan = await prisma.bookLoan.findUnique({
+    where: { id: req.params.loanId },
+    include: includeLoanGraph
+  });
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (loan.borrowerId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (loan.status !== 'PENDING') return res.status(400).json({ error: 'Loan is not pending' });
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const next = await tx.bookLoan.update({
+      where: { id: loan.id },
+      data: { status: 'REJECTED' },
+      include: includeLoanGraph
+    });
+    await addLoanAuditEvent(tx, {
+      loanId: loan.id,
+      actorUserId: req.auth.userId,
+      targetUserId: loan.lenderId,
+      action: 'LOAN_REJECTED'
+    });
+    return next;
+  });
+
+  return res.json({ loan: toLoanResponse(updated) });
+});
+
+app.get('/loans/borrowed', requireAuth, async (req, res) => {
+  const loans = await prisma.bookLoan.findMany({
+    where: { borrowerId: req.auth.userId },
+    include: includeLoanGraph,
+    orderBy: { requestedAt: 'desc' }
+  });
+
+  const normalized = [];
+  for (const loan of loans) {
+    normalized.push(await expireLoanIfNeeded(loan, req.auth.userId));
+  }
+  return res.json({ loans: normalized.map(toLoanResponse) });
+});
+
+app.get('/loans/lent', requireAuth, async (req, res) => {
+  const loans = await prisma.bookLoan.findMany({
+    where: { lenderId: req.auth.userId },
+    include: includeLoanGraph,
+    orderBy: { requestedAt: 'desc' }
+  });
+  return res.json({ loans: loans.map(toLoanResponse) });
+});
+
+const buildLoanExportPayload = async (loan, borrowerId) => {
+  const [notes, highlights] = await Promise.all([
+    prisma.note.findMany({
+      where: { bookId: loan.bookId, createdByUserId: borrowerId },
+      orderBy: { createdAt: 'asc' }
+    }),
+    prisma.highlight.findMany({
+      where: { bookId: loan.bookId, createdByUserId: borrowerId },
+      orderBy: { createdAt: 'asc' }
+    })
+  ]);
+
+  return {
+    exportedAt: new Date().toISOString(),
+    loan: {
+      id: loan.id,
+      status: loan.status,
+      requestedAt: loan.requestedAt,
+      acceptedAt: loan.acceptedAt,
+      dueAt: loan.dueAt,
+      returnedAt: loan.returnedAt,
+      revokedAt: loan.revokedAt,
+      expiredAt: loan.expiredAt
+    },
+    lender: {
+      id: loan.lender.id,
+      email: loan.lender.email,
+      displayName: loan.lender.displayName || null
+    },
+    borrower: {
+      id: loan.borrower.id,
+      email: loan.borrower.email,
+      displayName: loan.borrower.displayName || null
+    },
+    book: {
+      id: loan.book.id,
+      epubHash: loan.book.epubHash,
+      title: loan.book.title,
+      author: loan.book.author || null,
+      language: loan.book.language || null
+    },
+    notes,
+    highlights
+  };
+};
+
+app.post('/loans/:loanId/return', requireAuth, async (req, res) => {
+  const schema = z.object({
+    exportAnnotations: z.boolean().default(false)
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const loan = await prisma.bookLoan.findUnique({
+    where: { id: req.params.loanId },
+    include: includeLoanGraph
+  });
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (loan.borrowerId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (loan.status !== 'ACTIVE') return res.status(400).json({ error: 'Loan is not active' });
+
+  const exportPayload = parsed.data.exportAnnotations
+    ? await buildLoanExportPayload(loan, req.auth.userId)
+    : null;
+
+  const returned = await prisma.$transaction(async (tx) => {
+    const next = await tx.bookLoan.update({
+      where: { id: loan.id },
+      data: {
+        status: 'RETURNED',
+        returnedAt: new Date(),
+        exportAvailableUntil: null
+      },
+      include: includeLoanGraph
+    });
+
+    if (loan.createdUserBookOnAccept) {
+      await tx.userBook.deleteMany({
+        where: { userId: req.auth.userId, bookId: loan.bookId }
+      });
+    }
+
+    await addLoanAuditEvent(tx, {
+      loanId: loan.id,
+      actorUserId: req.auth.userId,
+      targetUserId: loan.lenderId,
+      action: 'LOAN_RETURNED',
+      details: { exported: Boolean(exportPayload) }
+    });
+
+    return next;
+  });
+
+  return res.json({
+    loan: toLoanResponse(returned),
+    export: exportPayload
+  });
+});
+
+app.post('/loans/:loanId/revoke', requireAuth, async (req, res) => {
+  const loan = await prisma.bookLoan.findUnique({
+    where: { id: req.params.loanId },
+    include: includeLoanGraph
+  });
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (loan.lenderId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (loan.status !== 'ACTIVE') return res.status(400).json({ error: 'Loan is not active' });
+
+  const now = new Date();
+  const exportAvailableUntil = new Date(now.getTime() + 60 * 60 * 1000);
+  const revoked = await prisma.$transaction(async (tx) => {
+    const next = await tx.bookLoan.update({
+      where: { id: loan.id },
+      data: {
+        status: 'REVOKED',
+        revokedAt: now,
+        exportAvailableUntil
+      },
+      include: includeLoanGraph
+    });
+
+    if (loan.createdUserBookOnAccept) {
+      await tx.userBook.deleteMany({
+        where: { userId: loan.borrowerId, bookId: loan.bookId }
+      });
+    }
+
+    await addLoanAuditEvent(tx, {
+      loanId: loan.id,
+      actorUserId: req.auth.userId,
+      targetUserId: loan.borrowerId,
+      action: 'LOAN_REVOKED',
+      details: {
+        exportAvailableUntil
+      }
+    });
+
+    return next;
+  });
+
+  return res.json({ loan: toLoanResponse(revoked) });
+});
+
+app.get('/loans/:loanId/export', requireAuth, async (req, res) => {
+  const loan = await prisma.bookLoan.findUnique({
+    where: { id: req.params.loanId },
+    include: includeLoanGraph
+  });
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (loan.borrowerId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+
+  if (loan.status !== 'REVOKED') {
+    return res.status(400).json({ error: 'Export is available only for revoked loans in grace window' });
+  }
+  const deadlineMs = loan.exportAvailableUntil ? new Date(loan.exportAvailableUntil).getTime() : NaN;
+  if (!Number.isFinite(deadlineMs) || Date.now() > deadlineMs) {
+    return res.status(403).json({ error: 'Export window ended' });
+  }
+
+  const payload = await buildLoanExportPayload(loan, req.auth.userId);
+  return res.json({ export: payload });
+});
+
+app.get('/loans/audit', requireAuth, async (req, res) => {
+  const events = await prisma.loanAuditEvent.findMany({
+    where: {
+      OR: [
+        { actorUserId: req.auth.userId },
+        { targetUserId: req.auth.userId },
+        { loan: { lenderId: req.auth.userId } },
+        { loan: { borrowerId: req.auth.userId } }
+      ]
+    },
+    include: {
+      actorUser: { select: { id: true, email: true, displayName: true, avatarUrl: true } },
+      targetUser: { select: { id: true, email: true, displayName: true, avatarUrl: true } },
+      loan: {
+        include: {
+          book: true,
+          lender: { select: { id: true, email: true, displayName: true, avatarUrl: true } },
+          borrower: { select: { id: true, email: true, displayName: true, avatarUrl: true } }
+        }
+      }
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 300
+  });
+
+  return res.json({
+    events: events.map((event) => ({
+      id: event.id,
+      action: event.action,
+      createdAt: event.createdAt,
+      details: (() => {
+        try {
+          return event.detailsJson ? JSON.parse(event.detailsJson) : null;
+        } catch {
+          return null;
+        }
+      })(),
+      actorUser: event.actorUser ? toUserResponse(event.actorUser) : null,
+      targetUser: event.targetUser ? toUserResponse(event.targetUser) : null,
+      loan: {
+        id: event.loan.id,
+        status: event.loan.status,
+        durationDays: event.loan.durationDays,
+        graceDays: event.loan.graceDays,
+        requestedAt: event.loan.requestedAt,
+        acceptedAt: event.loan.acceptedAt,
+        dueAt: event.loan.dueAt,
+        returnedAt: event.loan.returnedAt,
+        revokedAt: event.loan.revokedAt,
+        expiredAt: event.loan.expiredAt,
+        book: {
+          id: event.loan.book.id,
+          title: event.loan.book.title,
+          author: event.loan.book.author || null
+        },
+        lender: toUserResponse(event.loan.lender),
+        borrower: toUserResponse(event.loan.borrower)
+      }
+    }))
+  });
 });
 
 app.use((err, _req, res) => {
