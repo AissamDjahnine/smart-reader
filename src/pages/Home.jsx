@@ -5620,7 +5620,9 @@ const formatNotificationTimeAgo = (value) => {
                   {loanInbox.map((loan) => (
                     <article
                       key={loan.id}
-                      className={`rounded-xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200"}`}
+                      className={`rounded-xl border p-3 transition-all duration-200 hover:-translate-y-0.5 ${
+                        isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45 hover:border-slate-600" : "border-gray-200 hover:border-gray-300"
+                      }`}
                     >
                       {(() => {
                         const statusMeta = getLoanStatusMeta(loan, loanReminderDays);
@@ -5660,7 +5662,7 @@ const formatNotificationTimeAgo = (value) => {
                           type="button"
                           onClick={() => handleOpenAcceptLoanPreview(loan)}
                           disabled={isLoanActionBusyId === `accept-${loan.id}`}
-                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${
+                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${
                             isDarkLibraryTheme ? "bg-emerald-700 text-emerald-50 hover:bg-emerald-600" : "bg-emerald-600 text-white"
                           }`}
                         >
@@ -5670,7 +5672,7 @@ const formatNotificationTimeAgo = (value) => {
                           type="button"
                           onClick={() => handleRejectLoanRequest(loan.id)}
                           disabled={isLoanActionBusyId === `reject-${loan.id}`}
-                          className={`rounded-lg border px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${
+                          className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${
                             isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700"
                           }`}
                         >
@@ -5716,8 +5718,8 @@ const formatNotificationTimeAgo = (value) => {
                         key={item.id}
                         className={`rounded-xl border p-3 ${
                           isOverdue
-                            ? (isDarkLibraryTheme ? "border-rose-700/70 bg-rose-950/30" : "border-rose-200 bg-rose-50")
-                            : (isDarkLibraryTheme ? "border-amber-700/60 bg-amber-950/20" : "border-amber-200 bg-amber-50")
+                            ? (isDarkLibraryTheme ? "border-rose-700/70 bg-rose-950/30 hover:border-rose-600" : "border-rose-200 bg-rose-50 hover:border-rose-300")
+                            : (isDarkLibraryTheme ? "border-amber-700/60 bg-amber-950/20 hover:border-amber-600" : "border-amber-200 bg-amber-50 hover:border-amber-300")
                         }`}
                       >
                         <div className="flex items-start gap-3">
@@ -5777,7 +5779,7 @@ const formatNotificationTimeAgo = (value) => {
                   const pendingRenewals = pendingRenewalsByLoanId.get(loan.id) || [];
                   const statusMeta = getLoanStatusMeta(loan, loanReminderDays);
                   return (
-                  <article key={loan.id} className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200"} ${loanViewMode === "list" ? "" : "h-full"}`}>
+                  <article key={loan.id} className={`rounded-xl border p-4 transition-all duration-200 hover:-translate-y-0.5 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45 hover:border-slate-600" : "border-gray-200 hover:border-gray-300"} ${loanViewMode === "list" ? "" : "h-full"}`}>
                     <div className="flex items-start gap-3">
                       <div className={`h-20 w-14 shrink-0 overflow-hidden rounded-md border ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800" : "border-gray-200 bg-gray-100"}`}>
                         {loan.book?.cover ? (
@@ -5801,27 +5803,27 @@ const formatNotificationTimeAgo = (value) => {
                           </p>
                         )}
                       </div>
-                      <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${getLoanStatusChipClass(statusMeta.key)}`}>
+                      <span className={`rounded-full px-2 py-1 text-[11px] font-semibold transition-colors ${getLoanStatusChipClass(statusMeta.key)}`}>
                         {statusMeta.label} · {formatLoanRemaining(loan)}
                       </span>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       {loan.status === "ACTIVE" && (
-                        <button type="button" onClick={() => handleReturnBorrowedLoan(loan.id)} disabled={isLoanActionBusyId === `return-${loan.id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700"}`}>
+                        <button type="button" onClick={() => handleReturnBorrowedLoan(loan.id)} disabled={isLoanActionBusyId === `return-${loan.id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700"}`}>
                           {isLoanActionBusyId === `return-${loan.id}` ? "Returning..." : "Return"}
                         </button>
                       )}
                       {loan.status === "ACTIVE" && (
-                        <button type="button" onClick={() => handleRequestLoanRenewal(loan)} disabled={isLoanActionBusyId === `renew-request-${loan.id}` || pendingRenewals.length > 0} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${isDarkLibraryTheme ? "border-blue-600/70 text-blue-200 hover:bg-blue-900/35" : "border-blue-200 text-blue-700 hover:bg-blue-50"}`}>
+                        <button type="button" onClick={() => handleRequestLoanRenewal(loan)} disabled={isLoanActionBusyId === `renew-request-${loan.id}` || pendingRenewals.length > 0} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "border-blue-600/70 text-blue-200 hover:bg-blue-900/35" : "border-blue-200 text-blue-700 hover:bg-blue-50"}`}>
                           {pendingRenewals.length > 0 ? "Renewal pending" : (isLoanActionBusyId === `renew-request-${loan.id}` ? "Requesting..." : "Request renewal")}
                         </button>
                       )}
                       {["REVOKED", "EXPIRED", "RETURNED"].includes(loan.status) && (
                         <>
-                          <button type="button" onClick={() => handleExportLoanData(loan.id, "json")} disabled={isLoanActionBusyId === `export-${loan.id}-json`} className={`rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${isDarkLibraryTheme ? "bg-blue-700 text-white hover:bg-blue-600" : "bg-blue-600 text-white"}`}>
+                          <button type="button" onClick={() => handleExportLoanData(loan.id, "json")} disabled={isLoanActionBusyId === `export-${loan.id}-json`} className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "bg-blue-700 text-white hover:bg-blue-600" : "bg-blue-600 text-white"}`}>
                             {isLoanActionBusyId === `export-${loan.id}-json` ? "Exporting..." : "Export JSON"}
                           </button>
-                          <button type="button" onClick={() => handleExportLoanData(loan.id, "pdf")} disabled={isLoanActionBusyId === `export-${loan.id}-pdf`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${isDarkLibraryTheme ? "border-slate-600 text-slate-100 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>
+                          <button type="button" onClick={() => handleExportLoanData(loan.id, "pdf")} disabled={isLoanActionBusyId === `export-${loan.id}-pdf`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "border-slate-600 text-slate-100 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>
                             {isLoanActionBusyId === `export-${loan.id}-pdf` ? "Exporting..." : "Export PDF"}
                           </button>
                         </>
@@ -5867,7 +5869,7 @@ const formatNotificationTimeAgo = (value) => {
                   const pendingRenewals = pendingRenewalsByLoanId.get(loan.id) || [];
                   const statusMeta = getLoanStatusMeta(loan, loanReminderDays);
                   return (
-                  <article key={loan.id} className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200"} ${loanViewMode === "list" ? "" : "h-full"}`}>
+                  <article key={loan.id} className={`rounded-xl border p-4 transition-all duration-200 hover:-translate-y-0.5 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45 hover:border-slate-600" : "border-gray-200 hover:border-gray-300"} ${loanViewMode === "list" ? "" : "h-full"}`}>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-start gap-3">
                         <div className={`h-20 w-14 shrink-0 overflow-hidden rounded-md border ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800" : "border-gray-200 bg-gray-100"}`}>
@@ -5888,21 +5890,21 @@ const formatNotificationTimeAgo = (value) => {
                         </p>
                         </div>
                       </div>
-                      <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${getLoanStatusChipClass(statusMeta.key)}`}>
+                      <span className={`rounded-full px-2 py-1 text-[11px] font-semibold transition-colors ${getLoanStatusChipClass(statusMeta.key)}`}>
                         {statusMeta.label}
                       </span>
                     </div>
                     {loan.status === "ACTIVE" && (
                       <div className="mt-3 flex flex-wrap gap-2">
-                        <button type="button" onClick={() => handleRevokeLentLoan(loan.id)} disabled={isLoanActionBusyId === `revoke-${loan.id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${isDarkLibraryTheme ? "border-rose-700/70 bg-rose-950/35 text-rose-200 hover:bg-rose-900/40" : "border-rose-200 bg-rose-50 text-rose-700"}`}>
+                        <button type="button" onClick={() => handleRevokeLentLoan(loan.id)} disabled={isLoanActionBusyId === `revoke-${loan.id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "border-rose-700/70 bg-rose-950/35 text-rose-200 hover:bg-rose-900/40" : "border-rose-200 bg-rose-50 text-rose-700"}`}>
                           {isLoanActionBusyId === `revoke-${loan.id}` ? "Revoking..." : "Revoke"}
                         </button>
                         {pendingRenewals[0] && (
                           <>
-                            <button type="button" onClick={() => handleApproveLoanRenewal(pendingRenewals[0].id)} disabled={isLoanActionBusyId === `renew-approve-${pendingRenewals[0].id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${isDarkLibraryTheme ? "border-emerald-700/70 bg-emerald-950/35 text-emerald-200 hover:bg-emerald-900/40" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
+                            <button type="button" onClick={() => handleApproveLoanRenewal(pendingRenewals[0].id)} disabled={isLoanActionBusyId === `renew-approve-${pendingRenewals[0].id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "border-emerald-700/70 bg-emerald-950/35 text-emerald-200 hover:bg-emerald-900/40" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
                               {isLoanActionBusyId === `renew-approve-${pendingRenewals[0].id}` ? "Approving..." : `Approve +${pendingRenewals[0].requestedExtraDays}d`}
                             </button>
-                            <button type="button" onClick={() => handleDenyLoanRenewal(pendingRenewals[0].id)} disabled={isLoanActionBusyId === `renew-deny-${pendingRenewals[0].id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${isDarkLibraryTheme ? "border-slate-600 text-slate-100 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>
+                            <button type="button" onClick={() => handleDenyLoanRenewal(pendingRenewals[0].id)} disabled={isLoanActionBusyId === `renew-deny-${pendingRenewals[0].id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "border-slate-600 text-slate-100 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>
                               {isLoanActionBusyId === `renew-deny-${pendingRenewals[0].id}` ? "Denying..." : "Deny renewal"}
                             </button>
                           </>
@@ -5948,7 +5950,7 @@ const formatNotificationTimeAgo = (value) => {
                     return acc;
                   }, {})
                 ).map((group) => (
-                  <article key={group.key} className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200"}`}>
+                  <article key={group.key} className={`rounded-xl border p-4 transition-all duration-200 hover:-translate-y-0.5 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45 hover:border-slate-600" : "border-gray-200 hover:border-gray-300"}`}>
                     <div className="mb-3 flex items-center gap-3">
                       <div className={`h-16 w-12 overflow-hidden rounded-md border ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800" : "border-gray-200 bg-gray-100"}`}>
                         {group.book?.cover ? (
@@ -5964,7 +5966,7 @@ const formatNotificationTimeAgo = (value) => {
                     </div>
                     <div className="space-y-2">
                       {group.events.map((event) => (
-                        <div key={event.id} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700/80 bg-slate-900/40" : "border-gray-200 bg-gray-50"}`}>
+                        <div key={event.id} className={`rounded-lg border px-3 py-2 transition-colors ${isDarkLibraryTheme ? "border-slate-700/80 bg-slate-900/40 hover:border-slate-600" : "border-gray-200 bg-gray-50 hover:border-gray-300"}`}>
                           {(() => {
                             const statusMeta = getLoanStatusMeta(event.loan, loanReminderDays);
                             return (
