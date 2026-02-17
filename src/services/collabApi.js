@@ -78,6 +78,11 @@ export const fetchBook = async (bookId) => {
   return data.book;
 };
 
+export const removeBookFromLibrary = async (bookId) => {
+  const { data } = await client.delete(`/books/${bookId}`);
+  return data.ok;
+};
+
 export const fetchBookBinary = async (bookId) => {
   const { data } = await client.get(`/books/${bookId}/file`, {
     responseType: 'arraybuffer'

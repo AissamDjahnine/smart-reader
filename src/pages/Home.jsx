@@ -1607,36 +1607,56 @@ export default function Home() {
     const targetBook = books.find((book) => book.id === id);
     if (!targetBook) return;
 
-    await moveBookToTrash(id);
-    await loadLibrary();
+    try {
+      await moveBookToTrash(id);
+      await loadLibrary();
 
-    clearPendingTrashUndo();
-    pendingTrashUndoRef.current = {
-      bookId: id,
-      title: targetBook.title || "Book"
-    };
-    pendingTrashUndoTimerRef.current = setTimeout(() => {
       clearPendingTrashUndo();
-    }, 6000);
+      if (!isCollabMode) {
+        pendingTrashUndoRef.current = {
+          bookId: id,
+          title: targetBook.title || "Book"
+        };
+        pendingTrashUndoTimerRef.current = setTimeout(() => {
+          clearPendingTrashUndo();
+        }, 6000);
+      }
 
-    showFeedbackToast({
-      tone: "destructive",
-      title: "Moved to Trash",
-      message: `${targetBook.title || "Book"} moved to Trash.`,
-      actionLabel: "Undo",
-      onAction: async () => {
-        const pending = pendingTrashUndoRef.current;
-        if (!pending?.bookId) return;
-        await restoreBookFromTrash(pending.bookId);
-        await loadLibrary();
-        clearPendingTrashUndo();
+      if (isCollabMode) {
         showFeedbackToast({
           tone: "success",
-          title: "Restored",
-          message: `${pending.title} restored from Trash.`
+          title: "Removed from library",
+          message: `${targetBook.title || "Book"} was removed from your library only.`
         });
+        return;
       }
-    }, { duration: 6200 });
+
+      showFeedbackToast({
+        tone: "destructive",
+        title: "Moved to Trash",
+        message: `${targetBook.title || "Book"} moved to Trash.`,
+        actionLabel: "Undo",
+        onAction: async () => {
+          const pending = pendingTrashUndoRef.current;
+          if (!pending?.bookId) return;
+          await restoreBookFromTrash(pending.bookId);
+          await loadLibrary();
+          clearPendingTrashUndo();
+          showFeedbackToast({
+            tone: "success",
+            title: "Restored",
+            message: `${pending.title} restored from Trash.`
+          });
+        }
+      }, { duration: 6200 });
+    } catch (err) {
+      const serverMessage = err?.response?.data?.error;
+      showFeedbackToast({
+        tone: "destructive",
+        title: "Could not remove book",
+        message: serverMessage || "Try again."
+      });
+    }
   };
 
   const handleRestoreBook = async (e, id) => {

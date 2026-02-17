@@ -5,6 +5,7 @@ import {
   fetchBooks,
   createOrAttachBook,
   fetchBook,
+  removeBookFromLibrary,
   fetchBookBinary,
   saveProgress,
   fetchHighlights,
@@ -672,11 +673,19 @@ export const savePageSummary = async (bookId, pageKey, pageSummary, newGlobalSum
 };
 
 export const deleteBook = async (id) => {
+  if (isCollabMode) {
+    await removeBookFromLibrary(id);
+    return;
+  }
   await bookStore.removeItem(id);
   mutationQueues.delete(id);
 };
 
 export const moveBookToTrash = async (id) => {
+  if (isCollabMode) {
+    await removeBookFromLibrary(id);
+    return null;
+  }
   return runBookMutation(id, (book) => {
     book.isDeleted = true;
     book.deletedAt = new Date().toISOString();
@@ -685,6 +694,9 @@ export const moveBookToTrash = async (id) => {
 };
 
 export const restoreBookFromTrash = async (id) => {
+  if (isCollabMode) {
+    return getBook(id);
+  }
   return runBookMutation(id, (book) => {
     book.isDeleted = false;
     book.deletedAt = null;

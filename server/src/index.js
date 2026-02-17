@@ -412,6 +412,47 @@ app.get('/books/:bookId', requireAuth, requireBookAccess, async (req, res) => {
   return res.json({ book: toBookResponse(book, req.auth.userId, getBaseUrl(req)) });
 });
 
+app.delete('/books/:bookId', requireAuth, async (req, res) => {
+  const userBook = await prisma.userBook.findUnique({
+    where: {
+      userId_bookId: {
+        userId: req.auth.userId,
+        bookId: req.params.bookId
+      }
+    }
+  });
+  if (!userBook) return res.status(404).json({ error: 'Book not found in your library' });
+
+  const activeLoanCount = await prisma.bookLoan.count({
+    where: {
+      bookId: req.params.bookId,
+      status: 'ACTIVE',
+      OR: [
+        { lenderId: req.auth.userId },
+        { borrowerId: req.auth.userId }
+      ]
+    }
+  });
+
+  if (activeLoanCount > 0) {
+    return res.status(409).json({
+      error: 'This book has an active loan. Return/revoke it before removing it from your library.',
+      code: 'ACTIVE_LOAN_EXISTS'
+    });
+  }
+
+  await prisma.userBook.delete({
+    where: {
+      userId_bookId: {
+        userId: req.auth.userId,
+        bookId: req.params.bookId
+      }
+    }
+  });
+
+  return res.json({ ok: true });
+});
+
 app.get('/books/:bookId/file', requireAuth, requireBookAccess, async (req, res) => {
   const book = await prisma.book.findUnique({ where: { id: req.params.bookId } });
   if (!book || !book.filePath) return res.status(404).json({ error: 'File not found' });
