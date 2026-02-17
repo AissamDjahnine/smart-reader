@@ -386,14 +386,19 @@ app.post('/books', requireAuth, upload.single('file'), async (req, res) => {
         bookId: targetBook.id
       }
     },
-    update: {},
+    update: {
+      isDeleted: false,
+      deletedAt: null
+    },
     create: {
       userId: req.auth.userId,
       bookId: targetBook.id,
       status: 'TO_READ',
       progressPercent: 0,
       progressCfi: null,
-      lastOpenedAt: null
+      lastOpenedAt: null,
+      isDeleted: false,
+      deletedAt: null
     }
   });
 
@@ -423,21 +428,18 @@ app.delete('/books/:bookId', requireAuth, async (req, res) => {
   });
   if (!userBook) return res.status(404).json({ error: 'Book not found in your library' });
 
-  const activeLoanCount = await prisma.bookLoan.count({
+  const activeLendingCount = await prisma.bookLoan.count({
     where: {
       bookId: req.params.bookId,
       status: 'ACTIVE',
-      OR: [
-        { lenderId: req.auth.userId },
-        { borrowerId: req.auth.userId }
-      ]
+      lenderId: req.auth.userId
     }
   });
 
-  if (activeLoanCount > 0) {
+  if (activeLendingCount > 0) {
     return res.status(409).json({
-      error: 'This book has an active loan. Return/revoke it before removing it from your library.',
-      code: 'ACTIVE_LOAN_EXISTS'
+      error: 'This book is actively lent. Revoke lending first, then delete.',
+      code: 'ACTIVE_LENDING_EXISTS'
     });
   }
 
@@ -451,6 +453,55 @@ app.delete('/books/:bookId', requireAuth, async (req, res) => {
   });
 
   return res.json({ ok: true });
+});
+
+app.patch('/books/:bookId/trash', requireAuth, async (req, res) => {
+  const schema = z.object({
+    deleted: z.boolean()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const existing = await prisma.userBook.findUnique({
+    where: {
+      userId_bookId: {
+        userId: req.auth.userId,
+        bookId: req.params.bookId
+      }
+    },
+    include: { book: true }
+  });
+  if (!existing) return res.status(404).json({ error: 'Book not found in your library' });
+
+  if (parsed.data.deleted) {
+    const activeLendingCount = await prisma.bookLoan.count({
+      where: {
+        bookId: req.params.bookId,
+        status: 'ACTIVE',
+        lenderId: req.auth.userId
+      }
+    });
+    if (activeLendingCount > 0) {
+      return res.status(409).json({
+        error: 'This book is actively lent. Revoke lending first, then move it to trash.',
+        code: 'ACTIVE_LENDING_EXISTS'
+      });
+    }
+  }
+
+  const now = new Date();
+  const updated = await prisma.userBook.update({
+    where: { id: existing.id },
+    data: {
+      isDeleted: parsed.data.deleted,
+      deletedAt: parsed.data.deleted ? now : null
+    },
+    include: { book: true }
+  });
+
+  return res.json({
+    book: toBookResponse({ ...updated.book, userBooks: [updated] }, req.auth.userId, getBaseUrl(req))
+  });
 });
 
 app.get('/books/:bookId/file', requireAuth, requireBookAccess, async (req, res) => {

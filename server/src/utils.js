@@ -34,7 +34,9 @@ export const toBookResponse = (book, currentUserId, baseUrl = '') => {
           status: userBook.status,
           progressPercent: userBook.progressPercent,
           progressCfi: userBook.progressCfi,
-          lastOpenedAt: userBook.lastOpenedAt
+          lastOpenedAt: userBook.lastOpenedAt,
+          isDeleted: Boolean(userBook.isDeleted),
+          deletedAt: userBook.deletedAt || null
         }
       : null
   };

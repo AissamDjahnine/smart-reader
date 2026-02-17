@@ -83,6 +83,11 @@ export const removeBookFromLibrary = async (bookId) => {
   return data.ok;
 };
 
+export const setBookTrashState = async (bookId, deleted) => {
+  const { data } = await client.patch(`/books/${bookId}/trash`, { deleted: Boolean(deleted) });
+  return data.book;
+};
+
 export const fetchBookBinary = async (bookId) => {
   const { data } = await client.get(`/books/${bookId}/file`, {
     responseType: 'arraybuffer'

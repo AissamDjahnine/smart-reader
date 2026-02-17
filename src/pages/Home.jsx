@@ -1612,24 +1612,13 @@ export default function Home() {
       await loadLibrary();
 
       clearPendingTrashUndo();
-      if (!isCollabMode) {
-        pendingTrashUndoRef.current = {
-          bookId: id,
-          title: targetBook.title || "Book"
-        };
-        pendingTrashUndoTimerRef.current = setTimeout(() => {
-          clearPendingTrashUndo();
-        }, 6000);
-      }
-
-      if (isCollabMode) {
-        showFeedbackToast({
-          tone: "success",
-          title: "Removed from library",
-          message: `${targetBook.title || "Book"} was removed from your library only.`
-        });
-        return;
-      }
+      pendingTrashUndoRef.current = {
+        bookId: id,
+        title: targetBook.title || "Book"
+      };
+      pendingTrashUndoTimerRef.current = setTimeout(() => {
+        clearPendingTrashUndo();
+      }, 6000);
 
       showFeedbackToast({
         tone: "destructive",
@@ -1653,7 +1642,7 @@ export default function Home() {
       const serverMessage = err?.response?.data?.error;
       showFeedbackToast({
         tone: "destructive",
-        title: "Could not remove book",
+        title: "Could not move to Trash",
         message: serverMessage || "Try again."
       });
     }

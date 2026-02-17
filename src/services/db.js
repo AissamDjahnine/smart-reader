@@ -6,6 +6,7 @@ import {
   createOrAttachBook,
   fetchBook,
   removeBookFromLibrary,
+  setBookTrashState,
   fetchBookBinary,
   saveProgress,
   fetchHighlights,
@@ -132,6 +133,8 @@ const normalizeRemoteBook = async (book = {}) => {
     progress: Math.max(0, Math.min(100, Number(book.progress || 0))),
     lastLocation: book.lastLocation || "",
     lastOpenedAt: book.userBook?.lastOpenedAt || null,
+    isDeleted: Boolean(book.userBook?.isDeleted),
+    deletedAt: book.userBook?.deletedAt || null,
     readerSettings: mergedReaderSettings,
     highlights: Array.isArray(highlights) ? highlights.map(normalizeRemoteHighlight) : []
   };
@@ -683,8 +686,8 @@ export const deleteBook = async (id) => {
 
 export const moveBookToTrash = async (id) => {
   if (isCollabMode) {
-    await removeBookFromLibrary(id);
-    return null;
+    const updated = await setBookTrashState(id, true);
+    return normalizeRemoteBook(updated);
   }
   return runBookMutation(id, (book) => {
     book.isDeleted = true;
@@ -695,7 +698,8 @@ export const moveBookToTrash = async (id) => {
 
 export const restoreBookFromTrash = async (id) => {
   if (isCollabMode) {
-    return getBook(id);
+    const updated = await setBookTrashState(id, false);
+    return normalizeRemoteBook(updated);
   }
   return runBookMutation(id, (book) => {
     book.isDeleted = false;
