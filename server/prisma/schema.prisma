@@ -53,6 +53,13 @@ enum NotificationDeliveryStatus {
   FAILED
 }
 
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELED
+}
+
 model User {
   id           String      @id @default(cuid())
   email        String      @unique
@@ -78,6 +85,12 @@ model User {
   renewalReviews LoanRenewalRequest[] @relation("loan_renewal_reviewer")
   renewalLenderRecords LoanRenewalRequest[] @relation("loan_renewal_lender")
   renewalBorrowerRecords LoanRenewalRequest[] @relation("loan_renewal_borrower")
+  sentFriendRequests FriendRequest[] @relation("friend_requests_sent")
+  receivedFriendRequests FriendRequest[] @relation("friend_requests_received")
+  friendshipsA Friendship[] @relation("friendship_user_a")
+  friendshipsB Friendship[] @relation("friendship_user_b")
+  blocksInitiated FriendBlock[] @relation("friend_blocks_initiated")
+  blocksReceived FriendBlock[] @relation("friend_blocks_received")
 }
 
 model InviteCode {
@@ -317,4 +330,48 @@ model UserNotification {
   @@unique([userId, eventKey])
   @@index([userId, createdAt])
   @@index([loanId])
+}
+
+model FriendRequest {
+  id          String              @id @default(cuid())
+  fromUserId  String
+  toUserId    String
+  status      FriendRequestStatus @default(PENDING)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  respondedAt DateTime?
+
+  fromUser    User @relation("friend_requests_sent", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser      User @relation("friend_requests_received", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@index([toUserId, status])
+  @@index([fromUserId, status])
+  @@unique([fromUserId, toUserId])
+}
+
+model Friendship {
+  id        String   @id @default(cuid())
+  userAId   String
+  userBId   String
+  createdAt DateTime @default(now())
+
+  userA     User @relation("friendship_user_a", fields: [userAId], references: [id], onDelete: Cascade)
+  userB     User @relation("friendship_user_b", fields: [userBId], references: [id], onDelete: Cascade)
+
+  @@unique([userAId, userBId])
+  @@index([userAId])
+  @@index([userBId])
+}
+
+model FriendBlock {
+  id            String   @id @default(cuid())
+  blockerUserId String
+  blockedUserId String
+  createdAt     DateTime @default(now())
+
+  blocker       User @relation("friend_blocks_initiated", fields: [blockerUserId], references: [id], onDelete: Cascade)
+  blocked       User @relation("friend_blocks_received", fields: [blockedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerUserId, blockedUserId])
+  @@index([blockedUserId])
 }

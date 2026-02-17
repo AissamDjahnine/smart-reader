@@ -129,6 +129,55 @@ const toUserResponse = (user) => ({
   loanReminderDays: Number.isInteger(user.loanReminderDays) ? user.loanReminderDays : 3
 });
 
+const toFriendRequestResponse = (request) => ({
+  id: request.id,
+  status: request.status,
+  createdAt: request.createdAt,
+  updatedAt: request.updatedAt,
+  respondedAt: request.respondedAt || null,
+  fromUser: request.fromUser ? toUserResponse(request.fromUser) : null,
+  toUser: request.toUser ? toUserResponse(request.toUser) : null
+});
+
+const toFriendshipResponse = ({ friendship, currentUserId }) => {
+  const friendUser = friendship.userAId === currentUserId ? friendship.userB : friendship.userA;
+  return {
+    id: friendship.id,
+    createdAt: friendship.createdAt,
+    friend: friendUser ? toUserResponse(friendUser) : null
+  };
+};
+
+const sortPair = (leftUserId, rightUserId) => (
+  leftUserId < rightUserId ? [leftUserId, rightUserId] : [rightUserId, leftUserId]
+);
+
+const areUsersBlocked = async (db, leftUserId, rightUserId) => {
+  if (!leftUserId || !rightUserId) return false;
+  const block = await db.friendBlock.findFirst({
+    where: {
+      OR: [
+        { blockerUserId: leftUserId, blockedUserId: rightUserId },
+        { blockerUserId: rightUserId, blockedUserId: leftUserId }
+      ]
+    },
+    select: { id: true }
+  });
+  return Boolean(block);
+};
+
+const ensureNotBlocked = async (db, leftUserId, rightUserId) => {
+  const blocked = await areUsersBlocked(db, leftUserId, rightUserId);
+  if (blocked) {
+    return {
+      ok: false,
+      status: 403,
+      error: 'Action blocked due to a block relationship'
+    };
+  }
+  return { ok: true };
+};
+
 const parseExpectedRevision = (req) => {
   const header = req.headers['if-match-revision'];
   const raw = Array.isArray(header) ? header[0] : header;
@@ -323,6 +372,307 @@ app.post('/users/me/avatar', requireAuth, avatarUpload.single('avatar'), async (
     select: { id: true, email: true, displayName: true, avatarUrl: true, loanReminderDays: true }
   });
   return res.json({ user: toUserResponse(user) });
+});
+
+app.post('/friends/requests', requireAuth, async (req, res) => {
+  const schema = z.object({
+    toUserId: z.string().min(1)
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const fromUserId = req.auth.userId;
+  const toUserId = parsed.data.toUserId;
+  if (fromUserId === toUserId) {
+    return res.status(400).json({ error: 'Cannot send friend request to yourself' });
+  }
+
+  const recipient = await prisma.user.findUnique({
+    where: { id: toUserId },
+    select: { id: true }
+  });
+  if (!recipient) return res.status(404).json({ error: 'Recipient not found' });
+
+  const blockCheck = await ensureNotBlocked(prisma, fromUserId, toUserId);
+  if (!blockCheck.ok) return res.status(blockCheck.status).json({ error: blockCheck.error });
+
+  const [userAId, userBId] = sortPair(fromUserId, toUserId);
+  const existingFriendship = await prisma.friendship.findUnique({
+    where: { userAId_userBId: { userAId, userBId } },
+    select: { id: true }
+  });
+  if (existingFriendship) return res.status(409).json({ error: 'Already friends' });
+
+  const existingRequest = await prisma.friendRequest.findUnique({
+    where: {
+      fromUserId_toUserId: {
+        fromUserId,
+        toUserId
+      }
+    }
+  });
+  if (existingRequest && existingRequest.status === 'PENDING') {
+    return res.status(409).json({ error: 'Friend request already pending' });
+  }
+
+  const inversePendingRequest = await prisma.friendRequest.findUnique({
+    where: {
+      fromUserId_toUserId: {
+        fromUserId: toUserId,
+        toUserId: fromUserId
+      }
+    }
+  });
+  if (inversePendingRequest && inversePendingRequest.status === 'PENDING') {
+    return res.status(409).json({ error: 'This user already sent you a friend request' });
+  }
+
+  const friendRequest = existingRequest
+    ? await prisma.friendRequest.update({
+      where: { id: existingRequest.id },
+      data: {
+        status: 'PENDING',
+        respondedAt: null
+      },
+      include: {
+        fromUser: true,
+        toUser: true
+      }
+    })
+    : await prisma.friendRequest.create({
+      data: {
+        fromUserId,
+        toUserId,
+        status: 'PENDING'
+      },
+      include: {
+        fromUser: true,
+        toUser: true
+      }
+    });
+
+  return res.status(201).json({
+    request: toFriendRequestResponse(friendRequest)
+  });
+});
+
+app.get('/friends/requests/incoming', requireAuth, async (req, res) => {
+  const requests = await prisma.friendRequest.findMany({
+    where: {
+      toUserId: req.auth.userId,
+      status: 'PENDING'
+    },
+    include: {
+      fromUser: true,
+      toUser: true
+    },
+    orderBy: { createdAt: 'desc' }
+  });
+  return res.json({ requests: requests.map(toFriendRequestResponse) });
+});
+
+app.get('/friends/requests/outgoing', requireAuth, async (req, res) => {
+  const requests = await prisma.friendRequest.findMany({
+    where: {
+      fromUserId: req.auth.userId,
+      status: 'PENDING'
+    },
+    include: {
+      fromUser: true,
+      toUser: true
+    },
+    orderBy: { createdAt: 'desc' }
+  });
+  return res.json({ requests: requests.map(toFriendRequestResponse) });
+});
+
+app.post('/friends/requests/:requestId/accept', requireAuth, async (req, res) => {
+  const request = await prisma.friendRequest.findUnique({
+    where: { id: req.params.requestId },
+    include: { fromUser: true, toUser: true }
+  });
+  if (!request) return res.status(404).json({ error: 'Friend request not found' });
+  if (request.toUserId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (request.status !== 'PENDING') return res.status(409).json({ error: 'Friend request is not pending' });
+
+  const blockCheck = await ensureNotBlocked(prisma, request.fromUserId, request.toUserId);
+  if (!blockCheck.ok) return res.status(blockCheck.status).json({ error: blockCheck.error });
+
+  const [userAId, userBId] = sortPair(request.fromUserId, request.toUserId);
+  const result = await prisma.$transaction(async (tx) => {
+    const friendship = await tx.friendship.upsert({
+      where: { userAId_userBId: { userAId, userBId } },
+      update: {},
+      create: { userAId, userBId },
+      include: {
+        userA: true,
+        userB: true
+      }
+    });
+    const updatedRequest = await tx.friendRequest.update({
+      where: { id: request.id },
+      data: {
+        status: 'ACCEPTED',
+        respondedAt: new Date()
+      },
+      include: {
+        fromUser: true,
+        toUser: true
+      }
+    });
+    return { friendship, request: updatedRequest };
+  });
+
+  return res.json({
+    request: toFriendRequestResponse(result.request),
+    friendship: toFriendshipResponse({ friendship: result.friendship, currentUserId: req.auth.userId })
+  });
+});
+
+app.post('/friends/requests/:requestId/reject', requireAuth, async (req, res) => {
+  const request = await prisma.friendRequest.findUnique({
+    where: { id: req.params.requestId },
+    include: { fromUser: true, toUser: true }
+  });
+  if (!request) return res.status(404).json({ error: 'Friend request not found' });
+  if (request.toUserId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (request.status !== 'PENDING') return res.status(409).json({ error: 'Friend request is not pending' });
+
+  const updated = await prisma.friendRequest.update({
+    where: { id: request.id },
+    data: {
+      status: 'REJECTED',
+      respondedAt: new Date()
+    },
+    include: { fromUser: true, toUser: true }
+  });
+
+  return res.json({ request: toFriendRequestResponse(updated) });
+});
+
+app.post('/friends/requests/:requestId/cancel', requireAuth, async (req, res) => {
+  const request = await prisma.friendRequest.findUnique({
+    where: { id: req.params.requestId },
+    include: { fromUser: true, toUser: true }
+  });
+  if (!request) return res.status(404).json({ error: 'Friend request not found' });
+  if (request.fromUserId !== req.auth.userId) return res.status(403).json({ error: 'Forbidden' });
+  if (request.status !== 'PENDING') return res.status(409).json({ error: 'Friend request is not pending' });
+
+  const updated = await prisma.friendRequest.update({
+    where: { id: request.id },
+    data: {
+      status: 'CANCELED',
+      respondedAt: new Date()
+    },
+    include: { fromUser: true, toUser: true }
+  });
+
+  return res.json({ request: toFriendRequestResponse(updated) });
+});
+
+app.get('/friends', requireAuth, async (req, res) => {
+  const friendships = await prisma.friendship.findMany({
+    where: {
+      OR: [
+        { userAId: req.auth.userId },
+        { userBId: req.auth.userId }
+      ]
+    },
+    include: {
+      userA: true,
+      userB: true
+    },
+    orderBy: { createdAt: 'desc' }
+  });
+
+  return res.json({
+    friends: friendships.map((friendship) => toFriendshipResponse({ friendship, currentUserId: req.auth.userId }))
+  });
+});
+
+app.delete('/friends/:friendUserId', requireAuth, async (req, res) => {
+  const friendUserId = req.params.friendUserId;
+  if (!friendUserId) return res.status(400).json({ error: 'friendUserId is required' });
+  if (friendUserId === req.auth.userId) return res.status(400).json({ error: 'Cannot unfriend yourself' });
+
+  const [userAId, userBId] = sortPair(req.auth.userId, friendUserId);
+  await prisma.friendship.deleteMany({
+    where: {
+      userAId,
+      userBId
+    }
+  });
+
+  return res.json({ ok: true });
+});
+
+app.post('/friends/block', requireAuth, async (req, res) => {
+  const schema = z.object({
+    userId: z.string().min(1)
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+  if (parsed.data.userId === req.auth.userId) return res.status(400).json({ error: 'Cannot block yourself' });
+
+  const targetUser = await prisma.user.findUnique({
+    where: { id: parsed.data.userId },
+    select: { id: true }
+  });
+  if (!targetUser) return res.status(404).json({ error: 'User not found' });
+
+  const [userAId, userBId] = sortPair(req.auth.userId, parsed.data.userId);
+  await prisma.$transaction(async (tx) => {
+    await tx.friendBlock.upsert({
+      where: {
+        blockerUserId_blockedUserId: {
+          blockerUserId: req.auth.userId,
+          blockedUserId: parsed.data.userId
+        }
+      },
+      update: {},
+      create: {
+        blockerUserId: req.auth.userId,
+        blockedUserId: parsed.data.userId
+      }
+    });
+    await tx.friendship.deleteMany({
+      where: {
+        userAId,
+        userBId
+      }
+    });
+    await tx.friendRequest.updateMany({
+      where: {
+        OR: [
+          { fromUserId: req.auth.userId, toUserId: parsed.data.userId, status: 'PENDING' },
+          { fromUserId: parsed.data.userId, toUserId: req.auth.userId, status: 'PENDING' }
+        ]
+      },
+      data: {
+        status: 'CANCELED',
+        respondedAt: new Date()
+      }
+    });
+  });
+
+  return res.json({ ok: true });
+});
+
+app.post('/friends/unblock', requireAuth, async (req, res) => {
+  const schema = z.object({
+    userId: z.string().min(1)
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  await prisma.friendBlock.deleteMany({
+    where: {
+      blockerUserId: req.auth.userId,
+      blockedUserId: parsed.data.userId
+    }
+  });
+  return res.json({ ok: true });
 });
 
 app.get('/books', requireAuth, async (req, res) => {
