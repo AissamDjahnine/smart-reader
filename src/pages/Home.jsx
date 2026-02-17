@@ -4606,7 +4606,7 @@ const formatNotificationTimeAgo = (value) => {
           {showReadingSnapshot && (
             <aside
               data-testid="reading-snapshot-card"
-              className={`workspace-surface p-5 ${
+              className={`workspace-surface p-4 ${
                 isDarkLibraryTheme ? "workspace-surface-dark" : "workspace-surface-light library-zone-sidebar-light"
               }`}
             >
@@ -4636,16 +4636,16 @@ const formatNotificationTimeAgo = (value) => {
                   <span>{streakCount > 0 ? `${streakCount}d` : "No streak"}</span>
                 </div>
               </div>
-              <div className="mt-4 flex items-center gap-4">
+              <div className="mt-3 grid grid-cols-[78px_minmax(0,1fr)] items-center gap-3">
                 <div
-                  className="relative h-[86px] w-[86px] shrink-0 rounded-full"
+                  className="relative h-[78px] w-[78px] shrink-0 rounded-full"
                   style={{
                     background: `conic-gradient(${isDarkLibraryTheme ? "#60a5fa" : "#2563eb"} ${readingSnapshotProgress}%, ${isDarkLibraryTheme ? "#334155" : "#e5e7eb"} ${readingSnapshotProgress}% 100%)`
                   }}
                 >
-                  <div className={`absolute inset-[8px] rounded-full ${isDarkLibraryTheme ? "bg-slate-900" : "bg-white"}`} />
+                  <div className={`absolute inset-[7px] rounded-full ${isDarkLibraryTheme ? "bg-slate-900" : "bg-white"}`} />
                   <div className="absolute inset-0 flex flex-col items-center justify-center leading-tight">
-                    <span className={`text-[18px] font-extrabold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+                    <span className={`text-[17px] font-extrabold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
                       {readingSnapshot.startedBooks}
                     </span>
                     <span className={`text-[10px] font-semibold ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
@@ -4653,30 +4653,32 @@ const formatNotificationTimeAgo = (value) => {
                     </span>
                   </div>
                 </div>
-                <div className="space-y-3">
-                  <div className="inline-flex items-center gap-2">
-                    <Clock size={14} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
-                    <div className="leading-tight">
-                      <div className={`text-[11px] font-medium ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Overall time passed</div>
-                      <div className={`text-[22px] font-bold tracking-tight tabular-nums whitespace-nowrap ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+                <div className="space-y-2">
+                  <div className={`rounded-lg px-2 py-1.5 ${isDarkLibraryTheme ? "bg-slate-900/55" : "bg-white/70"}`}>
+                    <div className="inline-flex items-center gap-1.5">
+                      <Clock size={13} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
+                      <div className={`text-[10px] font-semibold uppercase tracking-[0.08em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Total time</div>
+                    </div>
+                    <div className={`mt-1 text-[34px] leading-none font-extrabold tracking-tight tabular-nums whitespace-nowrap ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
                         {formatSnapshotDuration(readingSnapshot.totalSeconds)}
-                      </div>
                     </div>
                   </div>
-                  <div className="inline-flex items-center gap-2">
-                    <FileText size={14} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
-                    <div className="leading-tight">
-                      <div className={`text-[11px] font-medium ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Pages done</div>
-                      <div className={`text-[22px] font-bold tracking-tight tabular-nums ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
+                  <div className={`rounded-lg px-2 py-1.5 ${isDarkLibraryTheme ? "bg-slate-900/55" : "bg-white/70"}`}>
+                    <div className="inline-flex items-center gap-1.5">
+                      <FileText size={13} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
+                      <div className={`text-[10px] font-semibold uppercase tracking-[0.08em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Pages done</div>
+                    </div>
+                    <div className={`mt-1 text-[26px] leading-none font-bold tracking-tight tabular-nums ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
                         {readingSnapshot.pagesDone}
-                      </div>
                     </div>
                   </div>
                 </div>
               </div>
-              <div className={`mt-4 inline-flex w-full items-center gap-2 border-t pt-3 text-[12px] ${isDarkLibraryTheme ? "border-slate-700 text-slate-400" : "border-gray-100 text-gray-600"}`}>
+              <div className={`mt-3 inline-flex w-full items-center justify-between gap-2 border-t pt-2.5 text-[12px] ${isDarkLibraryTheme ? "border-slate-700 text-slate-400" : "border-gray-100 text-gray-600"}`}>
+                <span className="inline-flex items-center gap-2">
                 <History size={14} className={isDarkLibraryTheme ? "text-slate-500" : "text-gray-400"} />
                 <span className="font-medium">Today</span>
+                </span>
                 <span className={`ml-1 font-semibold ${isDarkLibraryTheme ? "text-blue-300" : "text-blue-600"}`}>
                   {formatSessionDuration(readingSnapshot.todaySeconds)}
                 </span>
