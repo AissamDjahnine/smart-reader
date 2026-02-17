@@ -19,6 +19,20 @@ enum ShareStatus {
   REJECTED
 }
 
+enum LoanStatus {
+  PENDING
+  ACTIVE
+  RETURNED
+  EXPIRED
+  REVOKED
+  REJECTED
+}
+
+enum AnnotationVisibility {
+  PRIVATE
+  SHARED_WITH_LENDER
+}
+
 model User {
   id           String      @id @default(cuid())
   email        String      @unique
@@ -33,6 +47,10 @@ model User {
   highlights   Highlight[]
   sentShares   BookShare[] @relation("shares_sent")
   recvShares   BookShare[] @relation("shares_received")
+  lentLoans    BookLoan[]  @relation("loans_lent")
+  borrowedLoans BookLoan[] @relation("loans_borrowed")
+  loanAuditActor LoanAuditEvent[] @relation("loan_audit_actor")
+  loanAuditTarget LoanAuditEvent[] @relation("loan_audit_target")
 }
 
 model InviteCode {
@@ -59,6 +77,7 @@ model Book {
   notes       Note[]
   highlights  Highlight[]
   shares      BookShare[]
+  loans       BookLoan[]
 }
 
 model UserBook {
@@ -132,4 +151,55 @@ model BookShare {
 
   @@index([toUserId, status])
   @@unique([bookId, fromUserId, toUserId])
+}
+
+model BookLoan {
+  id                           String               @id @default(cuid())
+  bookId                        String
+  lenderId                      String
+  borrowerId                    String
+  status                        LoanStatus           @default(PENDING)
+  message                       String?
+  durationDays                  Int                  @default(14)
+  graceDays                     Int                  @default(0)
+  requestedAt                   DateTime             @default(now())
+  acceptedAt                    DateTime?
+  dueAt                         DateTime?
+  returnedAt                    DateTime?
+  revokedAt                     DateTime?
+  expiredAt                     DateTime?
+  exportAvailableUntil          DateTime?
+  createdUserBookOnAccept       Boolean              @default(false)
+  canAddHighlights              Boolean              @default(true)
+  canEditHighlights             Boolean              @default(true)
+  canAddNotes                   Boolean              @default(true)
+  canEditNotes                  Boolean              @default(true)
+  annotationVisibility          AnnotationVisibility @default(PRIVATE)
+  createdAt                     DateTime             @default(now())
+  updatedAt                     DateTime             @updatedAt
+
+  book                          Book                 @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  lender                        User                 @relation("loans_lent", fields: [lenderId], references: [id], onDelete: Cascade)
+  borrower                      User                 @relation("loans_borrowed", fields: [borrowerId], references: [id], onDelete: Cascade)
+  auditEvents                   LoanAuditEvent[]
+
+  @@index([borrowerId, status])
+  @@index([lenderId, status])
+  @@index([bookId, status])
+}
+
+model LoanAuditEvent {
+  id             String   @id @default(cuid())
+  loanId          String
+  actorUserId     String?
+  targetUserId    String?
+  action          String
+  detailsJson     String?
+  createdAt       DateTime @default(now())
+
+  loan            BookLoan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  actorUser       User?    @relation("loan_audit_actor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  targetUser      User?    @relation("loan_audit_target", fields: [targetUserId], references: [id], onDelete: SetNull)
+
+  @@index([loanId, createdAt])
 }
