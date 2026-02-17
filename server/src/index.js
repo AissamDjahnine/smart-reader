@@ -54,6 +54,31 @@ const includeLoanGraph = {
   borrower: { select: { id: true, email: true, displayName: true, avatarUrl: true } }
 };
 
+const getActiveBorrowLoan = async (userId, bookId) => {
+  if (!userId || !bookId) return null;
+  return prisma.bookLoan.findFirst({
+    where: {
+      bookId,
+      borrowerId: userId,
+      status: 'ACTIVE'
+    },
+    orderBy: { acceptedAt: 'desc' }
+  });
+};
+
+const getActiveBorrowerIdsForLender = async (lenderId, bookId) => {
+  if (!lenderId || !bookId) return [];
+  const loans = await prisma.bookLoan.findMany({
+    where: {
+      bookId,
+      lenderId,
+      status: 'ACTIVE'
+    },
+    select: { borrowerId: true }
+  });
+  return loans.map((loan) => loan.borrowerId).filter(Boolean);
+};
+
 const toLoanResponse = (loan) => ({
   id: loan.id,
   status: loan.status,
@@ -398,8 +423,14 @@ app.patch('/books/:bookId/progress', requireAuth, requireBookAccess, async (req,
 });
 
 app.get('/books/:bookId/highlights', requireAuth, requireBookAccess, async (req, res) => {
+  const hiddenBorrowerIds = await getActiveBorrowerIdsForLender(req.auth.userId, req.params.bookId);
   const highlights = await prisma.highlight.findMany({
-    where: { bookId: req.params.bookId },
+    where: {
+      bookId: req.params.bookId,
+      ...(hiddenBorrowerIds.length
+        ? { createdByUserId: { notIn: hiddenBorrowerIds } }
+        : {})
+    },
     include: {
       createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } }
     },
@@ -420,6 +451,11 @@ app.post('/books/:bookId/highlights', requireAuth, requireBookAccess, async (req
   });
   const parsed = schema.safeParse(req.body || {});
   if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const activeBorrowLoan = await getActiveBorrowLoan(req.auth.userId, req.params.bookId);
+  if (activeBorrowLoan && !activeBorrowLoan.canAddHighlights) {
+    return res.status(403).json({ error: 'Lender disabled adding highlights for this loan' });
+  }
 
   await prisma.highlight.upsert({
     where: {
@@ -482,6 +518,11 @@ app.patch('/highlights/:highlightId', requireAuth, async (req, res) => {
   });
   if (!access) return res.status(403).json({ error: 'No access to this book' });
 
+  const activeBorrowLoan = await getActiveBorrowLoan(req.auth.userId, existing.bookId);
+  if (activeBorrowLoan && !activeBorrowLoan.canEditHighlights) {
+    return res.status(403).json({ error: 'Lender disabled editing highlights for this loan' });
+  }
+
   await prisma.highlight.update({
     where: { id: existing.id },
     data: {
@@ -510,6 +551,11 @@ app.delete('/highlights/:highlightId', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'You can delete only your own highlights' });
   }
 
+  const activeBorrowLoan = await getActiveBorrowLoan(req.auth.userId, existing.bookId);
+  if (activeBorrowLoan && !activeBorrowLoan.canEditHighlights) {
+    return res.status(403).json({ error: 'Lender disabled deleting highlights for this loan' });
+  }
+
   await prisma.highlight.delete({ where: { id: existing.id } });
   const highlights = await prisma.highlight.findMany({
     where: { bookId: existing.bookId },
@@ -521,8 +567,14 @@ app.delete('/highlights/:highlightId', requireAuth, async (req, res) => {
 });
 
 app.get('/books/:bookId/notes', requireAuth, requireBookAccess, async (req, res) => {
+  const hiddenBorrowerIds = await getActiveBorrowerIdsForLender(req.auth.userId, req.params.bookId);
   const notes = await prisma.note.findMany({
-    where: { bookId: req.params.bookId },
+    where: {
+      bookId: req.params.bookId,
+      ...(hiddenBorrowerIds.length
+        ? { createdByUserId: { notIn: hiddenBorrowerIds } }
+        : {})
+    },
     include: { createdBy: { select: { id: true, email: true, displayName: true, avatarUrl: true } } },
     orderBy: { createdAt: 'asc' }
   });
@@ -537,6 +589,11 @@ app.post('/books/:bookId/notes', requireAuth, requireBookAccess, async (req, res
   });
   const parsed = schema.safeParse(req.body || {});
   if (!parsed.success) return res.status(400).json({ error: 'Invalid payload' });
+
+  const activeBorrowLoan = await getActiveBorrowLoan(req.auth.userId, req.params.bookId);
+  if (activeBorrowLoan && !activeBorrowLoan.canAddNotes) {
+    return res.status(403).json({ error: 'Lender disabled adding notes for this loan' });
+  }
 
   const note = await prisma.note.create({
     data: {
@@ -567,6 +624,11 @@ app.patch('/notes/:noteId', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'You can edit only your own notes' });
   }
 
+  const activeBorrowLoan = await getActiveBorrowLoan(req.auth.userId, existing.bookId);
+  if (activeBorrowLoan && !activeBorrowLoan.canEditNotes) {
+    return res.status(403).json({ error: 'Lender disabled editing notes for this loan' });
+  }
+
   const note = await prisma.note.update({
     where: { id: existing.id },
     data: {
@@ -585,6 +647,11 @@ app.delete('/notes/:noteId', requireAuth, async (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Note not found' });
   if (existing.createdByUserId !== req.auth.userId) {
     return res.status(403).json({ error: 'You can delete only your own notes' });
+  }
+
+  const activeBorrowLoan = await getActiveBorrowLoan(req.auth.userId, existing.bookId);
+  if (activeBorrowLoan && !activeBorrowLoan.canEditNotes) {
+    return res.status(403).json({ error: 'Lender disabled deleting notes for this loan' });
   }
 
   await prisma.note.delete({ where: { id: existing.id } });
