@@ -30,7 +30,16 @@ export default function LibraryToolbarSection({
   onClearCollectionFilter,
   onClearSort,
   canShowResetFilters,
-  onResetFilters
+  onResetFilters,
+  quickFilterCounts = {
+    toRead: 0,
+    inProgress: 0,
+    finished: 0,
+    favorites: 0
+  },
+  isFavoritesQuickFilterActive = false,
+  onQuickStatusFilterSelect,
+  onQuickFavoritesToggle
 }) {
   const sortLabel = sortOptions.find((s) => s.value === sortBy)?.label || "Last read (newest)";
 
@@ -42,6 +51,68 @@ export default function LibraryToolbarSection({
 
   return (
     <>
+      <div
+        data-testid="library-quick-filters"
+        className="mb-4 flex flex-wrap items-center gap-2"
+      >
+        <button
+          type="button"
+          data-testid="library-quick-filter-to-read"
+          onClick={() => onQuickStatusFilterSelect?.("to-read")}
+          aria-pressed={statusFilter === "to-read"}
+          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+            statusFilter === "to-read"
+              ? (isDarkLibraryTheme ? "border-blue-500 bg-blue-950/55 text-blue-200" : "border-blue-200 bg-blue-50 text-blue-700")
+              : (isDarkLibraryTheme ? "border-slate-700 bg-slate-800 text-slate-300 hover:border-blue-500" : "border-gray-200 bg-white text-gray-700 hover:border-blue-200")
+          }`}
+        >
+          <span>To read</span>
+          <span data-testid="library-quick-filter-to-read-count">{quickFilterCounts.toRead}</span>
+        </button>
+        <button
+          type="button"
+          data-testid="library-quick-filter-in-progress"
+          onClick={() => onQuickStatusFilterSelect?.("in-progress")}
+          aria-pressed={statusFilter === "in-progress"}
+          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+            statusFilter === "in-progress"
+              ? (isDarkLibraryTheme ? "border-blue-500 bg-blue-950/55 text-blue-200" : "border-blue-200 bg-blue-50 text-blue-700")
+              : (isDarkLibraryTheme ? "border-slate-700 bg-slate-800 text-slate-300 hover:border-blue-500" : "border-gray-200 bg-white text-gray-700 hover:border-blue-200")
+          }`}
+        >
+          <span>In progress</span>
+          <span data-testid="library-quick-filter-in-progress-count">{quickFilterCounts.inProgress}</span>
+        </button>
+        <button
+          type="button"
+          data-testid="library-quick-filter-finished"
+          onClick={() => onQuickStatusFilterSelect?.("finished")}
+          aria-pressed={statusFilter === "finished"}
+          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+            statusFilter === "finished"
+              ? (isDarkLibraryTheme ? "border-blue-500 bg-blue-950/55 text-blue-200" : "border-blue-200 bg-blue-50 text-blue-700")
+              : (isDarkLibraryTheme ? "border-slate-700 bg-slate-800 text-slate-300 hover:border-blue-500" : "border-gray-200 bg-white text-gray-700 hover:border-blue-200")
+          }`}
+        >
+          <span>Finished</span>
+          <span data-testid="library-quick-filter-finished-count">{quickFilterCounts.finished}</span>
+        </button>
+        <button
+          type="button"
+          data-testid="library-quick-filter-favorites"
+          onClick={() => onQuickFavoritesToggle?.()}
+          aria-pressed={isFavoritesQuickFilterActive}
+          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+            isFavoritesQuickFilterActive
+              ? (isDarkLibraryTheme ? "border-blue-500 bg-blue-950/55 text-blue-200" : "border-blue-200 bg-blue-50 text-blue-700")
+              : (isDarkLibraryTheme ? "border-slate-700 bg-slate-800 text-slate-300 hover:border-blue-500" : "border-gray-200 bg-white text-gray-700 hover:border-blue-200")
+          }`}
+        >
+          <span>Favorites</span>
+          <span data-testid="library-quick-filter-favorites-count">{quickFilterCounts.favorites}</span>
+        </button>
+      </div>
+
       <div
         data-testid="library-toolbar-sticky"
         className={`sticky top-3 z-20 mb-4 rounded-2xl pb-2 backdrop-blur ${

@@ -88,6 +88,7 @@ export default function LibraryReadingStatisticsSection({
   const safeBorrowedLoans = useMemo(() => (Array.isArray(borrowedLoans) ? borrowedLoans : []), [borrowedLoans]);
   const safeLentLoans = useMemo(() => (Array.isArray(lentLoans) ? lentLoans : []), [lentLoans]);
   const [timeRange, setTimeRange] = useState("30d");
+  const [heatmapMetric, setHeatmapMetric] = useState("time");
 
   const sessionRows = useMemo(() => (
     safeBooks.flatMap((book) => {
@@ -182,6 +183,38 @@ export default function LibraryReadingStatisticsSection({
     () => sessionsInRange.reduce((sum, session) => sum + session.pagesEstimate, 0),
     [sessionsInRange]
   );
+  const heatmapData = useMemo(() => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const monthLabel = firstDay.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+
+    const valueByKey = new Map();
+    sessionsInRange.forEach((session) => {
+      const date = new Date(session.endMs);
+      if (!Number.isFinite(date.getTime())) return;
+      if (date.getFullYear() !== year || date.getMonth() !== month) return;
+      const key = toLocalDateKey(session.endMs);
+      const current = valueByKey.get(key) || 0;
+      const next = heatmapMetric === "pages" ? session.pagesEstimate : session.seconds;
+      valueByKey.set(key, current + next);
+    });
+
+    const values = Array.from(valueByKey.values());
+    const maxValue = values.length ? Math.max(...values) : 0;
+    const days = [];
+    for (let day = 1; day <= lastDay.getDate(); day += 1) {
+      const date = new Date(year, month, day);
+      const dateKey = toLocalDateKey(date);
+      const value = valueByKey.get(dateKey) || 0;
+      const intensity = maxValue > 0 ? Math.ceil((value / maxValue) * 4) : 0;
+      days.push({ dateKey, value, intensity });
+    }
+
+    return { monthLabel, days };
+  }, [sessionsInRange, heatmapMetric]);
 
   const topBooks = useMemo(() => {
     const byBook = new Map();
@@ -391,6 +424,68 @@ export default function LibraryReadingStatisticsSection({
           </div>
           <div className={`mt-2 text-2xl font-extrabold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
             {Math.max(0, Number(highlightsCount) || 0)}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <div className={`${isDarkLibraryTheme ? "workspace-card-dark" : "workspace-card"} p-4`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className={`text-sm font-bold ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>Monthly heatmap</h3>
+            <div className="flex items-center gap-2">
+              <span
+                data-testid="reading-stats-heatmap-month"
+                className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}
+              >
+                {heatmapData.monthLabel}
+              </span>
+              <select
+                data-testid="reading-stats-heatmap-metric"
+                value={heatmapMetric}
+                onChange={(event) => setHeatmapMetric(event.target.value)}
+                className={`rounded-lg border px-2 py-1 text-xs font-semibold outline-none focus:ring-2 focus:ring-blue-500 ${
+                  isDarkLibraryTheme ? "border-slate-600 bg-slate-800 text-slate-100" : "border-gray-200 bg-white text-slate-700"
+                }`}
+              >
+                <option value="time">Time</option>
+                <option value="pages">Pages</option>
+              </select>
+            </div>
+          </div>
+          <div
+            data-testid="reading-stats-monthly-heatmap"
+            className="mt-3 grid grid-cols-7 gap-1"
+          >
+            {heatmapData.days.map((day) => {
+              const darkBg = day.intensity === 0
+                ? "bg-slate-800/70"
+                : day.intensity === 1
+                  ? "bg-blue-900/45"
+                  : day.intensity === 2
+                    ? "bg-blue-700/55"
+                    : day.intensity === 3
+                      ? "bg-blue-600/75"
+                      : "bg-blue-500";
+              const lightBg = day.intensity === 0
+                ? "bg-gray-100"
+                : day.intensity === 1
+                  ? "bg-blue-100"
+                  : day.intensity === 2
+                    ? "bg-blue-200"
+                    : day.intensity === 3
+                      ? "bg-blue-400"
+                      : "bg-blue-600";
+              return (
+                <div
+                  key={day.dateKey}
+                  data-testid="reading-heatmap-cell"
+                  data-date-key={day.dateKey}
+                  data-intensity={day.intensity}
+                  title={`${day.dateKey}: ${Math.round(day.value)}`}
+                  className={`h-4 rounded-[4px] ${isDarkLibraryTheme ? darkBg : lightBg}`}
+                />
+              );
+            })}
           </div>
         </div>
       </div>

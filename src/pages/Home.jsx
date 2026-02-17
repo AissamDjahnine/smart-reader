@@ -2997,6 +2997,21 @@ export default function Home() {
     }),
     [trashedBooks, debouncedSearchQuery, trashSortBy]
   );
+  const quickFilterCounts = useMemo(() => {
+    let toRead = 0;
+    let inProgress = 0;
+    let finished = 0;
+    let favorites = 0;
+    activeBooks.forEach((book) => {
+      const progress = normalizeNumber(book?.progress);
+      const started = isBookStarted(book);
+      if (book?.isToRead) toRead += 1;
+      if (started && progress < 100) inProgress += 1;
+      if (progress >= 100) finished += 1;
+      if (book?.isFavorite) favorites += 1;
+    });
+    return { toRead, inProgress, finished, favorites };
+  }, [activeBooks, isBookStarted]);
 
   useEffect(() => {
     if (librarySection === "trash") {
@@ -4633,7 +4648,7 @@ const formatNotificationTimeAgo = (value) => {
                         : (isDarkLibraryTheme ? "text-slate-500" : "text-gray-400")
                     }
                   />
-                  <span>{streakCount > 0 ? `${streakCount}d` : "No streak"}</span>
+                  <span>{streakCount > 0 ? `${streakCount}-day streak` : "No streak yet"}</span>
                 </div>
               </div>
               <div className="mt-3 grid grid-cols-[78px_minmax(0,1fr)] items-center gap-3">
@@ -4657,7 +4672,7 @@ const formatNotificationTimeAgo = (value) => {
                   <div className={`rounded-lg px-2 py-1.5 ${isDarkLibraryTheme ? "bg-slate-900/55" : "bg-white/70"}`}>
                     <div className="inline-flex items-center gap-1.5">
                       <Clock size={13} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
-                      <div className={`text-[10px] font-semibold uppercase tracking-[0.08em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Total time</div>
+                      <div className={`text-[10px] font-semibold uppercase tracking-[0.08em] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Overall time passed (hours)</div>
                     </div>
                     <div className={`mt-1 text-[34px] leading-none font-extrabold tracking-tight tabular-nums whitespace-nowrap ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
                         {formatSnapshotDuration(readingSnapshot.totalSeconds)}
@@ -5330,6 +5345,10 @@ const formatNotificationTimeAgo = (value) => {
             onClearSort={() => setSortBy("last-read-desc")}
             canShowResetFilters={canShowResetFilters}
             onResetFilters={resetLibraryFilters}
+            quickFilterCounts={quickFilterCounts}
+            isFavoritesQuickFilterActive={flagFilters.includes("favorites")}
+            onQuickStatusFilterSelect={setStatusFilter}
+            onQuickFavoritesToggle={() => toggleFlagFilter("favorites")}
           />
         )}
         {shouldShowLibraryHomeContent && sortedBooks.length > 0 && (
