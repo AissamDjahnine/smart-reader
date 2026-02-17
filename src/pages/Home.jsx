@@ -3825,6 +3825,49 @@ const formatNotificationTimeAgo = (value) => {
     const remainingHours = Math.max(1, Math.floor(remainingMs / (60 * 60 * 1000)));
     return `${remainingHours}h left`;
   };
+  const loanReminderDays = Math.max(0, Math.min(30, Number(accountProfile?.loanReminderDays) || 0));
+  const getLoanVisualStatusKey = (loan, dueSoonDays = 0) => {
+    const raw = String(loan?.status || "").toUpperCase();
+    if (!raw) return "PENDING";
+    if (raw !== "ACTIVE") return raw;
+    const deadline = getLoanDeadline(loan);
+    if (!deadline) return "ACTIVE";
+    const diffDays = Math.ceil((deadline.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+    if (diffDays < 0) return "OVERDUE";
+    if (dueSoonDays > 0 && diffDays <= dueSoonDays) return "DUE_SOON";
+    return "ACTIVE";
+  };
+  const getLoanStatusMeta = (loan, dueSoonDays = 0) => {
+    const key = getLoanVisualStatusKey(loan, dueSoonDays);
+    const labelMap = {
+      PENDING: "Pending",
+      ACTIVE: "Active",
+      DUE_SOON: "Due Soon",
+      OVERDUE: "Overdue",
+      RETURNED: "Returned",
+      REVOKED: "Revoked",
+      EXPIRED: "Expired",
+      REJECTED: "Rejected"
+    };
+    return {
+      key,
+      label: labelMap[key] || key
+    };
+  };
+  const getLoanStatusChipClass = (statusKey) => {
+    const key = String(statusKey || "").toUpperCase();
+    const themeMap = {
+      PENDING: isDarkLibraryTheme ? "bg-slate-800 text-slate-300" : "bg-gray-100 text-gray-700",
+      ACTIVE: isDarkLibraryTheme ? "bg-emerald-900/35 text-emerald-200" : "bg-emerald-100 text-emerald-700",
+      DUE_SOON: isDarkLibraryTheme ? "bg-amber-900/35 text-amber-200" : "bg-amber-100 text-amber-700",
+      OVERDUE: isDarkLibraryTheme ? "bg-rose-900/35 text-rose-200" : "bg-rose-100 text-rose-700",
+      RETURNED: isDarkLibraryTheme ? "bg-indigo-900/35 text-indigo-200" : "bg-indigo-100 text-indigo-700",
+      REVOKED: isDarkLibraryTheme ? "bg-rose-900/35 text-rose-200" : "bg-rose-100 text-rose-700",
+      EXPIRED: isDarkLibraryTheme ? "bg-slate-700 text-slate-200" : "bg-slate-200 text-slate-700",
+      REJECTED: isDarkLibraryTheme ? "bg-slate-800 text-slate-300" : "bg-gray-100 text-gray-700"
+    };
+    return themeMap[key] || themeMap.PENDING;
+  };
   const formatLoanDate = (value) => {
     if (!value) return "N/A";
     const date = new Date(value);
@@ -3871,7 +3914,6 @@ const formatNotificationTimeAgo = (value) => {
     isDuplicateTitleBook,
     stripDuplicateTitleSuffix
   ]);
-  const loanReminderDays = Math.max(0, Math.min(30, Number(accountProfile?.loanReminderDays) || 0));
   const loanNotifications = useMemo(() => {
     const items = [];
     const nowMs = Date.now();
@@ -5552,6 +5594,10 @@ const formatNotificationTimeAgo = (value) => {
                       key={loan.id}
                       className={`rounded-xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200"}`}
                     >
+                      {(() => {
+                        const statusMeta = getLoanStatusMeta(loan, loanReminderDays);
+                        return (
+                          <>
                       <div className="flex items-start gap-3">
                         <div className={`h-20 w-14 shrink-0 overflow-hidden rounded-md border ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800" : "border-gray-200 bg-gray-100"}`}>
                           {loan.book?.cover ? (
@@ -5561,7 +5607,12 @@ const formatNotificationTimeAgo = (value) => {
                           )}
                         </div>
                         <div className="flex-1">
-                          <p className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{loan.book?.title || "Book"}</p>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className={`text-sm font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>{loan.book?.title || "Book"}</p>
+                            <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${getLoanStatusChipClass(statusMeta.key)}`}>
+                              {statusMeta.label}
+                            </span>
+                          </div>
                           <p className={`mt-1 text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-600"}`}>
                             from {loan.lender?.displayName || loan.lender?.email} · {loan.durationDays}d + {loan.graceDays}d grace
                           </p>
@@ -5598,6 +5649,9 @@ const formatNotificationTimeAgo = (value) => {
                           {isLoanActionBusyId === `reject-${loan.id}` ? "Rejecting..." : "Reject"}
                         </button>
                       </div>
+                          </>
+                        );
+                      })()}
                     </article>
                   ))}
                 </div>
@@ -5685,6 +5739,7 @@ const formatNotificationTimeAgo = (value) => {
               <div className={loanViewMode === "list" ? "space-y-3" : `grid gap-3 ${loanDensityMode === "compact" ? "grid-cols-2 md:grid-cols-3 xl:grid-cols-4" : "grid-cols-1 md:grid-cols-2 xl:grid-cols-3"}`}>
                 {borrowedLoans.map((loan) => {
                   const pendingRenewals = pendingRenewalsByLoanId.get(loan.id) || [];
+                  const statusMeta = getLoanStatusMeta(loan, loanReminderDays);
                   return (
                   <article key={loan.id} className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200"} ${loanViewMode === "list" ? "" : "h-full"}`}>
                     <div className="flex items-start gap-3">
@@ -5710,14 +5765,8 @@ const formatNotificationTimeAgo = (value) => {
                           </p>
                         )}
                       </div>
-                      <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
-                        loan.status === "ACTIVE"
-                          ? (isDarkLibraryTheme ? "bg-emerald-900/35 text-emerald-200" : "bg-emerald-100 text-emerald-700")
-                          : loan.status === "REVOKED" || loan.status === "EXPIRED"
-                            ? (isDarkLibraryTheme ? "bg-rose-900/35 text-rose-200" : "bg-rose-100 text-rose-700")
-                            : (isDarkLibraryTheme ? "bg-slate-800 text-slate-300" : "bg-gray-100 text-gray-700")
-                      }`}>
-                        {loan.status} · {formatLoanRemaining(loan)}
+                      <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${getLoanStatusChipClass(statusMeta.key)}`}>
+                        {statusMeta.label} · {formatLoanRemaining(loan)}
                       </span>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -5774,6 +5823,7 @@ const formatNotificationTimeAgo = (value) => {
               <div className={loanViewMode === "list" ? "space-y-3" : `grid gap-3 ${loanDensityMode === "compact" ? "grid-cols-2 md:grid-cols-3 xl:grid-cols-4" : "grid-cols-1 md:grid-cols-2 xl:grid-cols-3"}`}>
                 {lentLoans.map((loan) => {
                   const pendingRenewals = pendingRenewalsByLoanId.get(loan.id) || [];
+                  const statusMeta = getLoanStatusMeta(loan, loanReminderDays);
                   return (
                   <article key={loan.id} className={`rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200"} ${loanViewMode === "list" ? "" : "h-full"}`}>
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -5796,12 +5846,8 @@ const formatNotificationTimeAgo = (value) => {
                         </p>
                         </div>
                       </div>
-                      <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
-                        loan.status === "ACTIVE"
-                          ? (isDarkLibraryTheme ? "bg-emerald-900/35 text-emerald-200" : "bg-emerald-100 text-emerald-700")
-                          : (isDarkLibraryTheme ? "bg-slate-800 text-slate-300" : "bg-gray-100 text-gray-700")
-                      }`}>
-                        {loan.status}
+                      <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${getLoanStatusChipClass(statusMeta.key)}`}>
+                        {statusMeta.label}
                       </span>
                     </div>
                     {loan.status === "ACTIVE" && (
@@ -5873,8 +5919,17 @@ const formatNotificationTimeAgo = (value) => {
                     <div className="space-y-2">
                       {group.events.map((event) => (
                         <div key={event.id} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700/80 bg-slate-900/40" : "border-gray-200 bg-gray-50"}`}>
+                          {(() => {
+                            const statusMeta = getLoanStatusMeta(event.loan, loanReminderDays);
+                            return (
+                              <>
                           <div className="flex items-center justify-between gap-2">
-                            <p className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-200" : "text-gray-800"}`}>{formatLoanActionLabel(event.action)}</p>
+                            <div className="flex items-center gap-2">
+                              <p className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-200" : "text-gray-800"}`}>{formatLoanActionLabel(event.action)}</p>
+                              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${getLoanStatusChipClass(statusMeta.key)}`}>
+                                {statusMeta.label}
+                              </span>
+                            </div>
                             <p className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>{formatLoanDate(event.createdAt)}</p>
                           </div>
                           <div className="mt-1 flex items-center gap-2 text-xs">
@@ -5892,6 +5947,9 @@ const formatNotificationTimeAgo = (value) => {
                               <span className={isDarkLibraryTheme ? "text-slate-300" : "text-gray-700"}>{event.targetUser?.displayName || event.targetUser?.email || "N/A"}</span>
                             </span>
                           </div>
+                              </>
+                            );
+                          })()}
                         </div>
                       ))}
                     </div>
