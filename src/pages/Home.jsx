@@ -4233,7 +4233,7 @@ const formatNotificationTimeAgo = (value) => {
                   <div className="inline-flex items-center gap-2">
                     <Clock size={14} className={isDarkLibraryTheme ? "text-slate-400" : "text-gray-400"} />
                     <div className="leading-tight">
-                      <div className={`text-[11px] font-medium ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Reading time</div>
+                      <div className={`text-[11px] font-medium ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Hours</div>
                       <div className={`text-[22px] font-bold tracking-tight tabular-nums whitespace-nowrap ${isDarkLibraryTheme ? "text-slate-100" : "text-[#1A1A2E]"}`}>
                         {formatSnapshotDuration(readingSnapshot.totalSeconds)}
                       </div>
@@ -5031,6 +5031,21 @@ const formatNotificationTimeAgo = (value) => {
                 }`}
               >
                 Clear selection
+              </button>
+              <button
+                type="button"
+                data-testid="library-exit-select-mode"
+                onClick={() => {
+                  setSelectedLibraryBookIds([]);
+                  setIsLibrarySelectionMode(false);
+                }}
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  isDarkLibraryTheme
+                    ? "border-slate-700 bg-slate-800 text-slate-200 hover:border-blue-500 hover:text-blue-300"
+                    : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:text-blue-700"
+                }`}
+              >
+                Exit
               </button>
             </div>
           ) : (
