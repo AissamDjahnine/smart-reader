@@ -300,6 +300,27 @@ When this variable is set:
 - Book access requires `UserBook` relation.
 - Recommendation records are stored in `BookShare`.
 - Loan events/timeline are stored in `LoanAuditEvent` and shown in `History`.
+- Loan state visibility in UI:
+  - Book cover badges in library and continue-reading:
+    - no badge = owned/non-loan
+    - `Borrowed` badge = active borrowed loan
+    - `Lent` badge = active lent loan
+  - Library filter includes `Borrowed books` and `Lent books`.
+- Collaboration workspace tabs:
+  - `My library`, `Borrowed`, `Lent`, `History`, `Inbox`.
+- Borrowed/Lent pages include richer book-first cards with cover thumbnails and view controls:
+  - `Grid`
+  - `Compact`
+  - `List`
+- History is grouped at book level:
+  - all lifecycle events for the same book are shown together
+  - each event row shows actor/target identity with small avatar chips.
+- Inbox has two collaboration streams:
+  - recommendation shares (`BookShare`)
+  - loan inbox (`BookLoan` requests).
+- Borrow reminders are surfaced in both:
+  - Notification Center events (`due soon`, `overdue`)
+  - Inbox `Borrow Reminders` panel.
 
 ### Borrow/Lend lifecycle
 
@@ -320,6 +341,12 @@ When this variable is set:
   - `JSON`
   - `PDF` (summary export)
 - After export window ends, annotations are no longer accessible through loan export endpoints.
+
+### Borrow reminder setting
+
+- In `Settings`, users can define `Borrow reminder (days before due)` with range `0..30`.
+- `0` disables due-soon reminders.
+- Due-soon and overdue reminders are generated from active borrowed loans.
 
 ### Backend migrations
 
