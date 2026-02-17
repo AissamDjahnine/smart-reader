@@ -14,6 +14,7 @@ import { clampPercent, ensureEpubHash, statusFromProgress, toBookResponse } from
 import {
   LOAN_EXPORT_WINDOW_DAYS,
   getActiveBorrowLoan,
+  ensureBookEntitlement,
   resolveLoanAnnotationScope,
   buildAnnotationAccessWhere,
   requireBorrowCapability,
@@ -544,6 +545,11 @@ app.patch('/highlights/:highlightId', requireAuth, async (req, res) => {
   if (existing.createdByUserId !== req.auth.userId) {
     return res.status(403).json({ error: 'You can edit only your own highlights' });
   }
+  const entitlement = await ensureBookEntitlement(prisma, {
+    userId: req.auth.userId,
+    bookId: existing.bookId
+  });
+  if (!entitlement.userBook) return res.status(403).json({ error: 'No access to this book' });
   const expectedRevision = parseExpectedRevision(req);
   if (expectedRevision !== null && expectedRevision !== existing.revision) {
     return res.status(409).json({
@@ -552,11 +558,6 @@ app.patch('/highlights/:highlightId', requireAuth, async (req, res) => {
       currentRevision: existing.revision
     });
   }
-
-  const access = await prisma.userBook.findUnique({
-    where: { userId_bookId: { userId: req.auth.userId, bookId: existing.bookId } }
-  });
-  if (!access) return res.status(403).json({ error: 'No access to this book' });
 
   const capability = await requireBorrowCapability(prisma, {
     userId: req.auth.userId,
@@ -599,6 +600,11 @@ app.delete('/highlights/:highlightId', requireAuth, async (req, res) => {
   if (existing.createdByUserId !== req.auth.userId) {
     return res.status(403).json({ error: 'You can delete only your own highlights' });
   }
+  const entitlement = await ensureBookEntitlement(prisma, {
+    userId: req.auth.userId,
+    bookId: existing.bookId
+  });
+  if (!entitlement.userBook) return res.status(403).json({ error: 'No access to this book' });
   const expectedRevision = parseExpectedRevision(req);
   if (expectedRevision !== null && expectedRevision !== existing.revision) {
     return res.status(409).json({
@@ -689,6 +695,11 @@ app.patch('/notes/:noteId', requireAuth, async (req, res) => {
   if (existing.createdByUserId !== req.auth.userId) {
     return res.status(403).json({ error: 'You can edit only your own notes' });
   }
+  const entitlement = await ensureBookEntitlement(prisma, {
+    userId: req.auth.userId,
+    bookId: existing.bookId
+  });
+  if (!entitlement.userBook) return res.status(403).json({ error: 'No access to this book' });
   const expectedRevision = parseExpectedRevision(req);
   if (expectedRevision !== null && expectedRevision !== existing.revision) {
     return res.status(409).json({
@@ -727,6 +738,11 @@ app.delete('/notes/:noteId', requireAuth, async (req, res) => {
   if (existing.createdByUserId !== req.auth.userId) {
     return res.status(403).json({ error: 'You can delete only your own notes' });
   }
+  const entitlement = await ensureBookEntitlement(prisma, {
+    userId: req.auth.userId,
+    bookId: existing.bookId
+  });
+  if (!entitlement.userBook) return res.status(403).json({ error: 'No access to this book' });
   const expectedRevision = parseExpectedRevision(req);
   if (expectedRevision !== null && expectedRevision !== existing.revision) {
     return res.status(409).json({

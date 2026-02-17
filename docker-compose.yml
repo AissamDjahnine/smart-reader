@@ -24,6 +24,8 @@ services:
       JWT_EXPIRES_IN: 7d
       APP_BASE_URL: ${APP_BASE_URL:-http://127.0.0.1:4000}
       EPUB_UPLOAD_DIR: /app/uploads/epubs
+      LOAN_SCHEDULER_ENABLED: ${LOAN_SCHEDULER_ENABLED:-true}
+      LOAN_SCHEDULER_INTERVAL_MS: ${LOAN_SCHEDULER_INTERVAL_MS:-60000}
     volumes:
       - epub_data:/app/uploads/epubs
     ports:

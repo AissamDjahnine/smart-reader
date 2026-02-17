@@ -300,6 +300,13 @@ When this variable is set:
 - Book access requires `UserBook` relation.
 - Recommendation records are stored in `BookShare`.
 - Loan events/timeline are stored in `LoanAuditEvent` and shown in `History`.
+- Loan renewal workflow:
+  - Borrower can request extension days.
+  - Lender can approve or deny.
+  - Renewal actions are audited and notified.
+- Default lending template per user:
+  - Saved server-side (`duration`, `grace`, permission defaults, reminder days).
+  - New loan requests use template defaults automatically unless overridden.
 - Loan state visibility in UI:
   - Book cover badges in library and continue-reading:
     - no badge = owned/non-loan
@@ -321,6 +328,18 @@ When this variable is set:
 - Borrow reminders are surfaced in both:
   - Notification Center events (`due soon`, `overdue`)
   - Inbox `Borrow Reminders` panel.
+- Notification reliability (server-side):
+  - Loan notifications are persisted in backend (`UserNotification`) with stable per-user `eventKey`.
+  - Read/archive/delete state is persisted server-side.
+  - Notification actions in UI call backend mutation endpoints.
+
+### Entitlement and consistency rules
+
+- Central entitlement and policy logic is enforced server-side for loan reads/writes.
+- Notes/highlights updates use revision conflict protection:
+  - Send `if-match-revision` header to avoid overwriting newer server edits.
+  - Backend returns `409 REVISION_CONFLICT` when stale.
+- Borrower/lender permissions are snapshotted in loan record at request/accept time.
 
 ### Borrow/Lend lifecycle
 
@@ -347,6 +366,17 @@ When this variable is set:
 - In `Settings`, users can define `Borrow reminder (days before due)` with range `0..30`.
 - `0` disables due-soon reminders.
 - Due-soon and overdue reminders are generated from active borrowed loans.
+
+### Background jobs
+
+- Backend includes a maintenance scheduler for:
+  - automatic active-loan expiry transition,
+  - due-soon and overdue notification generation,
+  - ended-loan export-window reminders.
+
+Environment variables:
+- `LOAN_SCHEDULER_ENABLED=true|false` (default `true`)
+- `LOAN_SCHEDULER_INTERVAL_MS` (default `60000`, minimum `15000`)
 
 ### Backend migrations
 
