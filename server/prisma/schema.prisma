@@ -94,6 +94,10 @@ model User {
   blocksReceived FriendBlock[] @relation("friend_blocks_received")
   privacySettingsOwned FriendPrivacySetting[] @relation("friend_privacy_owner")
   privacySettingsForOwner FriendPrivacySetting[] @relation("friend_privacy_friend")
+  readingStat UserReadingStat?
+  readingDays UserReadingDay[]
+  loanReviewMessages LoanReviewMessage[]
+  loanDiscussionReads LoanDiscussionReadState[]
 }
 
 model InviteCode {
@@ -237,6 +241,8 @@ model BookLoan {
   auditEvents                   LoanAuditEvent[]
   renewalRequests               LoanRenewalRequest[]
   notifications                 UserNotification[]
+  reviewMessages                LoanReviewMessage[]
+  discussionReads               LoanDiscussionReadState[]
 
   @@index([borrowerId, status])
   @@index([lenderId, status])
@@ -394,4 +400,60 @@ model FriendPrivacySetting {
 
   @@unique([ownerUserId, friendUserId])
   @@index([friendUserId])
+}
+
+model UserReadingStat {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  totalReadingSeconds Int     @default(0)
+  totalPagesRead     Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserReadingDay {
+  id            String   @id @default(cuid())
+  userId        String
+  dayDate       DateTime
+  readingSeconds Int     @default(0)
+  pagesRead     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dayDate])
+  @@index([dayDate])
+}
+
+model LoanReviewMessage {
+  id            String   @id @default(cuid())
+  loanId        String
+  authorUserId  String
+  rating        Int
+  comment       String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  loan          BookLoan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  author        User     @relation(fields: [authorUserId], references: [id], onDelete: Cascade)
+
+  @@index([loanId, createdAt])
+}
+
+model LoanDiscussionReadState {
+  id         String   @id @default(cuid())
+  loanId      String
+  userId      String
+  lastReadAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  loan        BookLoan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([loanId, userId])
+  @@index([userId, updatedAt])
 }

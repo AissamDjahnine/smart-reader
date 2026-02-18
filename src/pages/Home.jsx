@@ -79,7 +79,8 @@ import {
   fetchFriendHistory,
   fetchFriendLibrary,
   fetchFriendProfile,
-  fetchLoanReviews,
+  fetchLoanDiscussion,
+  fetchLoanDiscussionUnread,
   fetchIncomingFriendRequests,
   fetchBorrowedLoans,
   fetchLoanAudit,
@@ -92,6 +93,7 @@ import {
   fetchShareInbox,
   isCollabMode,
   markAllNotificationsRead,
+  markLoanDiscussionRead,
   patchNotification,
   rejectFriendRequest,
   rejectLoan,
@@ -732,12 +734,14 @@ export default function Home() {
   const [lentLoans, setLentLoans] = useState([]);
   const [loanAuditEvents, setLoanAuditEvents] = useState([]);
   const [loanRenewals, setLoanRenewals] = useState([]);
-  const [loanReviewThread, setLoanReviewThread] = useState([]);
+  const [loanDiscussionTimeline, setLoanDiscussionTimeline] = useState([]);
+  const [loanDiscussionUnreadByLoanId, setLoanDiscussionUnreadByLoanId] = useState({});
   const [isLoanReviewOpen, setIsLoanReviewOpen] = useState(false);
   const [loanReviewTarget, setLoanReviewTarget] = useState(null);
   const [loanReviewRating, setLoanReviewRating] = useState(5);
   const [loanReviewComment, setLoanReviewComment] = useState("");
   const [isLoanReviewBusy, setIsLoanReviewBusy] = useState(false);
+  const [pendingLoanActivityOpenId, setPendingLoanActivityOpenId] = useState("");
   const [remoteNotifications, setRemoteNotifications] = useState([]);
   const [shareDialogBook, setShareDialogBook] = useState(null);
   const [shareDialogMode, setShareDialogMode] = useState("share");
@@ -868,6 +872,14 @@ export default function Home() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("loan-density-mode", loanDensityMode);
   }, [loanDensityMode]);
+  useEffect(() => {
+    if (!pendingLoanActivityOpenId) return;
+    const nextLoan = borrowedLoans.find((row) => row?.id === pendingLoanActivityOpenId)
+      || lentLoans.find((row) => row?.id === pendingLoanActivityOpenId);
+    if (!nextLoan) return;
+    handleOpenLoanActivity(nextLoan);
+    setPendingLoanActivityOpenId("");
+  }, [pendingLoanActivityOpenId, borrowedLoans, lentLoans]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(LIBRARY_THEME_KEY, libraryTheme);
@@ -1344,18 +1356,20 @@ export default function Home() {
       setLoanAuditEvents([]);
       setLoanRenewals([]);
       setRemoteNotifications([]);
+      setLoanDiscussionUnreadByLoanId({});
       setLoanInboxCount(0);
       return;
     }
     try {
-      const [loanInboxRows, borrowedRows, lentRows, auditRows, renewalsRows, notificationsRows, template] = await Promise.all([
+      const [loanInboxRows, borrowedRows, lentRows, auditRows, renewalsRows, notificationsRows, template, unreadRows] = await Promise.all([
         fetchLoanInbox(),
         fetchBorrowedLoans(),
         fetchLentLoans(),
         fetchLoanAudit(),
         fetchLoanRenewals(),
         fetchNotifications(),
-        fetchLoanTemplate()
+        fetchLoanTemplate(),
+        fetchLoanDiscussionUnread()
       ]);
       setLoanInbox(Array.isArray(loanInboxRows) ? loanInboxRows : []);
       setBorrowedLoans(Array.isArray(borrowedRows) ? borrowedRows : []);
@@ -1363,6 +1377,13 @@ export default function Home() {
       setLoanAuditEvents(Array.isArray(auditRows) ? auditRows : []);
       setLoanRenewals(Array.isArray(renewalsRows) ? renewalsRows : []);
       setRemoteNotifications(Array.isArray(notificationsRows) ? notificationsRows : []);
+      setLoanDiscussionUnreadByLoanId(
+        (Array.isArray(unreadRows) ? unreadRows : []).reduce((acc, row) => {
+          if (!row?.loanId) return acc;
+          acc[row.loanId] = Math.max(0, Number(row.unreadCount) || 0);
+          return acc;
+        }, {})
+      );
       if (template) setLoanTemplate(template);
       setLoanInboxCount(Array.isArray(loanInboxRows) ? loanInboxRows.length : 0);
     } catch {
@@ -1372,6 +1393,7 @@ export default function Home() {
       setLoanAuditEvents([]);
       setLoanRenewals([]);
       setRemoteNotifications([]);
+      setLoanDiscussionUnreadByLoanId({});
       setLoanInboxCount(0);
     }
   };
@@ -1865,6 +1887,13 @@ export default function Home() {
     }
   };
 
+  const findLoanById = (loanId) => {
+    if (!loanId) return null;
+    return borrowedLoans.find((row) => row?.id === loanId)
+      || lentLoans.find((row) => row?.id === loanId)
+      || null;
+  };
+
   const handleOpenLoanActivity = async (loan) => {
     if (!loan?.id) return;
     setLoanReviewTarget(loan);
@@ -1873,10 +1902,13 @@ export default function Home() {
     setLoanReviewRating(5);
     setIsLoanReviewBusy(true);
     try {
-      const rows = await fetchLoanReviews(loan.id);
-      setLoanReviewThread(Array.isArray(rows) ? rows : []);
+      const payload = await fetchLoanDiscussion(loan.id);
+      const timelineRows = Array.isArray(payload?.timeline) ? payload.timeline : [];
+      setLoanDiscussionTimeline(timelineRows);
+      setLoanDiscussionUnreadByLoanId((current) => ({ ...current, [loan.id]: 0 }));
+      await markLoanDiscussionRead(loan.id);
     } catch (err) {
-      setLoanReviewThread([]);
+      setLoanDiscussionTimeline([]);
       showFeedbackToast({
         tone: "error",
         title: "Could not load activity",
@@ -1890,7 +1922,7 @@ export default function Home() {
   const handleCloseLoanActivity = () => {
     setIsLoanReviewOpen(false);
     setLoanReviewTarget(null);
-    setLoanReviewThread([]);
+    setLoanDiscussionTimeline([]);
     setLoanReviewComment("");
     setLoanReviewRating(5);
     setIsLoanReviewBusy(false);
@@ -1904,8 +1936,11 @@ export default function Home() {
         rating: Math.max(1, Math.min(5, Number(loanReviewRating) || 5)),
         comment: loanReviewComment.trim()
       });
-      const rows = await fetchLoanReviews(loanReviewTarget.id);
-      setLoanReviewThread(Array.isArray(rows) ? rows : []);
+      const payload = await fetchLoanDiscussion(loanReviewTarget.id);
+      const timelineRows = Array.isArray(payload?.timeline) ? payload.timeline : [];
+      setLoanDiscussionTimeline(timelineRows);
+      setLoanDiscussionUnreadByLoanId((current) => ({ ...current, [loanReviewTarget.id]: 0 }));
+      await markLoanDiscussionRead(loanReviewTarget.id);
       setLoanReviewComment("");
       setLoanReviewRating(5);
     } catch (err) {
@@ -1917,6 +1952,16 @@ export default function Home() {
     } finally {
       setIsLoanReviewBusy(false);
     }
+  };
+
+  const handleOpenLoanActivityById = async (loanId) => {
+    const loan = findLoanById(loanId);
+    if (!loan) {
+      setPendingLoanActivityOpenId(loanId || "");
+      return;
+    }
+    setPendingLoanActivityOpenId("");
+    await handleOpenLoanActivity(loan);
   };
 
   const handleSaveLoanTemplate = async () => {
@@ -4667,6 +4712,7 @@ const formatNotificationTimeAgo = (value) => {
       message: item.message,
       createdAt: item.createdAt,
       actionType: item.actionType || null,
+      actionTargetId: item.actionTargetId || null,
       actionLabel: null,
       bookId: item?.payload?.bookId || null,
       author: "",
@@ -5020,6 +5066,20 @@ const formatNotificationTimeAgo = (value) => {
       return;
     }
 
+    if (item.actionType === "open-loan-activity") {
+      const targetLoanId = item.actionTargetId || item?.payload?.loanId || "";
+      const targetLoan = findLoanById(targetLoanId);
+      if (targetLoan?.borrower?.id === getCurrentUser()?.id) {
+        handleSidebarSectionSelect("borrowed");
+      } else if (targetLoan?.lender?.id === getCurrentUser()?.id) {
+        handleSidebarSectionSelect("lent");
+      }
+      if (targetLoanId) {
+        handleOpenLoanActivityById(targetLoanId);
+      }
+      return;
+    }
+
     if (item.actionType === "open-trash") {
       handleSidebarSectionSelect("trash");
       return;
@@ -5061,7 +5121,7 @@ const formatNotificationTimeAgo = (value) => {
     setActiveNotificationMenuId("");
     setIsNotificationsOpen(false);
 
-    if (item.actionType === "open-inbox" || item.actionType === "open-borrowed" || item.actionType === "open-lent" || item.actionType === "open-trash" || item.actionType === "open-friends") {
+    if (item.actionType === "open-inbox" || item.actionType === "open-borrowed" || item.actionType === "open-lent" || item.actionType === "open-loan-activity" || item.actionType === "open-trash" || item.actionType === "open-friends") {
       handleOpenNotificationTarget(item);
       return;
     }
@@ -6754,8 +6814,13 @@ const formatNotificationTimeAgo = (value) => {
                       ))}
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
-                      <button type="button" onClick={() => handleOpenLoanActivity(loan)} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>
+                      <button type="button" onClick={() => handleOpenLoanActivity(loan)} className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>
                         Activity
+                        {(loanDiscussionUnreadByLoanId[loan.id] || 0) > 0 ? (
+                          <span className="inline-flex min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] text-white">
+                            {loanDiscussionUnreadByLoanId[loan.id]}
+                          </span>
+                        ) : null}
                       </button>
                       {loan.status === "ACTIVE" && (
                         <button type="button" onClick={() => handleReturnBorrowedLoan(loan.id)} disabled={isLoanActionBusyId === `return-${loan.id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700"}`}>
@@ -6852,8 +6917,13 @@ const formatNotificationTimeAgo = (value) => {
                     </div>
                     {loan.status === "ACTIVE" && (
                       <div className="mt-3 flex flex-wrap gap-2">
-                        <button type="button" onClick={() => handleOpenLoanActivity(loan)} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>
+                        <button type="button" onClick={() => handleOpenLoanActivity(loan)} className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>
                           Activity
+                          {(loanDiscussionUnreadByLoanId[loan.id] || 0) > 0 ? (
+                            <span className="inline-flex min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] text-white">
+                              {loanDiscussionUnreadByLoanId[loan.id]}
+                            </span>
+                          ) : null}
                         </button>
                         <button type="button" onClick={() => handleRevokeLentLoan(loan.id)} disabled={isLoanActionBusyId === `revoke-${loan.id}`} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 disabled:opacity-50 ${isDarkLibraryTheme ? "border-rose-700/70 bg-rose-950/35 text-rose-200 hover:bg-rose-900/40" : "border-rose-200 bg-rose-50 text-rose-700"}`}>
                           {isLoanActionBusyId === `revoke-${loan.id}` ? "Revoking..." : "Revoke"}
@@ -6872,8 +6942,13 @@ const formatNotificationTimeAgo = (value) => {
                     )}
                     {loan.status !== "ACTIVE" && (
                       <div className="mt-3">
-                        <button type="button" onClick={() => handleOpenLoanActivity(loan)} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>
+                        <button type="button" onClick={() => handleOpenLoanActivity(loan)} className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${isDarkLibraryTheme ? "border-slate-600 text-slate-200 hover:bg-slate-800" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}>
                           Activity
+                          {(loanDiscussionUnreadByLoanId[loan.id] || 0) > 0 ? (
+                            <span className="inline-flex min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] text-white">
+                              {loanDiscussionUnreadByLoanId[loan.id]}
+                            </span>
+                          ) : null}
                         </button>
                       </div>
                     )}
@@ -7905,26 +7980,58 @@ const formatNotificationTimeAgo = (value) => {
                 </button>
               </div>
 
+              <div className={`mt-3 flex items-center justify-between rounded-xl border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800/60 text-slate-300" : "border-gray-200 bg-gray-50 text-gray-700"}`}>
+                <p className="text-xs font-semibold">
+                  Timeline: {loanDiscussionTimeline.length} item{loanDiscussionTimeline.length === 1 ? "" : "s"}
+                </p>
+                <p className="text-xs">
+                  Unread: <span className="font-semibold">{loanDiscussionUnreadByLoanId[loanReviewTarget?.id] || 0}</span>
+                </p>
+              </div>
+
               <div className={`mt-3 max-h-[320px] space-y-2 overflow-y-auto rounded-xl border p-3 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-800/60" : "border-gray-200 bg-gray-50"}`}>
-                {isLoanReviewBusy && !loanReviewThread.length && (
+                {isLoanReviewBusy && !loanDiscussionTimeline.length && (
                   <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>Loading activity...</p>
                 )}
-                {!isLoanReviewBusy && !loanReviewThread.length && (
-                  <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>No messages yet.</p>
+                {!isLoanReviewBusy && !loanDiscussionTimeline.length && (
+                  <p className={`text-xs ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>No discussion yet. Start with a comment and rating.</p>
                 )}
-                {loanReviewThread.map((message) => (
-                  <div key={message.id} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/70" : "border-gray-200 bg-white"}`}>
-                    <div className="flex items-center justify-between gap-2">
-                      <p className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
-                        {message?.author?.displayName || message?.author?.email || "Reader"} · {"⭐".repeat(Math.max(1, Number(message?.rating) || 1))}
+                {loanDiscussionTimeline.map((entry) => {
+                  if (entry?.kind === "review" && entry?.message) {
+                    const message = entry.message;
+                    return (
+                      <div key={entry.id} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/70" : "border-gray-200 bg-white"}`}>
+                        <div className="flex items-center justify-between gap-2">
+                          <p className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-slate-100" : "text-gray-900"}`}>
+                            {message?.author?.displayName || message?.author?.email || "Reader"} · {"⭐".repeat(Math.max(1, Number(message?.rating) || 1))}
+                          </p>
+                          <span className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                            {new Date(message.createdAt).toLocaleString()}
+                          </span>
+                        </div>
+                        <p className={`mt-1 text-sm whitespace-pre-wrap ${isDarkLibraryTheme ? "text-slate-200" : "text-gray-700"}`}>{message.comment}</p>
+                      </div>
+                    );
+                  }
+                  const event = entry?.event;
+                  return (
+                    <div key={entry.id} className={`rounded-lg border px-3 py-2 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-white"}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${getLoanActionToneClass(event?.action)}`}>
+                          {formatLoanActionLabel(event?.action)}
+                        </span>
+                        <span className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
+                          {formatLoanDate(event?.createdAt)}
+                        </span>
+                      </div>
+                      <p className={`mt-1 text-xs ${isDarkLibraryTheme ? "text-slate-300" : "text-gray-600"}`}>
+                        {(event?.actorUser?.displayName || event?.actorUser?.email || "System")}
+                        {" -> "}
+                        {(event?.targetUser?.displayName || event?.targetUser?.email || "Reader")}
                       </p>
-                      <span className={`text-[11px] ${isDarkLibraryTheme ? "text-slate-400" : "text-gray-500"}`}>
-                        {new Date(message.createdAt).toLocaleString()}
-                      </span>
                     </div>
-                    <p className={`mt-1 text-sm whitespace-pre-wrap ${isDarkLibraryTheme ? "text-slate-200" : "text-gray-700"}`}>{message.comment}</p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               <div className="mt-3 grid gap-2 sm:grid-cols-[120px_minmax(0,1fr)]">

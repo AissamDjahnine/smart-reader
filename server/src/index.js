@@ -312,6 +312,54 @@ const toLoanReviewMessageResponse = (row) => ({
   author: row.author ? toUserResponse(row.author) : null
 });
 
+const parseJsonSafe = (value = null) => {
+  try {
+    return value ? JSON.parse(value) : null;
+  } catch {
+    return null;
+  }
+};
+
+const toLoanAuditEventResponse = (event) => ({
+  id: event.id,
+  action: event.action,
+  createdAt: event.createdAt,
+  details: parseJsonSafe(event.detailsJson),
+  actorUser: event.actorUser ? toUserResponse(event.actorUser) : null,
+  targetUser: event.targetUser ? toUserResponse(event.targetUser) : null,
+  loan: event.loan ? toLoanResponse(event.loan) : null
+});
+
+const ensureLoanParticipant = (loan, userId) => loan && (loan.borrowerId === userId || loan.lenderId === userId);
+
+const getLoanDiscussionSummary = async (db, loanId, userId) => {
+  const [lastReadRow, latestMessage] = await Promise.all([
+    db.loanDiscussionReadState.findUnique({
+      where: { loanId_userId: { loanId, userId } },
+      select: { lastReadAt: true }
+    }),
+    db.loanReviewMessage.findFirst({
+      where: { loanId },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true }
+    })
+  ]);
+
+  const unreadCount = await db.loanReviewMessage.count({
+    where: {
+      loanId,
+      authorUserId: { not: userId },
+      ...(lastReadRow?.lastReadAt ? { createdAt: { gt: lastReadRow.lastReadAt } } : {})
+    }
+  });
+
+  return {
+    unreadCount,
+    lastReadAt: lastReadRow?.lastReadAt || null,
+    lastMessageAt: latestMessage?.createdAt || null
+  };
+};
+
 const startOfDayUtc = (value = new Date()) => {
   const day = new Date(value);
   day.setUTCHours(0, 0, 0, 0);
@@ -2721,7 +2769,7 @@ app.get('/loans/:loanId/reviews', requireAuth, async (req, res) => {
     include: includeLoanGraph
   });
   if (!loan) return res.status(404).json({ error: 'Loan not found' });
-  if (loan.borrowerId !== req.auth.userId && loan.lenderId !== req.auth.userId) {
+  if (!ensureLoanParticipant(loan, req.auth.userId)) {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
@@ -2733,6 +2781,119 @@ app.get('/loans/:loanId/reviews', requireAuth, async (req, res) => {
     orderBy: { createdAt: 'asc' }
   });
   return res.json({ loan: toLoanResponse(loan), messages: messages.map(toLoanReviewMessageResponse) });
+});
+
+app.get('/loans/discussions/unread', requireAuth, async (req, res) => {
+  const loans = await prisma.bookLoan.findMany({
+    where: {
+      OR: [
+        { lenderId: req.auth.userId },
+        { borrowerId: req.auth.userId }
+      ],
+      status: { not: 'PENDING' }
+    },
+    select: { id: true }
+  });
+
+  const rows = await Promise.all(
+    loans.map(async (loan) => {
+      const summary = await getLoanDiscussionSummary(prisma, loan.id, req.auth.userId);
+      return {
+        loanId: loan.id,
+        unreadCount: summary.unreadCount,
+        lastReadAt: summary.lastReadAt,
+        lastMessageAt: summary.lastMessageAt
+      };
+    })
+  );
+
+  return res.json({ items: rows });
+});
+
+app.get('/loans/:loanId/discussion', requireAuth, async (req, res) => {
+  const loan = await prisma.bookLoan.findUnique({
+    where: { id: req.params.loanId },
+    include: includeLoanGraph
+  });
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (!ensureLoanParticipant(loan, req.auth.userId)) return res.status(403).json({ error: 'Forbidden' });
+
+  const [messages, auditEvents, summary] = await Promise.all([
+    prisma.loanReviewMessage.findMany({
+      where: { loanId: loan.id },
+      include: {
+        author: { select: { id: true, email: true, username: true, displayName: true, avatarUrl: true, loanReminderDays: true } }
+      },
+      orderBy: { createdAt: 'asc' }
+    }),
+    prisma.loanAuditEvent.findMany({
+      where: { loanId: loan.id },
+      include: {
+        actorUser: { select: { id: true, email: true, username: true, displayName: true, avatarUrl: true, loanReminderDays: true } },
+        targetUser: { select: { id: true, email: true, username: true, displayName: true, avatarUrl: true, loanReminderDays: true } },
+        loan: { include: includeLoanGraph }
+      },
+      orderBy: { createdAt: 'asc' }
+    }),
+    getLoanDiscussionSummary(prisma, loan.id, req.auth.userId)
+  ]);
+
+  const reviewMessages = messages.map(toLoanReviewMessageResponse);
+  const timeline = [
+    ...auditEvents.map((event) => ({
+      id: `event-${event.id}`,
+      kind: 'event',
+      createdAt: event.createdAt,
+      event: toLoanAuditEventResponse(event)
+    })),
+    ...reviewMessages.map((message) => ({
+      id: `review-${message.id}`,
+      kind: 'review',
+      createdAt: message.createdAt,
+      message
+    }))
+  ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  return res.json({
+    loan: toLoanResponse(loan),
+    readState: {
+      unreadCount: summary.unreadCount,
+      lastReadAt: summary.lastReadAt,
+      lastMessageAt: summary.lastMessageAt
+    },
+    messages: reviewMessages,
+    events: auditEvents.map(toLoanAuditEventResponse),
+    timeline
+  });
+});
+
+app.post('/loans/:loanId/discussion/read', requireAuth, async (req, res) => {
+  const loan = await prisma.bookLoan.findUnique({
+    where: { id: req.params.loanId },
+    select: { id: true, lenderId: true, borrowerId: true }
+  });
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (!ensureLoanParticipant(loan, req.auth.userId)) return res.status(403).json({ error: 'Forbidden' });
+
+  const now = new Date();
+  const row = await prisma.loanDiscussionReadState.upsert({
+    where: {
+      loanId_userId: {
+        loanId: loan.id,
+        userId: req.auth.userId
+      }
+    },
+    create: {
+      loanId: loan.id,
+      userId: req.auth.userId,
+      lastReadAt: now
+    },
+    update: {
+      lastReadAt: now
+    }
+  });
+
+  return res.json({ readState: { loanId: row.loanId, userId: row.userId, lastReadAt: row.lastReadAt } });
 });
 
 app.post('/loans/:loanId/reviews', requireAuth, async (req, res) => {
@@ -2748,7 +2909,7 @@ app.post('/loans/:loanId/reviews', requireAuth, async (req, res) => {
     include: includeLoanGraph
   });
   if (!loan) return res.status(404).json({ error: 'Loan not found' });
-  if (loan.borrowerId !== req.auth.userId && loan.lenderId !== req.auth.userId) {
+  if (!ensureLoanParticipant(loan, req.auth.userId)) {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
@@ -2765,7 +2926,6 @@ app.post('/loans/:loanId/reviews', requireAuth, async (req, res) => {
   });
 
   const otherUserId = loan.borrowerId === req.auth.userId ? loan.lenderId : loan.borrowerId;
-  const opensBorrowed = otherUserId === loan.borrowerId;
   await emitLoanNotification(prisma, {
     userId: otherUserId,
     eventKey: `loan-review-${message.id}`,
@@ -2773,7 +2933,7 @@ app.post('/loans/:loanId/reviews', requireAuth, async (req, res) => {
     title: 'New loan review',
     message: `${message.author?.displayName || message.author?.email || 'A reader'} reviewed "${loan.book?.title || 'book'}" (${message.rating}/5).`,
     loanId: loan.id,
-    actionType: opensBorrowed ? 'open-borrowed' : 'open-lent',
+    actionType: 'open-loan-activity',
     actionTargetId: loan.id,
     meta: {
       reviewId: message.id

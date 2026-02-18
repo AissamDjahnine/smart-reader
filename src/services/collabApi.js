@@ -369,6 +369,21 @@ export const fetchLoanReviews = async (loanId) => {
   return data.messages || [];
 };
 
+export const fetchLoanDiscussion = async (loanId) => {
+  const { data } = await client.get(`/loans/${loanId}/discussion`);
+  return data;
+};
+
+export const markLoanDiscussionRead = async (loanId) => {
+  const { data } = await client.post(`/loans/${loanId}/discussion/read`);
+  return data.readState;
+};
+
+export const fetchLoanDiscussionUnread = async () => {
+  const { data } = await client.get('/loans/discussions/unread');
+  return data.items || [];
+};
+
 export const createLoanReview = async (loanId, payload) => {
   const { data } = await client.post(`/loans/${loanId}/reviews`, payload);
   return data.message;
