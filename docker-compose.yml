@@ -1,49 +1,94 @@
+name: ariadne
 services:
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ariadne
-      POSTGRES_USER: ariadne
-      POSTGRES_PASSWORD: ariadne
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-
-  backend:
-    build:
-      context: ./server
-    restart: unless-stopped
-    depends_on:
-      - db
-    environment:
-      DATABASE_URL: postgresql://ariadne:ariadne@db:5432/ariadne
-      PORT: 4000
-      JWT_SECRET: ${JWT_SECRET:-change-me}
-      JWT_EXPIRES_IN: 7d
-      APP_BASE_URL: ${APP_BASE_URL:-http://127.0.0.1:4000}
-      EPUB_UPLOAD_DIR: /app/uploads/epubs
-      LOAN_SCHEDULER_ENABLED: ${LOAN_SCHEDULER_ENABLED:-true}
-      LOAN_SCHEDULER_INTERVAL_MS: ${LOAN_SCHEDULER_INTERVAL_MS:-60000}
-    volumes:
-      - epub_data:/app/uploads/epubs
-    ports:
-      - "4000:4000"
-
-  frontend:
-    profiles: ["frontend"]
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    restart: unless-stopped
-    depends_on:
-      - backend
-    environment:
-      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://127.0.0.1:4000}
-    ports:
-      - "5173:5173"
-
-volumes:
-  pg_data:
-  epub_data:
+    backend:
+        build:
+            context: /opt/ariadne/docker-compose.yml,
+            dockerfile: Dockerfile
+        cpu_shares: 90
+        command: []
+        container_name: ariadne-backend
+        depends_on:
+            db:
+                condition: service_healthy
+                required: true
+        deploy:
+            resources:
+                limits:
+                    memory: "8025800704"
+        environment:
+            APP_BASE_URL: http://100.73.178.27:4000
+            DATABASE_URL: postgresql://ariadne:ariadne@db:5432/ariadne
+            EPUB_UPLOAD_DIR: /app/uploads/epubs
+            JWT_EXPIRES_IN: 7d
+            JWT_SECRET: change-me
+            LOAN_SCHEDULER_ENABLED: "true"
+            LOAN_SCHEDULER_INTERVAL_MS: "60000"
+            PORT: "4000"
+        hostname: ariadne-backend
+        image: ariadne-backend:latest
+        init: true
+        networks:
+            default: null
+        ports:
+            - mode: ingress
+              target: 4000
+              published: "4000"
+              protocol: tcp
+        restart: unless-stopped
+        stop_grace_period: 30s
+        volumes:
+            - type: bind
+              source: /DATA/AppData/ariadne/epubs
+              target: /app/uploads/epubs
+              bind:
+                create_host_path: true
+    db:
+        cpu_shares: 90
+        command: []
+        container_name: ariadne-db
+        deploy:
+            resources:
+                limits:
+                    memory: "8025800704"
+        environment:
+            POSTGRES_DB: ariadne
+            POSTGRES_PASSWORD: ariadne
+            POSTGRES_USER: ariadne
+        hostname: ariadne-db
+        healthcheck:
+            test:
+                - CMD-SHELL
+                - 'pg_isready -U  -d '
+            timeout: 3s
+            interval: 5s
+            retries: 20
+        image: postgres:16-alpine
+        networks:
+            default: null
+        ports:
+            - mode: ingress
+              target: 5432
+              published: "5432"
+              protocol: tcp
+        restart: unless-stopped
+        stop_grace_period: 30s
+        volumes:
+            - type: bind
+              source: /DATA/AppData/ariadne/postgres
+              target: /var/lib/postgresql/data
+              bind:
+                create_host_path: true
+networks:
+    default:
+        name: ariadne_default
+x-casaos:
+    author: self
+    category: self
+    hostname: ""
+    icon: ""
+    index: /
+    is_uncontrolled: false
+    port_map: "5173"
+    scheme: http
+    title:
+        custom: Smart Reader
