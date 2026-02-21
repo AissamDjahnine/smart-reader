@@ -138,6 +138,7 @@ const LIBRARY_THEME_KEY = 'library-theme';
 const LIBRARY_LANGUAGE_KEY = 'library-language';
 const ACCOUNT_PROFILE_KEY = 'library-account-profile';
 const LIBRARY_NOTIFICATION_STATE_KEY = 'library-notification-state';
+const REMOTE_LIBRARY_CACHE_PREFIX = "library-remote-cache-v1";
 const ACCOUNT_DEFAULT_EMAIL = '';
 const LIBRARY_PERF_DEBUG_KEY = "library-perf-debug";
 const LIBRARY_PERF_HISTORY_KEY = "__smartReaderPerfHistory";
@@ -253,6 +254,41 @@ const readStoredNotificationState = () => {
     return parsed;
   } catch {
     return {};
+  }
+};
+
+const getRemoteLibraryCacheKey = () => {
+  const user = getCurrentUser() || {};
+  const scope = (user.id || user.email || "anon").toString();
+  return `${REMOTE_LIBRARY_CACHE_PREFIX}:${scope}`;
+};
+
+const readStoredRemoteLibrary = () => {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(getRemoteLibraryCacheKey());
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const books = Array.isArray(parsed?.books) ? parsed.books : [];
+    return books.filter((book) => book && typeof book.id === "string");
+  } catch {
+    return [];
+  }
+};
+
+const writeStoredRemoteLibrary = (books) => {
+  if (typeof window === "undefined") return;
+  const nextBooks = Array.isArray(books) ? books.filter((book) => book && typeof book.id === "string") : [];
+  try {
+    window.localStorage.setItem(
+      getRemoteLibraryCacheKey(),
+      JSON.stringify({
+        books: nextBooks,
+        savedAt: new Date().toISOString()
+      })
+    );
+  } catch (err) {
+    console.warn("Failed to persist remote library cache.", err);
   }
 };
 
@@ -609,6 +645,7 @@ const LIBRARY_DENSITY_MODE_KEY = "library-density-mode";
 const LIBRARY_RENDER_BATCH_SIZE = 48;
 const VIRTUAL_GRID_CARD_STYLE = { contentVisibility: "auto", containIntrinsicSize: "620px" };
 const VIRTUAL_LIST_CARD_STYLE = { contentVisibility: "auto", containIntrinsicSize: "220px" };
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const COLLECTION_COLOR_OPTIONS = [
   "#2563eb",
   "#7c3aed",
@@ -789,6 +826,18 @@ export default function Home() {
   const notificationsMenuRef = useRef(null);
   const notificationFocusTimerRef = useRef(null);
   const metadataRepairInFlightRef = useRef(new Set());
+  const loanLoadSeqRef = useRef(0);
+  const libraryLoadSeqRef = useRef(0);
+  const latestBooksRef = useRef([]);
+  const lastStableBooksRef = useRef([]);
+  const remoteEmptyLoadStreakRef = useRef(0);
+
+  useEffect(() => {
+    latestBooksRef.current = books;
+    if (Array.isArray(books) && books.length > 0) {
+      lastStableBooksRef.current = books;
+    }
+  }, [books]);
 
   useEffect(() => {
     if (!isCollabMode) return;
@@ -1303,16 +1352,80 @@ export default function Home() {
 
   const loadLibrary = async () => {
     const loadStartAt = getPerfNow();
+    const requestId = libraryLoadSeqRef.current + 1;
+    libraryLoadSeqRef.current = requestId;
     if (!isCollabMode) {
       await purgeExpiredTrashBooks(TRASH_RETENTION_DAYS);
     }
+    if (isCollabMode) {
+      const cachedBooks = readStoredRemoteLibrary();
+      if (latestBooksRef.current.length === 0 && cachedBooks.length > 0) {
+        setBooks(cachedBooks);
+      }
+      try {
+        let remoteBooks = await getAllBooks();
+        if (requestId !== libraryLoadSeqRef.current) return;
+
+        const hadBooksBefore =
+          (Array.isArray(latestBooksRef.current) && latestBooksRef.current.length > 0) ||
+          cachedBooks.length > 0;
+        if (hadBooksBefore && remoteBooks.length === 0) {
+          await wait(280);
+          try {
+            remoteBooks = await getAllBooks();
+          } catch (retryErr) {
+            console.warn("Collab library refresh retry failed; keeping current library state.", retryErr);
+            return;
+          }
+          if (requestId !== libraryLoadSeqRef.current) return;
+          if (remoteBooks.length === 0) {
+            remoteEmptyLoadStreakRef.current += 1;
+            if (remoteEmptyLoadStreakRef.current < 3) {
+              if (lastStableBooksRef.current.length > 0) {
+                setBooks(lastStableBooksRef.current);
+              } else if (cachedBooks.length > 0) {
+                setBooks(cachedBooks);
+              }
+              console.warn("Suppressed transient empty collab library response.");
+              return;
+            }
+          } else {
+            remoteEmptyLoadStreakRef.current = 0;
+          }
+        } else {
+          remoteEmptyLoadStreakRef.current = 0;
+        }
+
+        if (remoteBooks.length > 0) {
+          writeStoredRemoteLibrary(remoteBooks);
+        } else if (remoteEmptyLoadStreakRef.current >= 3) {
+          writeStoredRemoteLibrary([]);
+          remoteEmptyLoadStreakRef.current = 0;
+        }
+
+        setBooks(remoteBooks);
+        setCollections([]);
+        return;
+      } catch (err) {
+        if (requestId !== libraryLoadSeqRef.current) return;
+        if (lastStableBooksRef.current.length > 0) {
+          setBooks(lastStableBooksRef.current);
+          console.warn("Collab library refresh failed; restored last stable library snapshot.", err);
+          return;
+        }
+        if (cachedBooks.length > 0) {
+          setBooks(cachedBooks);
+          console.warn("Collab library refresh failed; restored cached library snapshot.", err);
+          return;
+        }
+        console.error("Collab library refresh failed.", err);
+        return;
+      }
+    }
+
     const [storedBooks, storedCollections] = await Promise.all([getAllBooks(), getAllCollections()]);
     setBooks(storedBooks);
     setCollections(storedCollections);
-
-    if (isCollabMode) {
-      return;
-    }
 
     const legacyBookIds = storedBooks
       .filter((book) => {
@@ -1360,41 +1473,79 @@ export default function Home() {
       setLoanInboxCount(0);
       return;
     }
-    try {
-      const [loanInboxRows, borrowedRows, lentRows, auditRows, renewalsRows, notificationsRows, template, unreadRows] = await Promise.all([
-        fetchLoanInbox(),
-        fetchBorrowedLoans(),
-        fetchLentLoans(),
-        fetchLoanAudit(),
-        fetchLoanRenewals(),
-        fetchNotifications(),
-        fetchLoanTemplate(),
-        fetchLoanDiscussionUnread()
-      ]);
-      setLoanInbox(Array.isArray(loanInboxRows) ? loanInboxRows : []);
-      setBorrowedLoans(Array.isArray(borrowedRows) ? borrowedRows : []);
-      setLentLoans(Array.isArray(lentRows) ? lentRows : []);
-      setLoanAuditEvents(Array.isArray(auditRows) ? auditRows : []);
-      setLoanRenewals(Array.isArray(renewalsRows) ? renewalsRows : []);
-      setRemoteNotifications(Array.isArray(notificationsRows) ? notificationsRows : []);
+    const requestId = loanLoadSeqRef.current + 1;
+    loanLoadSeqRef.current = requestId;
+
+    const [
+      loanInboxResult,
+      borrowedResult,
+      lentResult,
+      auditResult,
+      renewalsResult,
+      notificationsResult,
+      templateResult,
+      unreadResult
+    ] = await Promise.allSettled([
+      fetchLoanInbox(),
+      fetchBorrowedLoans(),
+      fetchLentLoans(),
+      fetchLoanAudit(),
+      fetchLoanRenewals(),
+      fetchNotifications(),
+      fetchLoanTemplate(),
+      fetchLoanDiscussionUnread()
+    ]);
+
+    if (requestId !== loanLoadSeqRef.current) return;
+
+    if (loanInboxResult.status === "fulfilled") {
+      const rows = Array.isArray(loanInboxResult.value) ? loanInboxResult.value : [];
+      setLoanInbox(rows);
+      setLoanInboxCount(rows.length);
+    }
+    if (borrowedResult.status === "fulfilled") {
+      setBorrowedLoans(Array.isArray(borrowedResult.value) ? borrowedResult.value : []);
+    }
+    if (lentResult.status === "fulfilled") {
+      setLentLoans(Array.isArray(lentResult.value) ? lentResult.value : []);
+    }
+    if (auditResult.status === "fulfilled") {
+      setLoanAuditEvents(Array.isArray(auditResult.value) ? auditResult.value : []);
+    }
+    if (renewalsResult.status === "fulfilled") {
+      setLoanRenewals(Array.isArray(renewalsResult.value) ? renewalsResult.value : []);
+    }
+    if (notificationsResult.status === "fulfilled") {
+      setRemoteNotifications(Array.isArray(notificationsResult.value) ? notificationsResult.value : []);
+    }
+    if (templateResult.status === "fulfilled" && templateResult.value) {
+      setLoanTemplate(templateResult.value);
+    }
+    if (unreadResult.status === "fulfilled") {
+      const unreadRows = Array.isArray(unreadResult.value) ? unreadResult.value : [];
       setLoanDiscussionUnreadByLoanId(
-        (Array.isArray(unreadRows) ? unreadRows : []).reduce((acc, row) => {
+        unreadRows.reduce((acc, row) => {
           if (!row?.loanId) return acc;
           acc[row.loanId] = Math.max(0, Number(row.unreadCount) || 0);
           return acc;
         }, {})
       );
-      if (template) setLoanTemplate(template);
-      setLoanInboxCount(Array.isArray(loanInboxRows) ? loanInboxRows.length : 0);
-    } catch {
-      setLoanInbox([]);
-      setBorrowedLoans([]);
-      setLentLoans([]);
-      setLoanAuditEvents([]);
-      setLoanRenewals([]);
-      setRemoteNotifications([]);
-      setLoanDiscussionUnreadByLoanId({});
-      setLoanInboxCount(0);
+    }
+  };
+
+  const refreshLentLoans = async ({ showError = true } = {}) => {
+    if (!isCollabMode) return;
+    try {
+      const rows = await fetchLentLoans();
+      setLentLoans(Array.isArray(rows) ? rows : []);
+    } catch (err) {
+      if (showError) {
+        showFeedbackToast({
+          tone: "error",
+          title: "Could not refresh lent books",
+          message: err?.response?.data?.error || "Please try again."
+        });
+      }
     }
   };
 
@@ -1597,12 +1748,18 @@ export default function Home() {
     if (!friendUserId || !bookId || friendActionBusyId) return;
     setFriendActionBusyId(`borrow-${friendUserId}-${bookId}`);
     try {
-      await borrowFromFriendLibrary(friendUserId, bookId);
+      const createdLoan = await borrowFromFriendLibrary(friendUserId, bookId);
+      if (createdLoan?.id) {
+        setBorrowedLoans((current) => [
+          createdLoan,
+          ...current.filter((loan) => loan?.id !== createdLoan.id)
+        ]);
+      }
       showFeedbackToast({
         title: "Borrow started",
         message: "Book added to your borrowed books."
       });
-      await Promise.all([loadLoansData(), loadSelectedFriendData(friendUserId)]);
+      await Promise.allSettled([loadLoansData(), loadSelectedFriendData(friendUserId)]);
     } catch (err) {
       showFeedbackToast({
         tone: "error",
@@ -1685,6 +1842,17 @@ export default function Home() {
     const nextSeen = [...seen, ...newlyRevoked.map((loan) => loan.id)].slice(-200);
     window.localStorage.setItem(key, JSON.stringify(nextSeen));
   }, [borrowedLoans, isCollabMode]);
+
+  useEffect(() => {
+    if (!isCollabMode || librarySection !== "lent") return;
+    refreshLentLoans({ showError: false });
+    const intervalId = setInterval(() => {
+      refreshLentLoans({ showError: false });
+    }, 15000);
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [librarySection, isCollabMode]);
 
   const openShareDialog = (event, book) => {
     event.preventDefault();
@@ -2705,6 +2873,9 @@ export default function Home() {
       setCollectionFilter("all");
       setSelectedTrashBookIds([]);
       loadLoansData();
+      if (section === "lent") {
+        refreshLentLoans({ showError: false });
+      }
     }
     if (section === "friends") {
       setStatusFilter("all");
@@ -4139,6 +4310,7 @@ const formatNotificationTimeAgo = (value) => {
     (sortBy !== "last-read-desc" ? 1 : 0);
   const canShowResetFilters = hasActiveLibraryFilters;
   const isDarkLibraryTheme = libraryTheme === "dark";
+  const buildStamp = String(import.meta.env.VITE_BUILD_STAMP || "").trim();
   const brandLogoSrc = isDarkLibraryTheme ? "/brand/logo-dark.png" : "/brand/logo-light.png";
   const brandLogoFallbackSrc = isDarkLibraryTheme ? "/brand/logo-light.png" : "/brand/logo-dark.png";
   const isAccountSection = librarySection === "account";
@@ -5725,6 +5897,7 @@ const formatNotificationTimeAgo = (value) => {
             onAvatarUpload={handleAccountAvatarUpload}
             onSave={handleSaveAccountProfile}
             onSaveLoanTemplate={handleSaveLoanTemplate}
+            buildStamp={buildStamp}
           />
         )}
 
@@ -6866,7 +7039,7 @@ const formatNotificationTimeAgo = (value) => {
                   <button type="button" onClick={() => { setLoanViewMode("grid"); setLoanDensityMode("compact"); }} className={`flex-1 rounded-lg px-1 py-1 text-xs font-semibold ${loanViewMode === "grid" && loanDensityMode === "compact" ? "bg-blue-600 text-white" : (isDarkLibraryTheme ? "text-slate-300" : "text-gray-600")}`}>Compact</button>
                   <button type="button" onClick={() => setLoanViewMode("list")} className={`flex-1 rounded-lg px-1 py-1 text-xs font-semibold ${loanViewMode === "list" ? "bg-blue-600 text-white" : (isDarkLibraryTheme ? "text-slate-300" : "text-gray-600")}`}>List</button>
                 </div>
-                <button type="button" onClick={loadLoansData} className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-blue-300 hover:text-blue-200" : "text-blue-700"}`}>Refresh</button>
+                <button type="button" onClick={() => refreshLentLoans({ showError: true })} className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-blue-300 hover:text-blue-200" : "text-blue-700"}`}>Refresh</button>
               </div>
             </div>
             {!lentLoans.length ? (

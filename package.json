@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test:e2e": "playwright test",
+    "test:e2e:collab": "playwright test -c playwright.collab.config.js",
     "test": "vitest",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest"

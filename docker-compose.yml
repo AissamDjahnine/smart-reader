@@ -22,6 +22,7 @@ services:
       PORT: 4000
       JWT_SECRET: ${JWT_SECRET:-change-me}
       JWT_EXPIRES_IN: 7d
+      APP_BUILD_REF: ${APP_BUILD_REF:-dev}
       APP_BASE_URL: ${APP_BASE_URL:-http://127.0.0.1:4000}
       EPUB_UPLOAD_DIR: /app/uploads/epubs
       LOAN_SCHEDULER_ENABLED: ${LOAN_SCHEDULER_ENABLED:-true}
@@ -36,6 +37,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.frontend
+      args:
+        VITE_BUILD_STAMP: ${VITE_BUILD_STAMP:-dev}
     restart: unless-stopped
     depends_on:
       - backend
