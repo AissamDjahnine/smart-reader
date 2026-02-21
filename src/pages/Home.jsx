@@ -4310,6 +4310,7 @@ const formatNotificationTimeAgo = (value) => {
     (sortBy !== "last-read-desc" ? 1 : 0);
   const canShowResetFilters = hasActiveLibraryFilters;
   const isDarkLibraryTheme = libraryTheme === "dark";
+  const buildStamp = String(import.meta.env.VITE_BUILD_STAMP || "").trim();
   const brandLogoSrc = isDarkLibraryTheme ? "/brand/logo-dark.png" : "/brand/logo-light.png";
   const brandLogoFallbackSrc = isDarkLibraryTheme ? "/brand/logo-light.png" : "/brand/logo-dark.png";
   const isAccountSection = librarySection === "account";
@@ -5896,6 +5897,7 @@ const formatNotificationTimeAgo = (value) => {
             onAvatarUpload={handleAccountAvatarUpload}
             onSave={handleSaveAccountProfile}
             onSaveLoanTemplate={handleSaveLoanTemplate}
+            buildStamp={buildStamp}
           />
         )}
 

@@ -7,6 +7,7 @@ export default function LibraryAccountSection({
   isUploadingAvatar = false,
   loanTemplate = null,
   isSavingLoanTemplate = false,
+  buildStamp = "",
   onFieldChange,
   onLoanTemplateFieldChange,
   onLoanTemplatePermissionChange,
@@ -183,6 +184,14 @@ export default function LibraryAccountSection({
             </span>
           )}
         </div>
+        {buildStamp && (
+          <p
+            data-testid="library-build-stamp"
+            className={`mt-2 text-xs font-mono ${isDarkLibraryTheme ? "text-slate-400" : "text-slate-500"}`}
+          >
+            Build: {buildStamp}
+          </p>
+        )}
 
         {loanTemplate && (
           <div className={`mt-8 rounded-xl border p-4 ${isDarkLibraryTheme ? "border-slate-700 bg-slate-900/45" : "border-gray-200 bg-gray-50/60"}`}>

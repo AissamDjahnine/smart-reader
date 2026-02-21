@@ -446,7 +446,7 @@ const toRenewalResponse = (row) => ({
 });
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, buildRef: config.buildRef });
 });
 
 app.post('/auth/register', async (req, res) => {

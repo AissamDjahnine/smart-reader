@@ -5,6 +5,8 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
+ARG VITE_BUILD_STAMP=dev
+ENV VITE_BUILD_STAMP=$VITE_BUILD_STAMP
 RUN npm run build
 
 EXPOSE 5173
