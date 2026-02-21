@@ -789,6 +789,7 @@ export default function Home() {
   const notificationsMenuRef = useRef(null);
   const notificationFocusTimerRef = useRef(null);
   const metadataRepairInFlightRef = useRef(new Set());
+  const loanLoadSeqRef = useRef(0);
 
   useEffect(() => {
     if (!isCollabMode) return;
@@ -1360,6 +1361,9 @@ export default function Home() {
       setLoanInboxCount(0);
       return;
     }
+    const requestId = loanLoadSeqRef.current + 1;
+    loanLoadSeqRef.current = requestId;
+
     const [
       loanInboxResult,
       borrowedResult,
@@ -1379,6 +1383,8 @@ export default function Home() {
       fetchLoanTemplate(),
       fetchLoanDiscussionUnread()
     ]);
+
+    if (requestId !== loanLoadSeqRef.current) return;
 
     if (loanInboxResult.status === "fulfilled") {
       const rows = Array.isArray(loanInboxResult.value) ? loanInboxResult.value : [];
@@ -1412,6 +1418,22 @@ export default function Home() {
           return acc;
         }, {})
       );
+    }
+  };
+
+  const refreshLentLoans = async ({ showError = true } = {}) => {
+    if (!isCollabMode) return;
+    try {
+      const rows = await fetchLentLoans();
+      setLentLoans(Array.isArray(rows) ? rows : []);
+    } catch (err) {
+      if (showError) {
+        showFeedbackToast({
+          tone: "error",
+          title: "Could not refresh lent books",
+          message: err?.response?.data?.error || "Please try again."
+        });
+      }
     }
   };
 
@@ -1708,6 +1730,17 @@ export default function Home() {
     const nextSeen = [...seen, ...newlyRevoked.map((loan) => loan.id)].slice(-200);
     window.localStorage.setItem(key, JSON.stringify(nextSeen));
   }, [borrowedLoans, isCollabMode]);
+
+  useEffect(() => {
+    if (!isCollabMode || librarySection !== "lent") return;
+    refreshLentLoans({ showError: false });
+    const intervalId = setInterval(() => {
+      refreshLentLoans({ showError: false });
+    }, 15000);
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [librarySection, isCollabMode]);
 
   const openShareDialog = (event, book) => {
     event.preventDefault();
@@ -2728,6 +2761,9 @@ export default function Home() {
       setCollectionFilter("all");
       setSelectedTrashBookIds([]);
       loadLoansData();
+      if (section === "lent") {
+        refreshLentLoans({ showError: false });
+      }
     }
     if (section === "friends") {
       setStatusFilter("all");
@@ -6889,7 +6925,7 @@ const formatNotificationTimeAgo = (value) => {
                   <button type="button" onClick={() => { setLoanViewMode("grid"); setLoanDensityMode("compact"); }} className={`flex-1 rounded-lg px-1 py-1 text-xs font-semibold ${loanViewMode === "grid" && loanDensityMode === "compact" ? "bg-blue-600 text-white" : (isDarkLibraryTheme ? "text-slate-300" : "text-gray-600")}`}>Compact</button>
                   <button type="button" onClick={() => setLoanViewMode("list")} className={`flex-1 rounded-lg px-1 py-1 text-xs font-semibold ${loanViewMode === "list" ? "bg-blue-600 text-white" : (isDarkLibraryTheme ? "text-slate-300" : "text-gray-600")}`}>List</button>
                 </div>
-                <button type="button" onClick={loadLoansData} className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-blue-300 hover:text-blue-200" : "text-blue-700"}`}>Refresh</button>
+                <button type="button" onClick={() => refreshLentLoans({ showError: true })} className={`text-xs font-semibold ${isDarkLibraryTheme ? "text-blue-300 hover:text-blue-200" : "text-blue-700"}`}>Refresh</button>
               </div>
             </div>
             {!lentLoans.length ? (
