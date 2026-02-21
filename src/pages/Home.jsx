@@ -1360,41 +1360,58 @@ export default function Home() {
       setLoanInboxCount(0);
       return;
     }
-    try {
-      const [loanInboxRows, borrowedRows, lentRows, auditRows, renewalsRows, notificationsRows, template, unreadRows] = await Promise.all([
-        fetchLoanInbox(),
-        fetchBorrowedLoans(),
-        fetchLentLoans(),
-        fetchLoanAudit(),
-        fetchLoanRenewals(),
-        fetchNotifications(),
-        fetchLoanTemplate(),
-        fetchLoanDiscussionUnread()
-      ]);
-      setLoanInbox(Array.isArray(loanInboxRows) ? loanInboxRows : []);
-      setBorrowedLoans(Array.isArray(borrowedRows) ? borrowedRows : []);
-      setLentLoans(Array.isArray(lentRows) ? lentRows : []);
-      setLoanAuditEvents(Array.isArray(auditRows) ? auditRows : []);
-      setLoanRenewals(Array.isArray(renewalsRows) ? renewalsRows : []);
-      setRemoteNotifications(Array.isArray(notificationsRows) ? notificationsRows : []);
+    const [
+      loanInboxResult,
+      borrowedResult,
+      lentResult,
+      auditResult,
+      renewalsResult,
+      notificationsResult,
+      templateResult,
+      unreadResult
+    ] = await Promise.allSettled([
+      fetchLoanInbox(),
+      fetchBorrowedLoans(),
+      fetchLentLoans(),
+      fetchLoanAudit(),
+      fetchLoanRenewals(),
+      fetchNotifications(),
+      fetchLoanTemplate(),
+      fetchLoanDiscussionUnread()
+    ]);
+
+    if (loanInboxResult.status === "fulfilled") {
+      const rows = Array.isArray(loanInboxResult.value) ? loanInboxResult.value : [];
+      setLoanInbox(rows);
+      setLoanInboxCount(rows.length);
+    }
+    if (borrowedResult.status === "fulfilled") {
+      setBorrowedLoans(Array.isArray(borrowedResult.value) ? borrowedResult.value : []);
+    }
+    if (lentResult.status === "fulfilled") {
+      setLentLoans(Array.isArray(lentResult.value) ? lentResult.value : []);
+    }
+    if (auditResult.status === "fulfilled") {
+      setLoanAuditEvents(Array.isArray(auditResult.value) ? auditResult.value : []);
+    }
+    if (renewalsResult.status === "fulfilled") {
+      setLoanRenewals(Array.isArray(renewalsResult.value) ? renewalsResult.value : []);
+    }
+    if (notificationsResult.status === "fulfilled") {
+      setRemoteNotifications(Array.isArray(notificationsResult.value) ? notificationsResult.value : []);
+    }
+    if (templateResult.status === "fulfilled" && templateResult.value) {
+      setLoanTemplate(templateResult.value);
+    }
+    if (unreadResult.status === "fulfilled") {
+      const unreadRows = Array.isArray(unreadResult.value) ? unreadResult.value : [];
       setLoanDiscussionUnreadByLoanId(
-        (Array.isArray(unreadRows) ? unreadRows : []).reduce((acc, row) => {
+        unreadRows.reduce((acc, row) => {
           if (!row?.loanId) return acc;
           acc[row.loanId] = Math.max(0, Number(row.unreadCount) || 0);
           return acc;
         }, {})
       );
-      if (template) setLoanTemplate(template);
-      setLoanInboxCount(Array.isArray(loanInboxRows) ? loanInboxRows.length : 0);
-    } catch {
-      setLoanInbox([]);
-      setBorrowedLoans([]);
-      setLentLoans([]);
-      setLoanAuditEvents([]);
-      setLoanRenewals([]);
-      setRemoteNotifications([]);
-      setLoanDiscussionUnreadByLoanId({});
-      setLoanInboxCount(0);
     }
   };
 
@@ -1597,12 +1614,18 @@ export default function Home() {
     if (!friendUserId || !bookId || friendActionBusyId) return;
     setFriendActionBusyId(`borrow-${friendUserId}-${bookId}`);
     try {
-      await borrowFromFriendLibrary(friendUserId, bookId);
+      const createdLoan = await borrowFromFriendLibrary(friendUserId, bookId);
+      if (createdLoan?.id) {
+        setBorrowedLoans((current) => [
+          createdLoan,
+          ...current.filter((loan) => loan?.id !== createdLoan.id)
+        ]);
+      }
       showFeedbackToast({
         title: "Borrow started",
         message: "Book added to your borrowed books."
       });
-      await Promise.all([loadLoansData(), loadSelectedFriendData(friendUserId)]);
+      await Promise.allSettled([loadLoansData(), loadSelectedFriendData(friendUserId)]);
     } catch (err) {
       showFeedbackToast({
         tone: "error",
