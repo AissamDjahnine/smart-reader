@@ -138,6 +138,7 @@ const LIBRARY_THEME_KEY = 'library-theme';
 const LIBRARY_LANGUAGE_KEY = 'library-language';
 const ACCOUNT_PROFILE_KEY = 'library-account-profile';
 const LIBRARY_NOTIFICATION_STATE_KEY = 'library-notification-state';
+const REMOTE_LIBRARY_CACHE_PREFIX = "library-remote-cache-v1";
 const ACCOUNT_DEFAULT_EMAIL = '';
 const LIBRARY_PERF_DEBUG_KEY = "library-perf-debug";
 const LIBRARY_PERF_HISTORY_KEY = "__smartReaderPerfHistory";
@@ -253,6 +254,41 @@ const readStoredNotificationState = () => {
     return parsed;
   } catch {
     return {};
+  }
+};
+
+const getRemoteLibraryCacheKey = () => {
+  const user = getCurrentUser() || {};
+  const scope = (user.id || user.email || "anon").toString();
+  return `${REMOTE_LIBRARY_CACHE_PREFIX}:${scope}`;
+};
+
+const readStoredRemoteLibrary = () => {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(getRemoteLibraryCacheKey());
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const books = Array.isArray(parsed?.books) ? parsed.books : [];
+    return books.filter((book) => book && typeof book.id === "string");
+  } catch {
+    return [];
+  }
+};
+
+const writeStoredRemoteLibrary = (books) => {
+  if (typeof window === "undefined") return;
+  const nextBooks = Array.isArray(books) ? books.filter((book) => book && typeof book.id === "string") : [];
+  try {
+    window.localStorage.setItem(
+      getRemoteLibraryCacheKey(),
+      JSON.stringify({
+        books: nextBooks,
+        savedAt: new Date().toISOString()
+      })
+    );
+  } catch (err) {
+    console.warn("Failed to persist remote library cache.", err);
   }
 };
 
@@ -794,6 +830,7 @@ export default function Home() {
   const libraryLoadSeqRef = useRef(0);
   const latestBooksRef = useRef([]);
   const lastStableBooksRef = useRef([]);
+  const remoteEmptyLoadStreakRef = useRef(0);
 
   useEffect(() => {
     latestBooksRef.current = books;
@@ -1321,11 +1358,17 @@ export default function Home() {
       await purgeExpiredTrashBooks(TRASH_RETENTION_DAYS);
     }
     if (isCollabMode) {
+      const cachedBooks = readStoredRemoteLibrary();
+      if (latestBooksRef.current.length === 0 && cachedBooks.length > 0) {
+        setBooks(cachedBooks);
+      }
       try {
         let remoteBooks = await getAllBooks();
         if (requestId !== libraryLoadSeqRef.current) return;
 
-        const hadBooksBefore = Array.isArray(latestBooksRef.current) && latestBooksRef.current.length > 0;
+        const hadBooksBefore =
+          (Array.isArray(latestBooksRef.current) && latestBooksRef.current.length > 0) ||
+          cachedBooks.length > 0;
         if (hadBooksBefore && remoteBooks.length === 0) {
           await wait(280);
           try {
@@ -1336,9 +1379,28 @@ export default function Home() {
           }
           if (requestId !== libraryLoadSeqRef.current) return;
           if (remoteBooks.length === 0) {
-            console.warn("Suppressed transient empty collab library response.");
-            return;
+            remoteEmptyLoadStreakRef.current += 1;
+            if (remoteEmptyLoadStreakRef.current < 3) {
+              if (lastStableBooksRef.current.length > 0) {
+                setBooks(lastStableBooksRef.current);
+              } else if (cachedBooks.length > 0) {
+                setBooks(cachedBooks);
+              }
+              console.warn("Suppressed transient empty collab library response.");
+              return;
+            }
+          } else {
+            remoteEmptyLoadStreakRef.current = 0;
           }
+        } else {
+          remoteEmptyLoadStreakRef.current = 0;
+        }
+
+        if (remoteBooks.length > 0) {
+          writeStoredRemoteLibrary(remoteBooks);
+        } else if (remoteEmptyLoadStreakRef.current >= 3) {
+          writeStoredRemoteLibrary([]);
+          remoteEmptyLoadStreakRef.current = 0;
         }
 
         setBooks(remoteBooks);
@@ -1349,6 +1411,11 @@ export default function Home() {
         if (lastStableBooksRef.current.length > 0) {
           setBooks(lastStableBooksRef.current);
           console.warn("Collab library refresh failed; restored last stable library snapshot.", err);
+          return;
+        }
+        if (cachedBooks.length > 0) {
+          setBooks(cachedBooks);
+          console.warn("Collab library refresh failed; restored cached library snapshot.", err);
           return;
         }
         console.error("Collab library refresh failed.", err);
