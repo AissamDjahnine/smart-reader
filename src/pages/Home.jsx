@@ -609,6 +609,7 @@ const LIBRARY_DENSITY_MODE_KEY = "library-density-mode";
 const LIBRARY_RENDER_BATCH_SIZE = 48;
 const VIRTUAL_GRID_CARD_STYLE = { contentVisibility: "auto", containIntrinsicSize: "620px" };
 const VIRTUAL_LIST_CARD_STYLE = { contentVisibility: "auto", containIntrinsicSize: "220px" };
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const COLLECTION_COLOR_OPTIONS = [
   "#2563eb",
   "#7c3aed",
@@ -790,6 +791,16 @@ export default function Home() {
   const notificationFocusTimerRef = useRef(null);
   const metadataRepairInFlightRef = useRef(new Set());
   const loanLoadSeqRef = useRef(0);
+  const libraryLoadSeqRef = useRef(0);
+  const latestBooksRef = useRef([]);
+  const lastStableBooksRef = useRef([]);
+
+  useEffect(() => {
+    latestBooksRef.current = books;
+    if (Array.isArray(books) && books.length > 0) {
+      lastStableBooksRef.current = books;
+    }
+  }, [books]);
 
   useEffect(() => {
     if (!isCollabMode) return;
@@ -1304,16 +1315,50 @@ export default function Home() {
 
   const loadLibrary = async () => {
     const loadStartAt = getPerfNow();
+    const requestId = libraryLoadSeqRef.current + 1;
+    libraryLoadSeqRef.current = requestId;
     if (!isCollabMode) {
       await purgeExpiredTrashBooks(TRASH_RETENTION_DAYS);
     }
+    if (isCollabMode) {
+      try {
+        let remoteBooks = await getAllBooks();
+        if (requestId !== libraryLoadSeqRef.current) return;
+
+        const hadBooksBefore = Array.isArray(latestBooksRef.current) && latestBooksRef.current.length > 0;
+        if (hadBooksBefore && remoteBooks.length === 0) {
+          await wait(280);
+          try {
+            remoteBooks = await getAllBooks();
+          } catch (retryErr) {
+            console.warn("Collab library refresh retry failed; keeping current library state.", retryErr);
+            return;
+          }
+          if (requestId !== libraryLoadSeqRef.current) return;
+          if (remoteBooks.length === 0) {
+            console.warn("Suppressed transient empty collab library response.");
+            return;
+          }
+        }
+
+        setBooks(remoteBooks);
+        setCollections([]);
+        return;
+      } catch (err) {
+        if (requestId !== libraryLoadSeqRef.current) return;
+        if (lastStableBooksRef.current.length > 0) {
+          setBooks(lastStableBooksRef.current);
+          console.warn("Collab library refresh failed; restored last stable library snapshot.", err);
+          return;
+        }
+        console.error("Collab library refresh failed.", err);
+        return;
+      }
+    }
+
     const [storedBooks, storedCollections] = await Promise.all([getAllBooks(), getAllCollections()]);
     setBooks(storedBooks);
     setCollections(storedCollections);
-
-    if (isCollabMode) {
-      return;
-    }
 
     const legacyBookIds = storedBooks
       .filter((book) => {
